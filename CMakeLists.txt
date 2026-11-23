@@ -23,6 +23,7 @@ add_library(k64core STATIC
   src/core/vic2.cpp
   src/core/cia6526.cpp
   src/core/sid.cpp
+  src/core/sid_analog.cpp
   src/core/audio.cpp
   src/core/roms.cpp
 )

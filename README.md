@@ -8,8 +8,8 @@ libretro core for RetroArch and Emutastic.
 **Status:** early development. The 6510 CPU, the memory map, both generations of the CIA
 with keyboard and joysticks, and the VIC-II with sprites, in its old and new chip
 generations for PAL and NTSC, are in: the machine boots to BASIC and takes typing. The
-SID's oscillators, envelopes and waveforms are in for the 6581 and the 8580 and can be
-heard; its filter is not modeled yet, so filtered sounds come out unfiltered.
+SID is in for the 6581 and the 8580, from the oscillators to the filter and the volume
+stage, and can be heard.
 Cartridges, tape and disk are still to come.
 
 ## Building on Linux

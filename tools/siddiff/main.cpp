@@ -7,6 +7,7 @@
 //   siddiff [--model 6581|8580] [--seeds N] [--cycles N] [--waves LIST] [--every N] [--verbose]
 //   siddiff --score [SAMPLE_FOLDER]
 //   siddiff --dacs
+//   siddiff --filter
 //
 // --dacs compares the waveform and envelope DAC tables and the voices' zero levels with the
 // reference's, code by code; exit status 1 on any difference.
@@ -38,6 +39,15 @@
 // a combination with both triangle and sawtooth; the reference engine always does. The
 // last line counts how often a trace was steered around it.
 //
+// --filter measures the analog part of both engines with tones and compares the numbers
+// in bands (the two are different models of the same circuit, and real chips differ far
+// more than these bands): the low-pass cutoff frequency at several FC values, the height
+// of the resonance peak, how the output level follows the volume register, how far the
+// output's resting level moves with it (what makes volume-register samples audible), the
+// level through the filter against the level around it, and the output voltage of a tone.
+// The printed numbers are also kept in tests/filter-score.txt: the gate compares the whole
+// output with it, so a change of the model that stays inside the bands still shows.
+//
 // The reference engine's internals are read directly (they are protected members there).
 // (The state a gate change is heading for is compared only while that change is under way:
 // afterwards the field has no effect, and the two keep different leftovers over a reset.)
@@ -49,6 +59,7 @@
 
 #include "../../src/core/sid.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -142,6 +153,131 @@ int score(const std::string& folder) {
 }
 
 
+// ---- the analog part, measured with tones -------------------------------------------------
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kFilterClock = 985248.0;
+
+struct OurAnalog {
+    k64::Sid sid;
+    double volts;
+    explicit OurAnalog(int chip) : sid(chip ? k64::SidModel::Mos8580 : k64::SidModel::Mos6581), volts(k64::Sid::audioFullScaleVolts(sid.model())) {
+        sid.setClockHz(kFilterClock);
+    }
+    void reg(unsigned r, unsigned v) { sid.write(r, static_cast<uint8_t>(v)); }
+    double step(int voice1) { return sid.clockFilter(voice1, 0, 0) * volts; }   // in volts
+};
+struct TheirAnalog {
+    reSID::SID sid;
+    explicit TheirAnalog(int chip) {
+        sid.set_chip_model(chip ? reSID::MOS8580 : reSID::MOS6581);
+        sid.set_sampling_parameters(kFilterClock, reSID::SAMPLE_INTERPOLATE, 44100);
+        sid.reset();
+        sid.adjust_filter_bias(0.0);   // values the engine sets only in its first instance
+    }
+    void reg(unsigned r, unsigned v) { sid.write(r, v); }
+    double step(int voice1) {   // in volts: its output is scaled by vo_N16 per volt
+        sid.filter.clock(voice1, 0, 0);
+        return sid.filter.output() / reSID::Filter::model_filter[sid.sid_model].vo_N16;
+    }
+};
+
+// Amplitude of the response to a tone on voice 1 (amp in voice units), after settling,
+// over a whole number of periods; mean = the output's resting level meanwhile.
+template <class Device>
+double respond(Device& d, double hz, double amp, double* mean = nullptr) {
+    const double periods = std::ceil(std::fmax(3.0, 0.02 * hz));
+    const int n = static_cast<int>(periods * kFilterClock / hz + 0.5);
+    const int settle = static_cast<int>(kFilterClock * 0.05) + 2 * static_cast<int>(kFilterClock / hz);
+    double s = 0, c = 0, sum = 0;
+    for (int i = 0; i < settle + n; ++i) {
+        const double w = 2 * kPi * hz * i / kFilterClock;
+        const double y = d.step(static_cast<int>(amp * std::sin(w)));
+        if (i >= settle) { s += y * std::sin(w); c += y * std::cos(w); sum += y; }
+    }
+    if (mean) *mean = sum / n;
+    return 2 * std::sqrt(s * s + c * c) / n;
+}
+
+constexpr double kTone = 2048.0 * 255.0 * 0.25;   // a quarter of a voice's range
+
+template <class Device>
+double cutoffHz(int chip, unsigned fc) {
+    Device d(chip);
+    d.reg(0x15, fc & 7); d.reg(0x16, fc >> 3); d.reg(0x17, 0x01); d.reg(0x18, 0x1F);
+    const double low = respond(d, 20.0, kTone) * 0.70710678;
+    double a = 20.0, b = 40000.0;   // the response falls with frequency: bisect for -3 dB
+    for (int i = 0; i < 16; ++i) {
+        const double m = std::sqrt(a * b);
+        if (respond(d, m, kTone) > low) a = m; else b = m;
+    }
+    return std::sqrt(a * b);
+}
+
+template <class Device>
+double resonancePeak(int chip, unsigned res) {
+    const unsigned fc = 1024;
+    Device d(chip);
+    d.reg(0x15, fc & 7); d.reg(0x16, fc >> 3); d.reg(0x17, (res << 4) | 0x01); d.reg(0x18, 0x2F);
+    double peak = 0;
+    for (double hz = 500; hz < 16000; hz *= 1.04) peak = std::fmax(peak, respond(d, hz, kTone * 0.1));
+    Device e(chip);
+    e.reg(0x15, fc & 7); e.reg(0x16, fc >> 3); e.reg(0x17, (res << 4) | 0x01); e.reg(0x18, 0x1F);
+    return peak / respond(e, 30.0, kTone * 0.1);
+}
+
+// Level of an unfiltered voice at a volume, relative to volume 15; the travel of the resting
+// level from volume 0 to 15 over that tone's amplitude; the level through the low-pass.
+template <class Device>
+void levels(int chip, double out[5]) {
+    double gain[16] = {}, rest[16] = {};
+    for (unsigned vol : {0u, 1u, 8u, 15u}) {
+        Device d(chip);
+        d.reg(0x17, 0x00); d.reg(0x18, vol);
+        gain[vol] = respond(d, 1000.0, kTone, &rest[vol]);
+    }
+    Device f(chip);
+    f.reg(0x15, 7); f.reg(0x16, 255); f.reg(0x17, 0x01); f.reg(0x18, 0x1F);
+    out[0] = gain[1] / gain[15];
+    out[1] = gain[8] / gain[15];
+    out[2] = (rest[15] - rest[0]) / gain[15];
+    out[3] = respond(f, 200.0, kTone) / gain[15];
+    out[4] = gain[15];
+}
+
+int filterBands() {
+    int bad = 0;
+    auto band = [&bad](const char* chip, const char* what, double ours, double theirs, double percent) {
+        const double off = (ours / theirs - 1.0) * 100.0;
+        const bool ok = std::fabs(off) <= percent;
+        std::printf("%s %-46s ours %10.4f  reference %10.4f  %+6.1f %% (allowed %.0f)%s\n", chip, what, ours, theirs, off, percent, ok ? "" : "  FAIL");
+        bad += !ok;
+    };
+    for (int chip = 0; chip < 2; ++chip) {
+        const char* name = chip ? "8580" : "6581";
+        char what[80];
+        // The 6581's knee (FC 512-896) is left out: there the reference's small currents
+        // are rounded to zero by its 16-bit table, ours are not.
+        const unsigned fcs[2][4] = {{0, 1024, 1536, 2047}, {32, 256, 1024, 2047}};
+        for (unsigned fc : fcs[chip]) {
+            std::snprintf(what, sizeof what, "low-pass cutoff at FC %u (Hz)", fc);
+            band(name, what, cutoffHz<OurAnalog>(chip, fc), cutoffHz<TheirAnalog>(chip, fc), chip ? 3 : 12);
+        }
+        for (unsigned res : {0u, 8u, 15u}) {
+            std::snprintf(what, sizeof what, "resonance peak over low-pass level, RES %u", res);
+            band(name, what, resonancePeak<OurAnalog>(chip, res), resonancePeak<TheirAnalog>(chip, res), chip ? 10 : 25);
+        }
+        double a[5], b[5];
+        levels<OurAnalog>(chip, a);
+        levels<TheirAnalog>(chip, b);
+        band(name, "a quarter-range tone at volume 15 (V at the pin)", a[4], b[4], chip ? 2 : 10);
+        band(name, "level at volume 1 over volume 15", a[0], b[0], chip ? 2 : 6);
+        band(name, "level at volume 8 over volume 15", a[1], b[1], chip ? 2 : 6);
+        band(name, "resting level travel, volume 0 to 15, over a tone", a[2], b[2], chip ? 5 : 15);
+        band(name, "level through the low-pass over around it", a[3], b[3], chip ? 3 : 6);
+    }
+    return bad ? 1 : 0;
+}
+
 // The DAC tables and the voice zero levels against the reference's, code by code.
 int dacs() {
     int bad = 0;
@@ -172,6 +308,7 @@ int dacs() {
 int main(int argc, char** argv) {
     if (argc >= 2 && std::string(argv[1]) == "--score") return score(argc >= 3 ? argv[2] : "");
     if (argc >= 2 && std::string(argv[1]) == "--dacs") return dacs();
+    if (argc >= 2 && std::string(argv[1]) == "--filter") return filterBands();
     k64::SidModel model = k64::SidModel::Mos6581;
     int seeds = 8;
     long cycles = 200000;

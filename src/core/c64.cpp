@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 9;
+constexpr uint32_t kStateVersion = 10;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
@@ -47,6 +47,7 @@ void C64::reset() {
     colorRam_.fill(0);
     vic_.reset();
     sid_ = Sid(sid_.model());   // power on: the oscillators start from their power-on value
+    sid_.setClockHz(timing_->clockHz);
     boardFilter_.reset();
     cia1_.reset();
     cia2_.reset();
@@ -299,7 +300,7 @@ void C64::tick() {
     s_.cia2IrqSeen = cia2_.irq();
     cpu_.tick();
     sid_.clock();
-    if (audioRate_ > 0.0) resampler_.push(static_cast<float>(boardFilter_.clock(sid_.audioOut())));
+    if (audioRate_ > 0.0) resampler_.push(static_cast<float>(boardFilter_.clock(sid_.clockAudio())));
     cia1_.clock();
     cia2_.clock();
     // The TOD pins see the mains frequency (hw/cia.md rule 18): exactly mainsHz ticks per

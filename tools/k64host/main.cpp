@@ -4,14 +4,14 @@
 //   k64host CORE.so [--content FILE] [--frames N] [--option KEY=VALUE]...
 //                   [--system DIR] [--save DIR] [--dump FILE.ppm] [--check]
 //                   [--type TEXT] [--type-at FRAME] [--expect-screen TEXT]
-//                   [--expect-tone HZ DB_MIN DB_MAX] [--expect-silence]
+//                   [--expect-tone HZ DB_MIN DB_MAX] [--expect-level DB_MIN DB_MAX] [--expect-silence]
 //
 // --type presses the keys for TEXT one at a time from frame --type-at (default 200),
 // each held 3 frames and released 3 ("\n" = RETURN). --expect-screen fails the run
 // unless TEXT is in the C64 text screen ($0400), read through RETRO_MEMORY_SYSTEM_RAM.
 // --expect-tone fails the run unless the last half second of audio is a tone of HZ (within
-// 0.1 %) at a level between DB_MIN and DB_MAX (RMS, dB below full scale); --expect-silence
-// unless every sample of the run is zero. The audio is only ever looked at as numbers.
+// 0.1 %) at a level between DB_MIN and DB_MAX (RMS, dB below full scale); --expect-level
+// checks the level alone; --expect-silence fails unless every sample of the run is zero. The audio is only ever looked at as numbers.
 // --check runs the conformance checks and exits non-zero on the first failure.
 // Without it the run prints a summary only.
 #include "libretro.h"
@@ -230,7 +230,8 @@ int main(int argc, char** argv) {
     bool check = false;
     std::vector<std::string> expectScreen;
     double expectHz = 0.0, expectDbMin = 0.0, expectDbMax = 0.0;
-    bool expectSilence = false;
+    bool expectSilence = false, expectLevel = false;
+    double levelMin = 0.0, levelMax = 0.0;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -250,6 +251,7 @@ int main(int argc, char** argv) {
         else if (a == "--expect-screen") expectScreen.push_back(next());
         else if (a == "--expect-tone") { expectHz = std::stod(next()); expectDbMin = std::stod(next()); expectDbMax = std::stod(next()); }
         else if (a == "--expect-silence") expectSilence = true;
+        else if (a == "--expect-level") { expectLevel = true; levelMin = std::stod(next()); levelMax = std::stod(next()); }
         else if (a == "--option") {
             std::string kv = next();
             auto eq = kv.find('=');
@@ -371,6 +373,11 @@ int main(int argc, char** argv) {
         if (std::fabs(t.hz - expectHz) > expectHz * 0.001) fail("tone of %.2f Hz, expected %.2f", t.hz, expectHz);
         if (t.db < expectDbMin || t.db > expectDbMax) fail("level %.1f dB, expected %.1f .. %.1f", t.db, expectDbMin, expectDbMax);
         if (audioChannelsDiffer) fail("left and right channels differ");
+    }
+    if (expectLevel) {
+        const Tone t = measureTone(av.timing.sample_rate);
+        std::printf("audio: level %.1f dB\n", t.db);
+        if (t.db < levelMin || t.db > levelMax) fail("level %.1f dB, expected %.1f .. %.1f", t.db, levelMin, levelMax);
     }
     if (expectSilence) {
         size_t loud = 0;

@@ -8,8 +8,9 @@
 # read-out and the KERNAL booting to BASIC on every model; the CPU against the
 # per-opcode bus traces, the functional and undocumented-opcode test programs and
 # the transistor-level chip; the SID's digital part against the reference engine cycle by
-# cycle, its DACs code by code and its combined waveforms against chip samples; the audio
-# output path as numbers and a tone through the API; the VIC-II against the article's rules and the start-up
+# cycle, its DACs code by code, its combined waveforms against chip samples and its filter,
+# mixer and volume stage in bands; the audio output path as numbers and tones through the
+# API; the VIC-II against the article's rules and the start-up
 # screen against the reference emulator (tools/oracle/build-vice.sh); the reference
 # suite's CPU, CIA, interrupt, general and VIC-II programs on both CIA types and both VIC-II
 # generations; our own probe and raster-effect programs; the core loading in RetroArch
@@ -74,8 +75,23 @@ for run in "pal 440.02 6581" "ntsc 456.76 6581" "ntsc-old 456.76 8580" "pal-new 
     # shellcheck disable=SC2086
     set -- $run
     "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1000 --option kernal64_model=$1 --option kernal64_sid=$3 \
-        --type 'POKE54296,15:POKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n' --expect-tone $2 -16 -13 \
+        --type 'POKE54296,15:POKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n' --expect-tone $2 -18.5 -15.5 \
         >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "tone ($1, $3)"; }
+done
+# The same tone with the conformance checks: the state saved half-way holds a filter and an
+# output network in motion, and the replay from it must end in the same state byte for byte.
+"$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1600 --check \
+    --type 'POKE54296,15:POKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n' --expect-tone 440.02 -18.5 -15.5 \
+    >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "conformance with a tone playing"; }
+# Through the filter (8580, cutoff at its top, about 20 kHz): with the voice routed into it
+# the low-pass lets the 440 Hz tone through at its level, the high-pass leaves about 1/400
+# of it. (Two typed lines: BASIC takes 80 characters per line.)
+for run in "31 -18.5 -15.5 low-pass" "79 -80 -60 high-pass"; do
+    # shellcheck disable=SC2086
+    set -- $run
+    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1300 --option kernal64_sid=8580 \
+        --type "POKE54295,1:POKE54294,255:POKE54296,$1\nPOKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n" --expect-level $2 $3 \
+        >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "tone through the $4"; }
 done
 
 step "memory map and boot"
@@ -157,6 +173,10 @@ if [ -x "$BUILD/siddiff" ]; then
     "$BUILD/siddiff" --score "$EXT/testprogs/SID/resid-test" >"$BUILD/wave-score.txt" 2>&1
     diff -u tests/wave-score.txt "$BUILD/wave-score.txt" || bad "combined waveforms: the score differs from tests/wave-score.txt"
     "$BUILD/siddiff" --dacs >"$BUILD/dacs.log" 2>&1 || { cat "$BUILD/dacs.log"; bad "DAC tables against the reference"; }
+    # The analog part: tone measurements of both engines, inside their bands, and the same
+    # numbers as recorded (a change of the model has to change tests/filter-score.txt).
+    "$BUILD/siddiff" --filter >"$BUILD/filter-score.txt" 2>&1 || { grep FAIL "$BUILD/filter-score.txt"; bad "filter, mixer and volume stage outside a band"; }
+    diff -u tests/filter-score.txt "$BUILD/filter-score.txt" || bad "analog part: the score differs from tests/filter-score.txt"
 else bad "SID comparison not built: tools/oracle/build-vice.sh"; fi
 
 if [ "$QUICK" = 0 ]; then

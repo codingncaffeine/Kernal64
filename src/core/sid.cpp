@@ -216,13 +216,6 @@ int Sid::voiceOutput(int voice) const {
     return (static_cast<int>(d.wave[v.out]) - kWaveZero[static_cast<int>(model_)]) * static_cast<int>(d.envelope[v.env]);
 }
 
-double Sid::audioOut() const {
-    int sum = voiceOutput(0) + voiceOutput(1);
-    // X4: mode bit 7 silences voice 3 when it is not routed to the filter.
-    if (!(s_.reg[0x18] & 0x80) || (s_.reg[0x17] & 0x04)) sum += voiceOutput(2);
-    return sum * (s_.reg[0x18] & 0x0F) / (15.0 * 3.0 * 2048.0 * 255.0);
-}
-
 uint16_t Sid::combinedWave(SidModel model, unsigned waveform, unsigned index) {
     const int c = (waveform & 7) == 3 ? 0 : (waveform & 7) == 5 ? 1 : (waveform & 7) == 6 ? 2 : 3;
     return waveTables(model).wave[c][index & 0xFFF];
@@ -250,6 +243,7 @@ void Sid::reset() {
     for (uint8_t& r : s_.reg) r = 0;
     s_.bus = 0;
     s_.busTtl = 0;
+    // (The filter's capacitors keep their charge: RES is a digital pin.)
 }
 
 // ---- envelope (E1-E7) ----------------------------------------------------------------

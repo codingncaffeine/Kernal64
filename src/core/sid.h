@@ -1,5 +1,5 @@
-// MOS 6581 / 8580 SID: the digital part (oscillators, noise, envelopes, the readable
-// registers). Filter and output stage follow.
+// MOS 6581 / 8580 SID: oscillators, noise, envelopes, the readable registers and the DACs
+// (sid.cpp); filter, mixer and volume stage (sid_analog.cpp).
 //
 // Every rule and its source: local-notes/hw/sid.md (W = waveform generator, E = envelope,
 // X = chip level). One clock() per system cycle.
@@ -62,6 +62,9 @@ public:
         uint8_t reg[0x20] = {};      // registers as written
         uint8_t bus = 0;             // last byte on the chip's data bus
         uint32_t busTtl = 0;         // cycles until it has faded
+        // Filter: the two integrators' capacitor voltages and the summer's output, the
+        // latter relative to its level at rest (all zero = the chip at rest).
+        double filterBp = 0.0, filterLp = 0.0, filterHp = 0.0;
     };
 #pragma pack(pop)
     const State& state() const { return s_; }
@@ -81,9 +84,15 @@ public:
     // D2: a voice's output: the waveform DAC's level around its zero level, times the
     // envelope DAC's level. About -2048*255 .. 2047*255.
     int voiceOutput(int voice) const;
-    // The chip's audio output, about -1 .. 1. PROVISIONAL (hw/sid.md section F is not built):
-    // the voices are summed whatever the filter routing says, times the volume register.
-    double audioOut() const;
+    // F: one cycle of the analog part (filter, mixer, volume stage); returns the audio
+    // output, about -1 .. 1 around the level the chip rests at. Called once per cycle when
+    // audio is wanted. clockFilter takes the three voices' outputs from outside (tools).
+    double clockAudio();
+    double clockFilter(int voice1, int voice2, int voice3);
+    // The filter's time constants are in seconds: it needs the length of a cycle.
+    void setClockHz(double hz) { cyclePeriod_ = 1.0 / hz; }
+    // How many volts at the chip's audio pin the output value 1.0 stands for (tools).
+    static double audioFullScaleVolts(SidModel model);
 
 private:
     void clockEnvelope(Voice& v);
@@ -100,6 +109,7 @@ private:
 
     SidModel model_;
     const WaveTables* tables_;   // W10: the combined waveforms of this chip model
+    double cyclePeriod_ = 1.0 / 985248.0;
     State s_;
 };
 
