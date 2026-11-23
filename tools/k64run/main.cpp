@@ -37,7 +37,9 @@
 //   PETSCII code NN, e.g. "\x86" = F3; at most 10 characters).
 // --drive puts a 1541 on the serial bus as drive 8 (its ROMs must be in the folder). Off by
 //   default: every expected result so far was made without one, on both emulators.
-// --disk FILE (D64 or G64) puts the disk in drive 8 (and implies --drive).
+// --disk FILE (D64 or G64) puts the disk in drive 8 (and implies --drive); --blank-disk a
+//   blank one (nothing recorded, as out of its box).
+// --save-disk FILE.g64 writes the disk in drive 8, as it is at the end, as a G64.
 // --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
 #include "c64.h"
 #include "roms.h"
@@ -82,7 +84,8 @@ int main(int argc, char** argv) {
     uint64_t freezeHold = 1, freezeRelease = 0;
     std::vector<std::pair<uint64_t, std::string>> typeAt;
     bool drive = false;
-    std::string diskFile;
+    std::string diskFile, saveDisk;
+    std::shared_ptr<k64::GcrDisk> theDisk;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
@@ -126,6 +129,8 @@ int main(int argc, char** argv) {
         }
         else if (a == "--drive") drive = true;
         else if (a == "--disk" && i + 1 < argc) { diskFile = argv[++i]; drive = true; }
+        else if (a == "--blank-disk") { diskFile = "-"; drive = true; }
+        else if (a == "--save-disk" && i + 1 < argc) saveDisk = argv[++i];
         else if (a == "--where" && i + 1 < argc) where = static_cast<int>(std::strtoul(argv[++i], nullptr, 16));
         else if (a == "--dump" && i + 1 < argc) {
             char* end = nullptr;
@@ -165,12 +170,14 @@ int main(int argc, char** argv) {
         std::vector<uint8_t> bytes;
         auto disk = std::make_shared<k64::GcrDisk>();
         std::string error;
-        if (!readFile(diskFile, bytes)) { std::fprintf(stderr, "k64run: cannot open %s\n", diskFile.c_str()); return 3; }
-        if (!k64::parseDisk(bytes.data(), bytes.size(), *disk, error)) {
+        if (diskFile == "-") *disk = k64::blankDisk();
+        else if (!readFile(diskFile, bytes)) { std::fprintf(stderr, "k64run: cannot open %s\n", diskFile.c_str()); return 3; }
+        else if (!k64::parseDisk(bytes.data(), bytes.size(), *disk, error)) {
             std::fprintf(stderr, "k64run: %s: %s\n", diskFile.c_str(), error.c_str());
             return 3;
         }
         machine.insertDisk(disk);
+        theDisk = disk;
     }
     if (!autostart.empty()) {
         std::vector<uint8_t> bytes;
@@ -231,6 +238,9 @@ int main(int argc, char** argv) {
     // $02A6 is where the KERNAL records what it measured at start-up: 1 = PAL, 0 = NTSC.
     std::printf("k64run: %d frames, %llu cycles, pc=%04x, KERNAL detected %s\n", frames,
                 static_cast<unsigned long long>(machine.cycle()), r.pc, machine.ram()[0x02A6] ? "PAL" : "NTSC");
+    if (machine.driveAttached())
+        std::printf("k64run: drive 8: head on half-track %d, pc=%04x, motor %s\n", machine.drive().halfTrack(),
+                    static_cast<unsigned>(machine.drive().cpuRegs().pc), machine.drive().motor() ? "on" : "off");
     const auto& t = machine.timing();
     if (!png.empty()) {
         std::vector<uint32_t> frame(static_cast<size_t>(t.visibleWidth) * t.visibleLines);
@@ -257,6 +267,12 @@ int main(int argc, char** argv) {
             for (int x = 0; x < t.visibleWidth; ++x) { h ^= src[x]; h *= 1099511628211ull; }
         }
         std::printf("k64run: frame hash %016llx\n", static_cast<unsigned long long>(h));
+    }
+    if (!saveDisk.empty() && theDisk) {
+        const auto g = k64::writeG64(*theDisk);
+        FILE* f = std::fopen(saveDisk.c_str(), "wb");
+        if (!f || std::fwrite(g.data(), 1, g.size(), f) != g.size()) std::fprintf(stderr, "k64run: cannot write %s\n", saveDisk.c_str());
+        if (f) std::fclose(f);
     }
     for (const auto& [start, len] : dumps)
         for (unsigned a = start; a < start + len; a += 16) {

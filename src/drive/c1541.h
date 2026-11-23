@@ -90,6 +90,8 @@ private:
         uint8_t byteDone = 0;       // the bit counter stands at 7: a byte is complete (R4)
         uint8_t readyLow = 0;       // BYTE READY was low in this drive cycle
         uint8_t wbuf = 0;           // the write shift register (W1)
+        uint8_t writing = 0;        // the last bit cell was written (W2)
+        uint32_t wpos = 0;          // the bit the next written cell goes to (W2)
     };
 #pragma pack(pop)
 

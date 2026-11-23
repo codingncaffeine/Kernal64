@@ -14,7 +14,14 @@ constexpr uint8_t kGcr[16] = {0x0A, 0x0B, 0x12, 0x13, 0x0E, 0x0F, 0x16, 0x17,
 // G2: bytes per revolution per zone at 300 rpm (the zone's bit clock, D1, over 200 ms)
 // and the gap the DOS leaves after each sector's data block.
 constexpr int kTrackBytes[4] = {6250, 6666, 7142, 7692};
-constexpr int kTailGap[4] = {9, 12, 17, 8};
+// G3 (PRIMARY: measured on a disk the DOS ROM formatted in our drive, PLAN D24): the gap after
+// each data block, by zone.
+constexpr int kTailGap[4] = {9, 11, 17, 8};
+// G5 (same measurement): where sector 0 starts, as a fraction of a revolution: 0.152 on track 1,
+// then each track this much further on than the one before, by its zone (the DOS's format
+// timing: write, verify, step).
+constexpr double kFirstStart = 0.152;
+constexpr double kSkew[4] = {0.293, 0.0897, 0.8883, 0.6869};
 constexpr int kHeaderGap = 9;
 constexpr int kSyncBytes = 5;
 
@@ -25,6 +32,12 @@ uint16_t le16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8
 uint32_t le32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (static_cast<uint32_t>(p[3]) << 24); }
 
 } // namespace
+
+GcrDisk blankDisk() {
+    GcrDisk d;
+    for (int i = 0; i < GcrDisk::kHalfTracks; ++i) d.zone[static_cast<size_t>(i)] = static_cast<uint8_t>(trackZone(std::min(42, (i + 2) / 2)));
+    return d;
+}
 
 int zoneTrackBytes(int zone) { return kTrackBytes[zone & 3]; }
 
@@ -94,7 +107,9 @@ bool parseD64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error
     out = GcrDisk{};
     size_t offset = 0;
     int sectorIndex = 0;
+    double start = kFirstStart;
     for (int t = 1; t <= tracks; ++t) {
+        if (t > 1) start = start + kSkew[trackZone(t)] - static_cast<int>(start + kSkew[trackZone(t)]);
         const int z = trackZone(t);
         std::vector<uint8_t> track;
         track.reserve(static_cast<size_t>(kTrackBytes[z]));
@@ -104,6 +119,7 @@ bool parseD64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error
             track.insert(track.end(), static_cast<size_t>(kTailGap[z]), 0x55);
         }
         track.resize(static_cast<size_t>(kTrackBytes[z]), 0x55);
+        std::rotate(track.begin(), track.end() - static_cast<long>(start * static_cast<double>(track.size())), track.end());
         const int i = GcrDisk::index(2 * t);
         out.tracks[static_cast<size_t>(i)] = std::move(track);
         out.zone[static_cast<size_t>(i)] = static_cast<uint8_t>(z);
@@ -136,6 +152,30 @@ bool parseG64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error
         out.tracks[static_cast<size_t>(i)].assign(data + at + 2, data + at + 2 + len);
     }
     return true;
+}
+
+std::vector<uint8_t> writeG64(const GcrDisk& disk) {
+    size_t slot = 7928;
+    for (const auto& t : disk.tracks) slot = std::max(slot, t.size());
+    const int n = GcrDisk::kHalfTracks;
+    std::vector<uint8_t> out(12 + static_cast<size_t>(n) * 8, 0);
+    std::memcpy(out.data(), "GCR-1541", 8);
+    out[8] = 0;
+    out[9] = static_cast<uint8_t>(n);
+    out[10] = static_cast<uint8_t>(slot);
+    out[11] = static_cast<uint8_t>(slot >> 8);
+    auto put32 = [&out](size_t at, uint32_t v) { for (int k = 0; k < 4; ++k) out[at + static_cast<size_t>(k)] = static_cast<uint8_t>(v >> (8 * k)); };
+    for (int i = 0; i < n; ++i) {
+        const auto& t = disk.tracks[static_cast<size_t>(i)];
+        put32(12 + 4 * static_cast<size_t>(n) + 4 * static_cast<size_t>(i), disk.zone[static_cast<size_t>(i)]);
+        if (t.empty()) continue;
+        put32(12 + 4 * static_cast<size_t>(i), static_cast<uint32_t>(out.size()));
+        out.push_back(static_cast<uint8_t>(t.size()));
+        out.push_back(static_cast<uint8_t>(t.size() >> 8));
+        out.insert(out.end(), t.begin(), t.end());
+        out.insert(out.end(), slot - t.size(), 0);
+    }
+    return out;
 }
 
 bool parseDisk(const uint8_t* data, size_t size, GcrDisk& out, std::string& error) {

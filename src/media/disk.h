@@ -38,6 +38,13 @@ bool parseG64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error
 // By content: G64 by its signature, D64 by its size.
 bool parseDisk(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
 
+// G64 of the disk as it is (G6's layout; each track slot as long as the longest track, at
+// least 7928 bytes; half-tracks with nothing recorded have no entry).
+std::vector<uint8_t> writeG64(const GcrDisk& disk);
+
+// A blank disk, as out of its box: nothing recorded on any half-track (G7).
+GcrDisk blankDisk();
+
 // The bytes per revolution of a track recorded at zone 0-3 (G2).
 int zoneTrackBytes(int zone);
 

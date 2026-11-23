@@ -151,6 +151,8 @@ void C1541::mechanism() {
                     // W2: the write register's top bit goes onto the disk under the head.
                     if (spinning) writeBit((m_.wbuf & 0x80) != 0, zone);
                     m_.wbuf = static_cast<uint8_t>(m_.wbuf << 1);
+                } else {
+                    m_.writing = 0;
                 }
                 m_.byteDone = 0;
                 if (readMode() && m_.shift == 0x3FF) {
@@ -192,7 +194,14 @@ void C1541::writeBit(bool one, uint8_t zone) {
         t.assign(static_cast<size_t>(zoneTrackBytes(zone)), 0x00);
         disk_->zone[i] = zone;
     }
-    const uint64_t b = static_cast<uint64_t>(m_.angle) * t.size() * 8 / kTicksPerRev;
+    // W2: a write pass starts at the bit under the head and puts each cell on the next bit,
+    // whatever the track's recorded length: the zone clock's cells per revolution are not a
+    // whole number, and mapping each cell from the angle would write some bits twice.
+    const uint64_t bits = t.size() * 8;
+    if (!m_.writing) m_.wpos = static_cast<uint32_t>(static_cast<uint64_t>(m_.angle) * bits / kTicksPerRev);
+    m_.writing = 1;
+    const uint64_t b = m_.wpos;
+    m_.wpos = static_cast<uint32_t>((m_.wpos + 1) % bits);
     const uint8_t mask = static_cast<uint8_t>(0x80 >> (b & 7));
     t[b >> 3] = static_cast<uint8_t>(one ? (t[b >> 3] | mask) : (t[b >> 3] & ~mask));
     disk_->written[i] = true;
