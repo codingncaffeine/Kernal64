@@ -411,6 +411,40 @@ void testDmaDelay() {
     // VC counts on with each display-state g-access from cycle 32, so the fourth c-access
     // (cycle 34) reads video matrix address 3: the whole line is displaced by 16 columns.
     CHECK((m[3] & 0xFF) == r.host.mem[0x0400 + 3], "DMA delay: fourth c-access is video matrix data from VC 3");
+    // The first-phase access of the cycle in which the accesses start comes from $38FF on
+    // the 6569 and $3807 on the 8565; the cycle before is a plain idle access (V1).
+    for (const Timing* t : {&kTimingPal, &kTimingPalNew}) {
+        Rig v(*t);
+        textScreen(v);
+        v.onCycle = r.onCycle;
+        v.runTo(0x34, 32);
+        const uint16_t want = t->newChip ? 0x3807 : 0x38FF;
+        CHECK(v.at(0x34, 30, 1) == std::vector<uint16_t>{0x3FFF}, "DMA delay (%s): idle access in the cycle of the write", t->name);
+        CHECK(v.at(0x34, 31, 1) == std::vector<uint16_t>{want}, "DMA delay (%s): access in the starting cycle from $%04X", t->name, want);
+    }
+}
+
+// The palette: the first chip revisions have five luma levels, the later ones nine. Black and
+// white are the same; the three grays (no chroma) sit on other levels.
+void testPalette() {
+    const auto& common = vicPalette(false);
+    const auto& early = vicPalette(true);
+    auto gray = [](uint32_t c) { return ((c >> 16) & 0xFF) == ((c >> 8) & 0xFF) && ((c >> 8) & 0xFF) == (c & 0xFF); };
+    CHECK(common[0] == early[0] && common[1] == early[1], "black and white are the same on both");
+    for (int i : {0, 1, 11, 12, 15}) CHECK(gray(common[size_t(i)]) && gray(early[size_t(i)]), "color %d has no chroma", i);
+    CHECK((early[11] & 0xFF) < (common[11] & 0xFF), "dark gray is darker on the first revision");
+    CHECK((early[12] & 0xFF) > (common[12] & 0xFF), "gray is brighter on the first revision");
+    CHECK((early[15] & 0xFF) > (common[15] & 0xFF), "light gray is brighter on the first revision");
+    // Five levels: every color's green channel order follows its level group (8, 16, 24 of 32).
+    CHECK(early[12] == early[12] && (early[15] & 0xFF) > (early[12] & 0xFF) && (early[12] & 0xFF) > (early[11] & 0xFF), "first-revision grays in order");
+    int levels = 0;
+    uint32_t seen[16];
+    for (int i : {0, 1, 11, 12, 15}) {
+        bool dup = false;
+        for (int k = 0; k < levels; ++k) dup |= seen[k] == early[size_t(i)];
+        if (!dup) seen[levels++] = early[size_t(i)];
+    }
+    CHECK(levels == 5, "black, the three grays and white are five different levels (%d)", levels);
 }
 
 // Doubled text lines (§3.14.5): a Bad Line Condition in cycles 54-57 of a row's last line keeps
@@ -519,7 +553,7 @@ const Test kTests[] = {
     {"linecrunch", testLinecrunch},        {"dma-delay", testDmaDelay},
     {"idle-ecm", testIdleEcm},             {"modes", testModes},
     {"xscroll", testXscroll},              {"doubled-line", testDoubledLine},
-    {"vertical-check-cycle", testVerticalCheckCycle},
+    {"vertical-check-cycle", testVerticalCheckCycle}, {"palette", testPalette},
 };
 
 } // namespace

@@ -67,6 +67,7 @@ public:
     const uint8_t* ram() const { return ram_.data(); }
     uint8_t* ramData() { return ram_.data(); }   // the 64 KB of RAM, for the frontend (cheats, achievements)
     const CpuRegs& cpuRegs() const { return cpu_.regs(); }
+    bool cpuAtInstructionStart() const { return cpu_.atInstructionStart(); }   // the next access fetches an opcode
     uint8_t peekCpu(uint16_t addr) const;  // what the CPU would read, without side effects
 
     // Machine state as a flat byte image of constant size for the model.

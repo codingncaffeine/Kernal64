@@ -1,0 +1,24 @@
+# "Interactive" programs of the reference suite whose picture, left alone, stands still:
+# tools/suite.sh compares it with the reference after 10,000,000 cycles, like a screenshot test.
+# (The others move, or show something that depends on the cycle they were started in.)
+VICII/border/vborder2_ntscold.prg
+VICII/border/vborder2_ntsc.prg
+VICII/border/vborder2.prg
+VICII/border/vborder_ntscold.prg
+VICII/border/vborder_ntsc.prg
+VICII/border/vborder.prg
+VICII/D011Test/d011h2.prg
+VICII/D011Test/d011ntsc.prg
+VICII/D011Test/d011v1.prg
+VICII/D011Test/d011vt.prg
+VICII/D011Test/hh.prg
+VICII/D011Test/s1.prg
+VICII/dmadelay/test1-ntsc.prg
+VICII/dmadelay/test1.prg
+VICII/dmadelay/test2-ntsc.prg
+VICII/dmadelay/test2.prg
+VICII/dmadelay/test3-ntsc.prg
+VICII/dmadelay/test3.prg
+VICII/spritecrunch/spritecrunch2.prg
+VICII/spritecrunch/spritecrunch.prg
+VICII/spritefetchbug/test.prg

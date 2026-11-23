@@ -140,6 +140,7 @@ private:
     uint8_t graphicsPixel(int i);
     void spritePixel(int i, int x, uint8_t* px);
     uint8_t spriteBaMask(int cycle) const;
+    void buildSlots();
     void latchLightPen(bool held);
     int spritePCycle(int n) const;
 
@@ -147,10 +148,16 @@ private:
     const Timing* t_;
     State s_;
     uint8_t pri_[8] = {};            // foreground flags of the step's graphics pixels
+    // Per cycle of the line (1-based), from the model's schedule: the sprite whose pointer
+    // and first data byte are fetched in the cycle, the sprite whose second and third
+    // bytes are (-1: none), and the sprites whose DMA holds BA low in it.
+    int8_t ptrSprite_[66] = {}, dataSprite_[66] = {};
+    uint8_t baMask_[66] = {};
     std::vector<uint8_t> pixels_;
 };
 
 // The 16 colors as XRGB8888, computed from the luma/chroma model of the chip.
-const std::array<uint32_t, 16>& vicPalette();
+// firstRevision: the five luma levels of the first chip revisions instead of nine.
+const std::array<uint32_t, 16>& vicPalette(bool firstRevision = false);
 
 } // namespace k64

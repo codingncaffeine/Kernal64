@@ -25,8 +25,12 @@ while read -r src defs model cia want; do
     got=$?
     line="$src [$defs] $model cia-$cia: ours $got, expected $want"
     if [ "${K64_PROBES_REF:-0}" = 1 ]; then
-        case "$model" in pal) vm=c64 ;; ntsc) vm=ntsc ;; *) vm=oldntsc ;; esac
-        K64_VICE_MODEL="$vm" timeout 300 "$ROOT/tools/oracle/vice.sh" -ciamodel "$([ "$cia" = new ] && echo 1 || echo 0)" \
+        vextra=()
+        case "$model" in
+            pal) vm=c64 ;; pal-new) vm=c64; vextra=(-VICIImodel 8565) ;; pal-old) vm=c64; vextra=(-VICIImodel 6569r1) ;;
+            ntsc) vm=ntsc ;; ntsc-new) vm=ntsc; vextra=(-VICIImodel 8562) ;; *) vm=oldntsc ;;
+        esac
+        K64_VICE_MODEL="$vm" timeout 300 "$ROOT/tools/oracle/vice.sh" "${vextra[@]}" -ciamodel "$([ "$cia" = new ] && echo 1 || echo 0)" \
             -debugcart -jamaction 1 -warp -limitcycles 20000000 -autostartprgmode 1 \
             -autostart "/k64/${OUT#"$ROOT"/}/$tag.prg" >/dev/null 2>&1
         ref=$?

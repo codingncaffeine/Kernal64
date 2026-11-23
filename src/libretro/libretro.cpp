@@ -114,11 +114,9 @@ void applyInput() {
 
 k64::VicModel modelFromOptions() {
     retro_variable var{"kernal64_model", nullptr};
-    if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-        if (!std::strcmp(var.value, "ntsc")) return k64::VicModel::Mos6567R8;
-        if (!std::strcmp(var.value, "ntsc-old")) return k64::VicModel::Mos6567R56A;
-    }
-    return k64::VicModel::Mos6569;
+    k64::VicModel m = k64::VicModel::Mos6569;
+    if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) k64::vicModelFromName(var.value, m);
+    return m;
 }
 
 k64::CiaModel ciaFromOptions() {
@@ -171,7 +169,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
     bool noGame = true;
     cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &noGame);
     static const retro_variable vars[] = {
-        {"kernal64_model", "Machine; pal|ntsc|ntsc-old"},
+        {"kernal64_model", "Video chip; pal|pal-new|pal-old|ntsc|ntsc-new|ntsc-old"},
         {"kernal64_cia", "CIA chips; 6526|8521"},
         {"kernal64_border", "Border; full|small|none"},
         {"kernal64_joyport", "RetroPad is the joystick in control port; 2|1"},
@@ -256,7 +254,7 @@ RETRO_API bool retro_load_game_special(unsigned, const retro_game_info*, size_t)
 RETRO_API void retro_unload_game(void) { machine.reset(); }
 
 RETRO_API unsigned retro_get_region(void) {
-    return machine && machine->timing().model != k64::VicModel::Mos6569 ? RETRO_REGION_NTSC : RETRO_REGION_PAL;
+    return machine && !machine->timing().pal ? RETRO_REGION_NTSC : RETRO_REGION_PAL;
 }
 
 RETRO_API void retro_run(void) {

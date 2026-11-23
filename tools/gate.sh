@@ -9,15 +9,16 @@
 # per-opcode bus traces, the functional and undocumented-opcode test programs and
 # the transistor-level chip; the VIC-II against the article's rules and the start-up
 # screen against the reference emulator (tools/oracle/build-vice.sh); the reference
-# suite's CPU, CIA, interrupt, general and VIC-II programs on both CIA types; our own probe
-# programs; the core loading in RetroArch behind the wall.
+# suite's CPU, CIA, interrupt, general and VIC-II programs on both CIA types and both VIC-II
+# generations; our own probe and raster-effect programs; the core loading in RetroArch
+# behind the wall.
 # The third-party suites come from tools/fetch.sh.
 # Runs on a quarter of the cores at low priority; its build folder is removed at exit.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 QUICK=0; [ "${1:-}" = "--quick" ] && QUICK=1
-JOBS="$(( $(nproc) / 4 > 0 ? $(nproc) / 4 : 1 ))"
+JOBS="$(( $(nproc --all) / 4 > 0 ? $(nproc --all) / 4 : 1 ))"
 BUILD="$(mktemp -d "$ROOT/build-gate.XXXXXX")"
 trap 'rm -rf "$BUILD"' EXIT
 fails=0
@@ -48,7 +49,7 @@ extra="$(nm -D --defined-only "$CORE" | awk '{print $3}' | grep -v '^retro_' || 
 ROMS="$ROOT/gitignore"
 
 step "libretro conformance"
-for model in pal ntsc ntsc-old; do
+for model in pal ntsc ntsc-old pal-new ntsc-new pal-old; do
     # Typing at the READY prompt through the API: BASIC must answer.
     "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 400 --check --option kernal64_model=$model \
         --type 'PRINT 6*7\n' --expect-screen ' 42' \
@@ -66,8 +67,8 @@ if [ -f "$ROOT/gitignore/external/pla/PLA.BIN" ]; then
     "$BUILD/placheck" "$ROOT/gitignore/external/pla/PLA.BIN" >"$BUILD/pla.log" 2>&1 \
         || { tail -4 "$BUILD/pla.log"; bad "PLA against the chip read-out"; }
 else bad "PLA read-out missing: tools/fetch.sh pla"; fi
-for model in pal ntsc ntsc-old; do
-    want=$([ "$model" = pal ] && echo PAL || echo NTSC)
+for model in pal ntsc ntsc-old pal-new ntsc-new pal-old; do
+    want=$([ "${model#pal}" != "$model" ] && echo PAL || echo NTSC)
     "$BUILD/k64run" "$ROMS" --frames 150 --model $model --expect "READY." --expect "38911 BASIC BYTES FREE" \
         >"$BUILD/boot-$model.log" 2>&1 || { tail -3 "$BUILD/boot-$model.log"; bad "boot to the BASIC prompt ($model)"; }
     grep -q "KERNAL detected $want" "$BUILD/boot-$model.log" || bad "KERNAL did not detect $want ($model)"
@@ -89,6 +90,9 @@ else bad "test programs missing: tools/oracle/build-vice.sh"; fi
 
 step "own probe programs"
 tools/probes.sh "$BUILD/k64run" >"$BUILD/probes.log" 2>&1 || { grep -v '^ok' "$BUILD/probes.log" | head -8; bad "probe programs"; }
+
+step "own raster-effect programs"
+tools/effects.sh "$BUILD/k64run" >"$BUILD/effects.log" 2>&1 || { grep -v '^ok' "$BUILD/effects.log" | head -8; bad "raster-effect programs"; }
 
 step "VIC-II rules"
 "$BUILD/victest" >"$BUILD/victest.log" 2>&1 || { grep FAIL "$BUILD/victest.log" | head -8; bad "VIC-II rule tests"; }

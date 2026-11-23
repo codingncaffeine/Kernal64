@@ -314,7 +314,7 @@ void C64::runFrame() {
 }
 
 void C64::visibleFrame(uint32_t* out) const {
-    const auto& pal = vicPalette();
+    const auto& pal = vicPalette(timing_->firstRevision);
     const Timing& t = *timing_;
     const uint8_t* px = vic_.pixels();
     for (int r = 0; r < t.visibleLines; ++r) {

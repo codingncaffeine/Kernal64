@@ -13,12 +13,26 @@ constexpr int kTop[2] = {55, 51}, kBottom[2] = {247, 251};   // RSEL 0 / 1
 
 Vic2::Vic2(VicHost& host, const Timing& t)
     : host_(host), t_(&t), pixels_(static_cast<size_t>(kMaxRasterWidth) * kMaxRasterHeight, 0) {
+    buildSlots();
     reset();
 }
 
 void Vic2::setTiming(const Timing& t) {
     t_ = &t;
+    buildSlots();
     reset();
+}
+
+void Vic2::buildSlots() {
+    for (int c = 0; c < 66; ++c) {
+        ptrSprite_[c] = dataSprite_[c] = -1;
+        baMask_[c] = c >= 1 && c <= t_->cyclesPerLine ? spriteBaMask(c) : 0;
+    }
+    for (int n = 0; n < 8; ++n) {
+        const int p = spritePCycle(n);
+        ptrSprite_[p] = static_cast<int8_t>(n);
+        dataSprite_[p % t_->cyclesPerLine + 1] = static_cast<int8_t>(n);
+    }
 }
 
 void Vic2::reset() {
@@ -78,10 +92,12 @@ void Vic2::latchLightPen(bool held) {
     const int last = t_->linesPerFrame - 1;
     const int raster = (s_.line == 0 && s_.cycle == 1) ? last : s_.line;
     if (raster == last && s_.cycle > 1) return;
-    const int x = held ? (t_->cyclesPerLine == 65 ? 0xD5 : 0xD1) : xAt(8 * (s_.cycle - 1)) / 2;
+    // The later chip generation latches one X step earlier (N5).
+    const int x = held ? (t_->cyclesPerLine == 65 ? 0xD5 : 0xD1) : xAt(8 * (s_.cycle - 1)) / 2 - (t_->newChip ? 1 : 0);
     s_.lpx = static_cast<uint8_t>(x);
     s_.lpy = static_cast<uint8_t>(raster);
-    s_.irqLatch |= 0x08;
+    // First revisions: the interrupt only for a line found low at the start of the frame (N6).
+    if (held || !t_->firstRevision) s_.irqLatch |= 0x08;
 }
 
 void Vic2::phase1() {
@@ -133,9 +149,10 @@ void Vic2::phase1() {
             // P10: BMM acts if it is set now or was a cycle ago. When it has just changed
             // and the address moves from RAM into the character ROM, the low byte is still
             // the old mode's.
+            // The later generation simply uses the mode of a cycle ago (N2).
             const uint8_t prev = s_.reg11Prev;
-            uint16_t a = gAddress(static_cast<uint8_t>(r11 | (prev & 0x20)));
-            if ((r11 ^ prev) & 0x20) {
+            uint16_t a = gAddress(t_->newChip ? prev : static_cast<uint8_t>(r11 | (prev & 0x20)));
+            if (!t_->newChip && ((r11 ^ prev) & 0x20)) {
                 const uint16_t from = gAddress(prev), to = gAddress(r11);
                 if (!host_.vicIsCharRom(from) && host_.vicIsCharRom(to))
                     a = static_cast<uint16_t>((from & 0x00FF) | (to & 0x3F00));
@@ -144,16 +161,19 @@ void Vic2::phase1() {
             s_.vc = (s_.vc + 1) & 0x3FF;    // rule 4
             s_.vmli = static_cast<uint8_t>((s_.vmli + 1) % 40);
         } else {
-            byte = host_.vicRead((r11 & 0x40) ? 0x39FF : 0x3FFF);   // idle state, §3.7.1
+            const uint8_t ecm = t_->newChip ? s_.reg11Prev : r11;
+            uint16_t a = (ecm & 0x40) ? 0x39FF : 0x3FFF;   // idle state, §3.7.1
+            // A Bad Line Condition that starts the display in this very cycle (DMA delay):
+            // the access is already half a display access. Address bits 8-10 come from the
+            // character pointer, which is 0 here; the later chip generation takes the
+            // whole low part that way (row counter 7), the older one had its low byte
+            // out before the switch (V1: measured chips, suite vsp-tester).
+            if (s_.badLine) a = t_->newChip ? 0x3807 : (a & 0x38FF);
+            byte = host_.vicRead(a);
         }
         s_.gbuf = byte;
     } else {
-        int sprite = -1, second = -1;   // p-access of a sprite / its second data byte
-        for (int n = 0; n < 8; ++n) {
-            const int p = spritePCycle(n);
-            if (p == c) sprite = n;
-            else if (p % t_->cyclesPerLine + 1 == c) second = n;
-        }
+        const int sprite = ptrSprite_[c], second = dataSprite_[c];   // p-access of a sprite / its second data byte
         if (sprite >= 0) {
             const uint16_t vm = static_cast<uint16_t>((s_.reg[0x18] & 0xF0) << 6);
             byte = host_.vicRead(static_cast<uint16_t>(vm | 0x3F8 | sprite));
@@ -214,7 +234,7 @@ void Vic2::phase1() {
 
     // BA and AEC, §2.4.3 / §3.7.2 rule 3: AEC stays low in the second phase from the fourth
     // cycle of BA low.
-    const bool baLow = (c >= 12 && c <= 54 && s_.badLine) || (s_.spriteDma & spriteBaMask(c));
+    const bool baLow = (c >= 12 && c <= 54 && s_.badLine) || (s_.spriteDma & baMask_[c]);
     s_.baLow = baLow;
     s_.baRun = baLow ? static_cast<uint8_t>(std::min(s_.baRun + 1, 4)) : 0;
     s_.aecLow = baLow && s_.baRun >= 4;
@@ -236,10 +256,8 @@ void Vic2::phase2(uint8_t cpuData) {
     const int c = s_.cycle;
     // A sprite's first and third data bytes (S2): from memory when its DMA is on and the
     // VIC-II holds the bus, else whatever is on the chip's data bus.
-    for (int n = 0; n < 8; ++n) {
-        const int p = spritePCycle(n);
-        const bool first = p == c, third = p % t_->cyclesPerLine + 1 == c;
-        if (!first && !third) continue;
+    if (const int n = ptrSprite_[c] >= 0 ? ptrSprite_[c] : dataSprite_[c]; n >= 0) {
+        const bool first = ptrSprite_[c] >= 0;
         uint8_t byte = s_.busPhi2;
         if (s_.spriteDma & (1 << n)) {
             if (s_.aecLow) byte = host_.vicRead(static_cast<uint16_t>((s_.spritePtr[n] << 6) | s_.mc[n]));
@@ -368,28 +386,27 @@ void Vic2::render() {
     // Eight pixels of graphics; the mode bits arrive part-way through (P5).
     uint8_t px[8];
     const uint8_t mode11 = r11 & 0x60, mcm = r16 & 0x10;
+    const bool newChip = t_->newChip;
     for (int i = 0; i < 8; ++i) {
         if (i == 4) {
             s_.mode16 = mcm;
-            s_.mode11 |= mode11;
+            if (!newChip) s_.mode11 |= mode11;
         } else if (i == 6) {
-            s_.mode11 &= mode11;
+            if (!newChip) s_.mode11 &= mode11;
         } else if (i == 7) {
             if (s_.mode16 && !s_.mode16b) s_.mcFlop = 0;
             s_.mode16b = s_.mode16;
         }
         px[i] = graphicsPixel(i);
     }
+    if (newChip) s_.mode11 = mode11;   // N1: ECM and BMM together, at the step's end
 
     // Sprites over the graphics (S3). The pixels' X coordinates are this cycle's first X,
     // low three bits dropped, counting up.
     {
-        uint8_t dataCycle = 0, pointerCycle = 0;   // the sprite fetching bytes 1-2 / pointer and byte 0 now
-        for (int n = 0; n < 8; ++n) {
-            const int p = spritePCycle(n);
-            if (p == c) pointerCycle = static_cast<uint8_t>(1 << n);
-            else if (p % t_->cyclesPerLine + 1 == c) dataCycle = static_cast<uint8_t>(1 << n);
-        }
+        // the sprite fetching bytes 1-2 / pointer and byte 0 now
+        const uint8_t dataCycle = dataSprite_[c] >= 0 ? static_cast<uint8_t>(1 << dataSprite_[c]) : 0;
+        const uint8_t pointerCycle = ptrSprite_[c] >= 0 ? static_cast<uint8_t>(1 << ptrSprite_[c]) : 0;
         const int x0 = xAt(8 * (c - 1)) & ~7;
         const bool latchDisplay = c == (t_->cyclesPerLine == 65 ? 59 : 58);
         const bool canSS = s_.collSprite == 0, canSB = s_.collData == 0;
@@ -404,12 +421,19 @@ void Vic2::render() {
                     for (int n = 0; n < 8; ++n)
                         if (dataCycle & (1 << n)) s_.sShift[n] = s_.spriteData[n];
             } else if (i == 6) {
+                if (newChip) {   // N4: a pixel earlier, and the flip-flop is toggled instead
+                    const uint8_t toggled = s_.reg[0x1C] ^ s_.sMcBits;
+                    s_.sMcFlops ^= static_cast<uint8_t>(toggled & ~s_.sExpFlops);
+                    s_.sMcBits = s_.reg[0x1C];
+                }
                 s_.sPriBits = s_.reg[0x1B];
                 s_.sExpXBits = s_.reg[0x1D];
             } else if (i == 7) {
-                const uint8_t toggled = s_.reg[0x1C] ^ s_.sMcBits;
-                s_.sMcFlops &= static_cast<uint8_t>(~toggled);
-                s_.sMcBits = s_.reg[0x1C];
+                if (!newChip) {
+                    const uint8_t toggled = s_.reg[0x1C] ^ s_.sMcBits;
+                    s_.sMcFlops &= static_cast<uint8_t>(~toggled);
+                    s_.sMcBits = s_.reg[0x1C];
+                }
                 s_.sHalt &= static_cast<uint8_t>(~dataCycle);
             }
             spritePixel(i, x0 + i, px);
@@ -442,8 +466,15 @@ void Vic2::render() {
     uint8_t* row = &pixels_[static_cast<size_t>(s_.line) * kMaxRasterWidth];
     int at = 8 * (c - 1) - 12;
     for (int i = 0; i < 8; ++i, ++at) {
-        uint8_t& ahead = s_.ring[(i + 1) & 7];
-        if (ahead >= 0x20) ahead = s_.creg[ahead & 0x0F];
+        if (newChip) {
+            // N3: resolved at the pixel itself; the first pixel after a write to the
+            // register it shows is light gray instead (the "gray dot").
+            uint8_t& now = s_.ring[i];
+            if (now >= 0x20) now = (i == 0 && (now & 0x0F) == s_.colorLatchReg) ? 0x0F : s_.creg[now & 0x0F];
+        } else {
+            uint8_t& ahead = s_.ring[(i + 1) & 7];
+            if (ahead >= 0x20) ahead = s_.creg[ahead & 0x0F];
+        }
         row[at < 0 ? at + width : at] = s_.ring[i] & 0x0F;
         s_.ring[i] = px[i];
     }
@@ -543,43 +574,50 @@ void Vic2::write(unsigned r, uint8_t v) {
 
 // ---- palette ----------------------------------------------------------------------
 //
-// Timmermann, "Colors" (pepto.de/projects/colorvic, v1 2017): luma levels of the later chip
-// revisions (8 x level on a 0-256 scale), chroma on a 16-step wheel offset by half a step,
-// one saturation for all colored entries; YUV to RGB; PAL gamma 2.8 re-encoded for sRGB 2.2.
-// Defaults of the article: brightness 50, contrast 100, saturation 50, screen 1/5.
+// Timmermann, "Colors" (pepto.de/projects/colorvic, v1 2017): the nine luma levels of the
+// common chip revisions or the five of the first ones (8 x level on a 0-256 scale), chroma
+// on a 16-step wheel offset by half a step, one saturation for all colored entries; YUV to
+// RGB; PAL gamma 2.8 re-encoded for sRGB 2.2. Defaults of the article: brightness 50,
+// contrast 100, saturation 50, screen 1/5.
 
-const std::array<uint32_t, 16>& vicPalette() {
-    static const std::array<uint32_t, 16> pal = [] {
-        constexpr int level[16] = {0, 32, 10, 20, 12, 16, 8, 24, 12, 8, 16, 10, 15, 24, 15, 20};
-        constexpr int angle[16] = {-1, -1, 4, 12, 2, 10, 15, 7, 5, 6, 4, -1, -1, 10, 15, -1};
-        constexpr double pi = 3.14159265358979323846;
-        constexpr double screen = 1.0 / 5.0;
-        const double brightness = 50 - 50, contrast = 100 / 100.0, saturation = 50 * (1 - screen);
-        std::array<uint32_t, 16> out{};
-        for (int i = 0; i < 16; ++i) {
-            double u = 0, v = 0;
-            if (angle[i] >= 0) {
-                const double a = (360.0 / 32 + angle[i] * 360.0 / 16) * pi / 180;
-                u = std::cos(a) * saturation;
-                v = std::sin(a) * saturation;
-            }
-            double y = 8.0 * level[i] + brightness;
-            y *= contrast + screen;
-            u *= contrast + screen;
-            v *= contrast + screen;
-            const double rgb[3] = {y + 1.140 * v, y - 0.396 * u - 0.581 * v, y + 2.029 * u};
-            uint32_t px = 0;
-            for (double ch : rgb) {
-                ch = std::clamp(ch, 0.0, 255.0);
-                ch = std::pow(255.0, 1 - 2.8) * std::pow(ch, 2.8);
-                ch = std::pow(255.0, 1 - 1 / 2.2) * std::pow(ch, 1 / 2.2);
-                px = (px << 8) | static_cast<uint32_t>(std::lround(ch));
-            }
-            out[static_cast<size_t>(i)] = px;
+namespace {
+std::array<uint32_t, 16> makePalette(bool firstRevision) {
+    constexpr int kLevels[2][16] = {{0, 32, 10, 20, 12, 16, 8, 24, 12, 8, 16, 10, 15, 24, 15, 20},
+                                    {0, 32, 8, 24, 16, 16, 8, 24, 16, 8, 16, 8, 16, 24, 16, 24}};
+    const int* level = kLevels[firstRevision ? 1 : 0];
+    constexpr int angle[16] = {-1, -1, 4, 12, 2, 10, 15, 7, 5, 6, 4, -1, -1, 10, 15, -1};
+    constexpr double pi = 3.14159265358979323846;
+    constexpr double screen = 1.0 / 5.0;
+    const double brightness = 50 - 50, contrast = 100 / 100.0, saturation = 50 * (1 - screen);
+    std::array<uint32_t, 16> out{};
+    for (int i = 0; i < 16; ++i) {
+        double u = 0, v = 0;
+        if (angle[i] >= 0) {
+            const double a = (360.0 / 32 + angle[i] * 360.0 / 16) * pi / 180;
+            u = std::cos(a) * saturation;
+            v = std::sin(a) * saturation;
         }
-        return out;
-    }();
-    return pal;
+        double y = 8.0 * level[i] + brightness;
+        y *= contrast + screen;
+        u *= contrast + screen;
+        v *= contrast + screen;
+        const double rgb[3] = {y + 1.140 * v, y - 0.396 * u - 0.581 * v, y + 2.029 * u};
+        uint32_t px = 0;
+        for (double ch : rgb) {
+            ch = std::clamp(ch, 0.0, 255.0);
+            ch = std::pow(255.0, 1 - 2.8) * std::pow(ch, 2.8);
+            ch = std::pow(255.0, 1 - 1 / 2.2) * std::pow(ch, 1 / 2.2);
+            px = (px << 8) | static_cast<uint32_t>(std::lround(ch));
+        }
+        out[static_cast<size_t>(i)] = px;
+    }
+    return out;
+}
+} // namespace
+
+const std::array<uint32_t, 16>& vicPalette(bool firstRevision) {
+    static const std::array<uint32_t, 16> pal[2] = {makePalette(false), makePalette(true)};
+    return pal[firstRevision ? 1 : 0];
 }
 
 } // namespace k64

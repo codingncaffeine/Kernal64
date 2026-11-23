@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A small two-pass 6502 assembler for the project's own test programs.
 
-    tools/k64asm.py SOURCE -o OUT.prg [-D NAME=VALUE]...
+    tools/k64asm.py SOURCE -o OUT.prg [-D NAME=VALUE]... [--labels FILE]
 
 The output is a C64 program file: two bytes of load address, then the code.
 
@@ -15,12 +15,15 @@ Syntax, one statement per line, `;` starts a comment:
     .fill count, value       `count` copies of `value` (default 0)
     .basic                   a one-line BASIC program that starts the code after it (SYS)
     .if e / .else / .endif   conditional assembly (nesting allowed)
+    .include "file"          the lines of another source file, relative to this one
+    .assert e                stops the assembly when e is 0 (checked with all names known)
 Expressions: numbers ($hex, %binary, decimal, 'c'), names, `*` (program counter),
-+ - * / & | ^ << >>, unary - < > (low and high byte), parentheses.
++ - * / & | ^ << >> == != (1 or 0), unary - < > (low and high byte), parentheses.
 An operand that is known in the first pass and fits a byte uses the zero-page form;
 a forward reference uses the absolute form.
 """
 import argparse
+import os
 import re
 import sys
 
@@ -95,7 +98,7 @@ txs IMP:9a
 tya IMP:98
 """)
 
-TOKEN = re.compile(r"\s*(\$[0-9a-fA-F]+|%[01]+|\d+|'.'|[A-Za-z_][A-Za-z0-9_]*|<<|>>|[-+*/&|^<>()])")
+TOKEN = re.compile(r"\s*(\$[0-9a-fA-F]+|%[01]+|\d+|'.'|[A-Za-z_][A-Za-z0-9_]*|<<|>>|==|!=|[-+*/&|^<>()])")
 
 
 class AsmError(Exception):
@@ -137,7 +140,7 @@ class Expr:
             raise AsmError(f"unexpected {self.peek()!r} in expression")
         return v
 
-    LEVELS = [("|",), ("^",), ("&",), ("<<", ">>"), ("+", "-"), ("*", "/")]
+    LEVELS = [("==", "!="), ("|",), ("^",), ("&",), ("<<", ">>"), ("+", "-"), ("*", "/")]
 
     def binary(self, level):
         if level == len(self.LEVELS):
@@ -147,7 +150,7 @@ class Expr:
             op = self.take()
             r = self.binary(level + 1)
             v = {"|": v | r, "^": v ^ r, "&": v & r, "<<": v << r, ">>": v >> r, "+": v + r, "-": v - r,
-                 "*": v * r, "/": v // r if r else 0}[op]
+                 "==": int(v == r), "!=": int(v != r), "*": v * r, "/": v // r if r else 0}[op]
         return v
 
     def unary(self):
@@ -211,8 +214,28 @@ def strip_comment(line):
     return line
 
 
+def read_source(path, depth=0):
+    """The lines of a source file with its .include lines replaced by the files they name.
+    Returns (text, origin) pairs; origin is "file:line" for messages."""
+    if depth > 8:
+        raise AsmError(f"{path}: .include nested too deeply")
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for n, raw in enumerate(f.read().splitlines(), 1):
+            m = re.match(r'^\s*\.include\s+"([^"]+)"\s*(;.*)?$', raw, re.I)
+            if m:
+                out.extend(read_source(os.path.join(os.path.dirname(path), m.group(1)), depth + 1))
+            else:
+                out.append((raw, f"{os.path.basename(path)}:{n}"))
+    return out
+
+
 def assemble(source, defines):
-    lines = source.splitlines()
+    """source: text, or the (text, origin) pairs of read_source."""
+    if isinstance(source, str):
+        source = [(l, str(n)) for n, l in enumerate(source.splitlines(), 1)]
+    lines = [text for text, _ in source]
+    where = [origin for _, origin in source]
     symbols = dict(defines)
     sizes = {}   # line number -> addressing mode chosen in pass 1 (must not change in pass 2)
     for final in (False, True):
@@ -305,6 +328,10 @@ def assemble(source, defines):
                     args = split_args(rest)
                     emit(*([ev(args[1]) if len(args) > 1 else 0] * ev(args[0])))
                     continue
+                if word == ".assert":
+                    if final and ev(rest) == 0:
+                        raise AsmError(f"assertion failed: {rest}")
+                    continue
                 if word == ".basic":
                     # 10 SYS <address of the code after this line>
                     start = pc + 12
@@ -382,16 +409,16 @@ def assemble(source, defines):
                 else:
                     emit(modes[mode], v, v >> 8)
             except Undefined:
-                raise AsmError(f"line {n}: a name must be defined before this use: {raw.strip()}") from None
+                raise AsmError(f"line {where[n - 1]}: a name must be defined before this use: {raw.strip()}") from None
             except AsmError as e:
-                raise AsmError(f"line {n}: {e}") from None
+                raise AsmError(f"line {where[n - 1]}: {e}") from None
             except (IndexError, KeyError):
-                raise AsmError(f"line {n}: cannot read: {raw.strip()}") from None
+                raise AsmError(f"line {where[n - 1]}: cannot read: {raw.strip()}") from None
         if cond:
             raise AsmError("missing .endif")
     if origin is None:
         raise AsmError("empty program")
-    return origin, bytes(out)
+    return origin, bytes(out), symbols
 
 
 def main():
@@ -399,19 +426,26 @@ def main():
     ap.add_argument("source")
     ap.add_argument("-o", "--output", required=True)
     ap.add_argument("-D", action="append", default=[], metavar="NAME=VALUE")
+    ap.add_argument("--labels", metavar="FILE", help="write every name and its value (hex) to FILE")
     args = ap.parse_args()
     defines = {}
     for d in args.D:
         name, _, value = d.partition("=")
         defines[name] = Expr(value or "1", {}, 0).value()
     try:
-        with open(args.source, encoding="utf-8") as f:
-            origin, code = assemble(f.read(), defines)
+        origin, code, symbols = assemble(read_source(args.source), defines)
+    except OSError as e:
+        print(f"{args.source}: {e}", file=sys.stderr)
+        return 1
     except AsmError as e:
         print(f"{args.source}: {e}", file=sys.stderr)
         return 1
     with open(args.output, "wb") as f:
         f.write(bytes([origin & 0xFF, origin >> 8]) + code)
+    if args.labels:
+        with open(args.labels, "w", encoding="utf-8") as f:
+            for name in sorted(symbols):
+                f.write(f"{name} {symbols[name]:04x}\n")
     return 0
 
 

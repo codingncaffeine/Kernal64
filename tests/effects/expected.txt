@@ -1,0 +1,58 @@
+# SOURCE  DEFINES  MODEL  CYCLES-TO-RUN  HASH (of our raster when it was identical to the reference's)
+# A sixth field "own": the reference emulator does not show what this line tests; the hash
+# is of our own picture and the program's comment says what it rests on.
+fld.s  JIT=0  pal  6000000  53636cea37dea928
+fld.s  JIT=1  pal  6000000  53636cea37dea928
+fld.s  JIT=0  ntsc  6000000  97aefb382d38cb73
+fld.s  JIT=0  ntsc-old  6000000  4e52d4b77c1332d9
+doubled.s  JIT=0,AT=53  pal  6000000  02ad4b08865a7e2f
+doubled.s  JIT=0,AT=54  pal  6000000  889a7e09c79bac32
+doubled.s  JIT=1,AT=54  pal  6000000  889a7e09c79bac32
+doubled.s  JIT=0,AT=57  pal  6000000  889a7e09c79bac32
+doubled.s  JIT=0,AT=58  pal  6000000  175d9ee5ab022cc9
+doubled.s  JIT=0,AT=54  ntsc  6000000  e5ee89a530366871
+doubled.s  JIT=0,AT=57  ntsc  6000000  e5ee89a530366871
+doubled.s  JIT=0,AT=58  ntsc-old  6000000  80bca7ad11d47a67
+doubled.s  JIT=0,AT=57  ntsc-old  6000000  b17631c4d33e7970
+linecrunch.s  JIT=0,AT=8,COUNT=1  pal  6000000  551f2068094abbbb
+linecrunch.s  JIT=0,AT=8,COUNT=3  pal  6000000  88d60840f9e301dd
+linecrunch.s  JIT=1,AT=8,COUNT=3  pal  6000000  88d60840f9e301dd
+linecrunch.s  JIT=0,AT=11,COUNT=3  pal  6000000  88d60840f9e301dd
+linecrunch.s  JIT=0,AT=8,COUNT=30  pal  6000000  fadbe8ecfa9fe161
+linecrunch.s  JIT=0,AT=8,COUNT=3  ntsc  6000000  97f7b4c4dae13570
+linecrunch.s  JIT=0,AT=8,COUNT=30  ntsc-old  6000000  34b0f6a10a707a9e
+dmadelay.s  JIT=0,AT=17,MARK=$55,MARK2=$55  pal  6000000  fa9f4043f0c72898
+dmadelay.s  JIT=0,AT=30,MARK=$55,MARK2=$55  pal  6000000  feedcf17f0c145b2
+dmadelay.s  JIT=1,AT=30,MARK=$55,MARK2=$55  pal  6000000  feedcf17f0c145b2
+dmadelay.s  JIT=0,AT=53,MARK=$55,MARK2=$55  pal  6000000  914075b7bbdc1304
+dmadelay.s  JIT=0,AT=54,MARK=$55,MARK2=$55  pal  6000000  3348631f124b0c41
+dmadelay.s  JIT=0,AT=30,MARK=$55,MARK2=$55  ntsc  6000000  2ca389f4a581306d
+dmadelay.s  JIT=0,AT=41,MARK=$55,MARK2=$55  ntsc-old  6000000  b0a16c524635a5f3
+fli.s  JIT=0  pal  6000000  c0951edb9a29a698
+fli.s  JIT=1  pal  6000000  c0951edb9a29a698
+fli.s  JIT=0  ntsc  6000000  e61ce0bbec746f9f
+fli.s  JIT=0  ntsc-old  6000000  3f59c6b74659f213
+stretch.s  JIT=0,AT=17,LINES=20  pal  6000000  a85c7970a1c51369
+stretch.s  JIT=1,AT=17,LINES=20  pal  6000000  a85c7970a1c51369
+stretch.s  JIT=0,AT=14,LINES=1  pal  6000000  9b7d57e78fdf3428
+stretch.s  JIT=0,AT=15,LINES=1  pal  6000000  4e1ff7e5d0f17405
+stretch.s  JIT=0,AT=16,LINES=1  pal  6000000  0cb7b142639fa554
+stretch.s  JIT=0,AT=17,LINES=1  pal  6000000  0cb7b142639fa554
+stretch.s  JIT=0,AT=17,LINES=20  ntsc  6000000  3472ddbc2ed0a772
+stretch.s  JIT=0,AT=15,LINES=1  ntsc  6000000  11f19d4b4f3f333c
+stretch.s  JIT=0,AT=17,LINES=20  ntsc-old  6000000  c86ea542eaf38f1f
+stretch.s  JIT=0,AT=15,LINES=1  ntsc-old  6000000  acab58249c5045b0
+hyper.s  JIT=0,SIDE=1,AT=55  pal  6000000  f4df571e526b794b
+hyper.s  JIT=0,SIDE=1,AT=56  pal  6000000  7afcc2a68dd9aa05
+hyper.s  JIT=1,SIDE=1,AT=56  pal  6000000  7afcc2a68dd9aa05
+hyper.s  JIT=0,SIDE=1,AT=57  pal  6000000  342d405695930310
+hyper.s  JIT=0,SIDE=0,AT=16  pal  6000000  342d405695930310
+hyper.s  JIT=0,SIDE=0,AT=17  pal  6000000  097c4ffb4f83eed5
+hyper.s  JIT=0,SIDE=0,AT=18  pal  6000000  8eed243edc3a2e6e
+hyper.s  JIT=0,SIDE=1,AT=56  ntsc  6000000  39a21ac759edc18b
+hyper.s  JIT=0,SIDE=0,AT=17  ntsc  6000000  f60d326937df7d56
+hyper.s  JIT=0,SIDE=1,AT=56  ntsc-old  6000000  fa4ab923688971bd
+hyper.s  JIT=0,SIDE=0,AT=17  ntsc-old  6000000  4771b1fdea3f1067
+dmadelay.s  JIT=0,AT=30,MARK=$0f,MARK2=$f0  pal  6000000  89f5ade979d821e0  own
+dmadelay.s  JIT=0,AT=30,MARK=$0f,MARK2=$f0  pal-new  6000000  186c6221f51125b2  own
+dmadelay.s  JIT=0,AT=30,MARK=$0f,MARK2=$f0  ntsc  6000000  a7b659f232473e2f  own

@@ -1,18 +1,25 @@
 // k64run: boots the machine headless with the ROMs from a folder, runs a number of
 // frames and prints the text screen (screen memory at $0400, as the KERNAL sets it).
 //
-//   k64run ROM_FOLDER [--frames N] [--model pal|ntsc|ntsc-old] [--cia old|new] [--expect TEXT]...
+//   k64run ROM_FOLDER [--frames N] [--model pal|pal-new|pal-old|ntsc|ntsc-new|ntsc-old] [--cia old|new] [--expect TEXT]...
 //
 // --expect TEXT fails the run unless TEXT appears on the screen.
 // --png FILE writes the visible picture of the last frame.
 // --raster FILE writes the whole raster of the last frame: one palette index per pixel,
 //   rows = raster lines 0.., columns = pixels from the start of cycle 1.
+// --raster-frames N (with --raster and --cycles) appends the raster after each of N more
+//   frames: N+1 rasters, to find the frame in which an animated picture equals a reference.
 // --autostart PRG once the KERNAL waits for input: puts the program into memory as LOAD
 //   would and types RUN (the reference emulator's "inject" autostart).
+// --autostart-delay N waits N more cycles after the KERNAL first waits for input (a
+//   program whose picture depends on when it was started shows it by changing with N).
 // --debugcart ends the run when the program writes its result to $D7FF; the exit status is
 //   that result (0 = passed), or 124 when --cycles runs out first.
 // --cycles N runs N cycles from power on instead of --frames.
 // --hash prints an FNV-1a hash of the last frame's visible palette indices.
+// --where ADDR (hex; with --cycles) prints the raster line and cycle of the opcode fetch each
+//   time the CPU starts the instruction at ADDR (the first 32 times): where on the screen
+//   a piece of a test program runs.
 // --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
 #include "c64.h"
 #include "roms.h"
@@ -34,7 +41,7 @@ char screenCodeToAscii(uint8_t c) {
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::fprintf(stderr, "usage: k64run ROM_FOLDER [--frames N] [--model pal|ntsc|ntsc-old] [--expect TEXT]... [--png FILE] [--hash]\n"); return 2; }
+    if (argc < 2) { std::fprintf(stderr, "usage: k64run ROM_FOLDER [--frames N] [--model pal|pal-new|pal-old|ntsc|ntsc-new|ntsc-old] [--expect TEXT]... [--png FILE] [--hash]\n"); return 2; }
     int frames = 150;
     k64::VicModel model = k64::VicModel::Mos6569;
     k64::CiaModel cia = k64::CiaModel::Mos6526;
@@ -43,21 +50,27 @@ int main(int argc, char** argv) {
     bool debugCart = false;
     uint64_t cycleLimit = 0;
     bool hash = false;
+    int rasterFrames = 0;
+    uint64_t autostartDelay = 0, readyAt = 0;
+    int where = -1, whereLeft = 32;
+    bool whereSeen = false;
     std::vector<std::pair<unsigned, unsigned>> dumps;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (a == "--model" && i + 1 < argc) {
-            std::string m = argv[++i];
-            model = m == "ntsc" ? k64::VicModel::Mos6567R8 : m == "ntsc-old" ? k64::VicModel::Mos6567R56A : k64::VicModel::Mos6569;
+            if (!k64::vicModelFromName(argv[++i], model)) { std::fprintf(stderr, "k64run: unknown model %s (%s)\n", argv[i], k64::kVicModelNames); return 2; }
         } else if (a == "--cia" && i + 1 < argc) cia = std::string(argv[++i]) == "new" ? k64::CiaModel::Mos8521 : k64::CiaModel::Mos6526;
         else if (a == "--expect" && i + 1 < argc) expect.emplace_back(argv[++i]);
         else if (a == "--png" && i + 1 < argc) png = argv[++i];
         else if (a == "--hash") hash = true;
         else if (a == "--raster" && i + 1 < argc) rasterOut = argv[++i];
+        else if (a == "--raster-frames" && i + 1 < argc) rasterFrames = std::atoi(argv[++i]);
         else if (a == "--autostart" && i + 1 < argc) autostart = argv[++i];
+        else if (a == "--autostart-delay" && i + 1 < argc) autostartDelay = std::strtoull(argv[++i], nullptr, 10);
         else if (a == "--debugcart") debugCart = true;
         else if (a == "--cycles" && i + 1 < argc) cycleLimit = std::strtoull(argv[++i], nullptr, 10);
+        else if (a == "--where" && i + 1 < argc) where = static_cast<int>(std::strtoul(argv[++i], nullptr, 16));
         else if (a == "--dump" && i + 1 < argc) {
             char* end = nullptr;
             const unsigned start = static_cast<unsigned>(std::strtoul(argv[++i], &end, 16));
@@ -100,8 +113,20 @@ int main(int argc, char** argv) {
     };
     if (cycleLimit) {
         while (machine.cycle() < cycleLimit && machine.debugCartResult() < 0) {
+            if (where >= 0) {
+                const bool at = machine.cpuAtInstructionStart() && machine.cpuRegs().pc == where;
+                if (at && !whereSeen && whereLeft > 0) {
+                    --whereLeft;
+                    std::printf("k64run: $%04x starts in line %d, cycle %d (machine cycle %llu)\n", static_cast<unsigned>(where),
+                                machine.vic().line(), machine.vic().cycleInLine(), static_cast<unsigned long long>(machine.cycle()));
+                }
+                whereSeen = at;
+            }
             machine.tick();
-            if (!injected && machine.cpuRegs().pc == 0xE5CD) inject();
+            if (!injected && machine.cpuRegs().pc == 0xE5CD) {
+                if (!readyAt) readyAt = machine.cycle();
+                if (machine.cycle() >= readyAt + autostartDelay) inject();
+            }
         }
     } else {
         for (int f = 0; f < frames; ++f) machine.runFrame();
@@ -129,8 +154,12 @@ int main(int argc, char** argv) {
         FILE* f = std::fopen(rasterOut.c_str(), "wb");
         const size_t w = static_cast<size_t>(t.cyclesPerLine) * 8;
         bool ok = f != nullptr;
-        for (int line = 0; ok && line < t.linesPerFrame; ++line)
-            ok = std::fwrite(machine.raster() + static_cast<size_t>(line) * k64::kMaxRasterWidth, 1, w, f) == w;
+        for (int n = 0; ok && n <= rasterFrames; ++n) {
+            for (int line = 0; ok && line < t.linesPerFrame; ++line)
+                ok = std::fwrite(machine.raster() + static_cast<size_t>(line) * k64::kMaxRasterWidth, 1, w, f) == w;
+            if (n < rasterFrames)
+                for (int c = 0; c < t.cyclesPerFrame(); ++c) machine.tick();
+        }
         if (!f || std::fclose(f) != 0 || !ok) { std::fprintf(stderr, "k64run: cannot write %s\n", rasterOut.c_str()); return 3; }
     }
     if (hash) {

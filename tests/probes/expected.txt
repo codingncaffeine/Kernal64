@@ -1,6 +1,13 @@
-# SOURCE  DEFINES  MODEL  CIA  EXPECTED (the reference emulator's value)
+# SOURCE  DEFINES  MODEL (as k64run --model)  CIA  EXPECTED (the reference emulator's value)
 # Serial-port interrupt: timer B's low byte at the handler, two alignments, both chips.
 sdrirq.s  SHIFT=0,MASK=$88  pal  old  169
 sdrirq.s  SHIFT=1,MASK=$88  pal  old  170
 sdrirq.s  SHIFT=0,MASK=$88  pal  new  171
 sdrirq.s  SHIFT=1,MASK=$88  pal  new  170
+# Light pen interrupt flag: 3 = set by any trigger, 2 = only for a line held low over the frame start.
+lpirq.s  -  pal  old  3
+lpirq.s  -  pal-new  old  3
+lpirq.s  -  ntsc  old  3
+lpirq.s  -  ntsc-new  old  3
+lpirq.s  -  pal-old  old  2
+lpirq.s  -  ntsc-old  old  2

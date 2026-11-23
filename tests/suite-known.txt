@@ -2,3 +2,5 @@
 # hardware it waits for. tools/suite.sh prints them as "known"; a listed program that
 # passes is reported as FIXED and fails the run until its line is removed.
 # Format: NAME-PREFIX<TAB>REASON
+# Differences by design: measured chips disagree with the reference emulator, and we follow the chips.
+VICII/colorfetchbug/main.prg	the 8 pixels fetched in the cycle a delayed Bad Line starts: read from $38FF as on measured chips (the suite's vsp-tester, which the reference fails), not from $3FFF
