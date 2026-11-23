@@ -200,6 +200,7 @@ script "freeze against real cartridges" "$BUILD/freezer.log" tools/freezer.sh "$
 script "content files" "$BUILD/media.log" tools/media.sh "$BUILD"
 script "raster-effect programs" "$BUILD/effects.log" tools/effects.sh "$BUILD/k64run"
 script "disks through drive 8 (directory and files byte for byte)" "$BUILD/disk.log" tools/disk.sh "$BUILD/k64run"
+script "fast loaders on PAL and NTSC (Spindle)" "$BUILD/loaders.log" tools/loaders.sh "$BUILD/k64run"
 # Independent of each other: side by side.
 side "VIC-II rule tests" "$BUILD/victest.log" "$BUILD/victest"
 side "SID paddle converter rules" "$BUILD/sidtest.log" "$BUILD/sidtest"

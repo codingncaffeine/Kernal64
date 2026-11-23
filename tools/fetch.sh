@@ -39,6 +39,22 @@ for entry in "${SOURCES[@]}"; do
     echo "fetch: $name at ${pin:0:8} ($license)"
 done
 
+# Spindle 3.1 (Linus Akesson, MIT): a fast loader with its own disk-building tool, for the
+# fast-loader test (tools/loaders.sh). A release archive, pinned by its checksum.
+if want spindle "$@"; then
+    dir="$EXT/loaders"; zip="$dir/spindle-3.1.zip"
+    sum=4abbf757ed550d1da7aac3d9f04cf10566a1f6e9079780e02f84cfd4a164431b
+    mkdir -p "$dir"
+    if [ -f "$zip" ] && echo "$sum  $zip" | sha256sum -c --quiet 2>/dev/null; then
+        echo "fetch: spindle 3.1 (already)"
+    else
+        curl -sfL -A curl -o "$zip" https://hd0.linusakesson.net/files/spindle-3.1.zip
+        echo "$sum  $zip" | sha256sum -c --quiet || { rm -f "$zip"; echo "fetch: spindle: checksum differs"; exit 1; }
+        rm -rf "$dir/spindle-3.1" && mkdir -p "$dir/spindle-3.1" && unzip -q -o "$zip" -d "$dir/spindle-3.1"
+        echo "fetch: spindle 3.1 (MIT)"
+    fi
+fi
+
 # The PLA read-out (PLA.BIN, 64 KB, one byte of outputs per input combination) comes from
 # the user's own copy of Jens Schoenfeld's archive, gitignore/pla.zip; it is unpacked, never
 # downloaded.
