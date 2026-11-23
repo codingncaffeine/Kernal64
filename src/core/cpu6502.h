@@ -181,7 +181,7 @@ public:
             // Halted at the start of an instruction, the chip keeps sampling interrupts: one that
             // becomes pending during the halt is taken when it ends; one already decided stays
             // decided even if its line goes away.
-            if (st_.t == 0 && !st_.jammed && !afterSequence_ && !afterQuickBranch_)
+            if (st_.t == 0 && !st_.jammed && !afterQuickBranch_)
                 st_.takeInterrupt = st_.takeInterrupt || nmiPending_ || (irq_ && !(st_.r.p & flag::I));
             // A halted cycle repeats the previous one, and with it that cycle's interrupt sample
             // (which an in-page branch uses as its decision, rule 9).
@@ -595,7 +595,7 @@ private:
                 rd(r.pc);
                 // Crossing forward, the address latch is corrected in this cycle (as with indexing);
                 // crossing backward it is not, and a halt right after reads the uncorrected address.
-                if (st_.ea > r.pc) lastAddr_ = st_.ea;
+                if (!(st_.data & 0x80)) lastAddr_ = st_.ea; // forward = positive offset (wraps at $FFFF)
                 r.pc = st_.ea;
                 finish();
                 return;
