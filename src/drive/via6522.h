@@ -43,7 +43,8 @@ public:
     void setCb2(bool level);
     // CA2 and CB2 as the chip drives them (high when they are inputs).
     bool ca2Out() const { return lineOut(s_.pcr >> 1, s_.ca2Low); }
-    bool cb2Out() const { return lineOut(s_.pcr >> 5, s_.cb2Low); }
+    bool cb2Out() const { return srMode() >= 4 ? s_.srCb2 != 0 : lineOut(s_.pcr >> 5, s_.cb2Low); }
+    unsigned srMode() const { return (s_.acr >> 2) & 7; }   // the shift register's mode (V7)
     // The ports as the chip drives them.
     uint8_t outA() const { return s_.ora; }
     uint8_t ddrA() const { return s_.ddra; }
@@ -64,6 +65,9 @@ public:
         uint8_t pb7 = 1;                  // timer 1's output
         uint8_t pb6 = 1;                  // PB6 as last seen (timer 2 counts its falling edges)
         uint8_t t2Pulses = 0;             // timer 2 counts PB6 pulses: ACR bit 5, a cycle late
+        uint8_t srBits = 8;               // shift register: shifts left of the current 8 (8 = stopped)
+        uint8_t srCb1 = 1;                // the shift clock the chip drives on CB1 (output modes)
+        uint8_t srCb2 = 1;                // the data bit the chip drives on CB2 (shift-out modes)
         uint8_t ca1 = 1, ca2 = 1, cb1 = 1, cb2 = 1;   // the lines' levels as inputs
         uint8_t ca2Low = 0, cb2Low = 0;   // handshake and pulse output: the line is low
         uint8_t ca2Pulse = 0, cb2Pulse = 0;   // pulse output: back high after this cycle
@@ -82,6 +86,9 @@ private:
     }
     void setIfr(uint8_t bits) { s_.ifr |= bits; }
     void portAccess(bool portA, bool write);
+    void srAccess();          // a read or write of the shift register (V7)
+    void srShift();           // one shift clock pulse (its rising edge)
+    void srTick();            // one clock of the internal pulse generator
 
     ViaHost& host_;
     int id_;

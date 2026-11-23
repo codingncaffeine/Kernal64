@@ -79,7 +79,7 @@ uint8_t Via6522::read(unsigned reg) {
     case 1: portAccess(true, false); break;
     case 4: s_.ifr &= static_cast<uint8_t>(~kT1); break;
     case 8: s_.ifr &= static_cast<uint8_t>(~kT2); break;
-    case 10: s_.ifr &= static_cast<uint8_t>(~kSr); break;
+    case 10: srAccess(); break;
     default: break;
     }
     return v;
@@ -131,6 +131,7 @@ void Via6522::write(unsigned reg, uint8_t v) {
         break;
     case 10:
         s_.sr = v;
+        srAccess();
         s_.ifr &= static_cast<uint8_t>(~kSr);
         break;
     case 11:
@@ -169,6 +170,9 @@ void Via6522::setCa1(bool level) {
 void Via6522::setCb1(bool level) {
     const bool rising = level && !s_.cb1, falling = !level && s_.cb1;
     s_.cb1 = level ? 1 : 0;
+    // V7: with an external clock (modes 0, 3, 7) its rising edge shifts.
+    const unsigned mode = srMode();
+    if (rising && (mode == 0 || mode == 3 || mode == 7)) srShift();
     if (!((s_.pcr & 0x10) ? rising : falling)) return;
     if (s_.acr & 0x02) s_.irb = host_.viaPortB(id_, outB(), s_.ddrb);
     setIfr(kCb1);
@@ -184,6 +188,36 @@ void Via6522::setCa2(bool level) {
     s_.ca2 = level ? 1 : 0;
     const unsigned mode = (s_.pcr >> 1) & 7;
     if (mode < 4 && ((mode & 2) ? rising : falling)) setIfr(kCa2);
+}
+
+// V7 (the data sheet's Figures 20-28): a read or write of the shift register clears its flag
+// and starts 8 shift pulses (modes 1, 2, 5, 6) or restarts the count of 8 (3, 7).
+void Via6522::srAccess() {
+    s_.ifr &= static_cast<uint8_t>(~kSr);
+    if (srMode() != 0) { s_.srBits = 0; s_.srCb1 = 1; }
+}
+
+// One clock of the shift register's own pulse generator (T2's low byte or phi 2): CB1 goes
+// low, then back high, and the rising edge shifts.
+void Via6522::srTick() {
+    if (s_.srBits >= 8 && srMode() != 4) return;
+    s_.srCb1 ^= 1;
+    if (s_.srCb1) srShift();
+}
+
+void Via6522::srShift() {
+    const unsigned mode = srMode();
+    if (mode >= 4) {                       // out: bit 7 first, rotated back into bit 0
+        s_.srCb2 = (s_.sr >> 7) & 1;
+        s_.sr = static_cast<uint8_t>((s_.sr << 1) | s_.srCb2);
+    } else {                               // in: from CB2 into bit 0
+        s_.sr = static_cast<uint8_t>((s_.sr << 1) | (s_.cb2 ? 1 : 0));
+    }
+    if (mode == 0 || mode == 4) return;    // no count (mode 0: no flag; mode 4: runs free)
+    if (++s_.srBits == 8) {
+        setIfr(kSr);
+        if (mode == 3 || mode == 7) s_.srBits = 0;   // external clock: the count only
+    }
 }
 
 void Via6522::setCb2(bool level) {
@@ -232,14 +266,25 @@ void Via6522::clock() {
     const uint8_t pb6 = host_.viaPortB(id_, outB(), s_.ddrb) & 0x40 ? 1 : 0;
     const bool pulse = s_.pb6 && !pb6;
     s_.pb6 = pb6;
+    const unsigned mode = srMode();
+    const bool srT2 = mode == 1 || mode == 4 || mode == 5;
     if (s_.t2Loaded) {
         s_.t2Loaded = 0;
     } else if (!s_.t2Pulses || pulse) {
+        const bool lowOut = srT2 && (s_.t2c & 0xFF) == 0;
         if (s_.t2c-- == 0 && s_.t2Armed) {
             setIfr(kT2);
             s_.t2Armed = 0;
         }
+        // V7a (real-chip bytes, viavarious via20/21: all 24 sub-tests): in the shift register's
+        // T2 modes the low byte runs as an 8-bit timer and reloads from its latch in the cycle
+        // it passes 0, the high byte taking the borrow; each reload clocks the shift register.
+        if (lowOut) {
+            s_.t2c = static_cast<uint16_t>((s_.t2c & 0xFF00) | s_.t2ll);
+            srTick();
+        }
     }
+    if (mode == 2 || mode == 6) srTick();   // V7: phi 2: a pulse every two cycles
     // V4a (real-chip bytes, viavarious via1 G, via2 I/K, via5 M/O, via9): ACR bit 5 takes
     // effect a cycle late in both directions; the cycle of the write still counts as before.
     s_.t2Pulses = (s_.acr & 0x20) ? 1 : 0;
