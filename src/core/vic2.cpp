@@ -36,26 +36,40 @@ int Vic2::xAt(int px) const {
     return x & 0x1FF;
 }
 
-// p-access cycle of sprite n (§3.6.3 diagrams): sprites 3-7 in cycles 1, 3, 5, 7, 9 on every
-// model; sprites 0-2 two cycles apart from cycle 58 (6569), 59 (6567R56A), 60 (6567R8).
+// p-access cycle of sprite n (§3.6.3 diagrams): every two cycles from cycle 58 (6569) or
+// 59 (both 6567), running on into the next line. On the 65-cycle 6567R8 that puts sprite 3
+// in cycle 65 and sprites 4-7 in cycles 2, 4, 6, 8 (the suite's phi1timing program, which
+// matches a real 6567R8).
 int Vic2::spritePCycle(int n) const {
-    if (n >= 3) return 1 + 2 * (n - 3);
-    return t_->cyclesPerLine - 5 + 2 * n;
+    const int first = t_->cyclesPerLine == 63 ? 58 : 59;
+    return (first + 2 * n - 1) % t_->cyclesPerLine + 1;
 }
 
-// g-access address, §3.7.3: by display/idle state, BMM, and ECM forcing bits 9-10 low.
-uint16_t Vic2::gAddress() const {
-    const uint8_t r11 = s_.reg[0x11], r18 = s_.reg[0x18];
+// g-access address in display state, §3.7.3, for a given mode register value: BMM picks
+// counter or character addressing, ECM forces address bits 9-10 low.
+uint16_t Vic2::gAddress(uint8_t r11) const {
+    const uint8_t r18 = s_.reg[0x18];
     uint16_t a;
-    if (!s_.display) {
-        a = 0x3FFF;
-    } else if (r11 & 0x20) {
-        a = static_cast<uint16_t>(((r18 & 0x08) << 10) | (s_.vc << 3) | s_.rc);
-    } else {
-        a = static_cast<uint16_t>(((r18 & 0x0E) << 10) | ((s_.matrix[s_.vmli] & 0xFF) << 3) | s_.rc);
-    }
+    if (r11 & 0x20) a = static_cast<uint16_t>(((r18 & 0x08) << 10) | (s_.vc << 3) | s_.rc);
+    else a = static_cast<uint16_t>(((r18 & 0x0E) << 10) | ((s_.matrix[s_.vmli] & 0xFF) << 3) | s_.rc);
     if (r11 & 0x40) a &= 0x39FF;
     return a;
+}
+
+// Latches the light pen position once per frame (§3.11): half the X coordinate of this
+// cycle's start (6567/6569); a line still held low when the frame starts latches a fixed X
+// in line 0. Nothing is latched in the last line after its first cycle, but the frame's one
+// latch is used up all the same (reference behavior; suite lightpen programs).
+void Vic2::latchLightPen(bool held) {
+    if (s_.lpTriggered) return;
+    s_.lpTriggered = 1;
+    const int last = t_->linesPerFrame - 1;
+    const int raster = (s_.line == 0 && s_.cycle == 1) ? last : s_.line;
+    if (raster == last && s_.cycle > 1) return;
+    const int x = held ? (t_->cyclesPerLine == 65 ? 0xD5 : 0xD1) : xAt(8 * (s_.cycle - 1)) / 2;
+    s_.lpx = static_cast<uint8_t>(x);
+    s_.lpy = static_cast<uint8_t>(raster);
+    s_.irqLatch |= 0x08;
 }
 
 void Vic2::phase1() {
@@ -67,7 +81,9 @@ void Vic2::phase1() {
         s_.vcBase = 0;      // §3.7.2 rule 1 (somewhere outside lines $30-$F7)
         s_.denSeen = 0;
     }
-    if (L == 0x30 && (r11 & 0x10)) s_.denSeen = 1;
+    // DEN set in any cycle of line $30 allows bad lines (§3.5). The registers here are as
+    // the last cycle's access left them, so the line's last cycle is seen in the next line.
+    if ((L == 0x30 || (L == 0x31 && c == 1)) && (r11 & 0x10)) s_.denSeen = 1;
     s_.badLine = L >= 0x30 && L <= 0xF7 && (L & 7) == (r11 & 7) && s_.denSeen;
 
     // Raster interrupt, §3.12: the compare runs in every cycle and fires on the change from
@@ -78,6 +94,16 @@ void Vic2::phase1() {
     const bool match = raster == s_.rasterCompare;
     if (match && !s_.rasterMatched) s_.irqLatch |= 0x01;
     s_.rasterMatched = match;
+
+    // Vertical border flip-flop (§3.9 rules 2-5 as the reference applies them, P1): the top
+    // comparator, with DEN, clears it in any cycle of the line; a bottom match in any cycle
+    // is held and takes effect in cycle 1 or at the left comparator (render).
+    {
+        const int rsel = (r11 >> 3) & 1;
+        if (L == kTop[rsel] && (r11 & 0x10)) s_.vertBorder = s_.vertPending = 0;
+        if (L == kBottom[rsel]) s_.vertPending = 1;
+        if (c == 1) s_.vertBorder = s_.vertPending;
+    }
 
     if (c == 14) {          // rule 2
         s_.vc = s_.vcBase;
@@ -91,17 +117,24 @@ void Vic2::phase1() {
         byte = host_.vicRead(static_cast<uint16_t>(0x3F00 | s_.ref));
         s_.ref = static_cast<uint8_t>(s_.ref - 1);
     } else if (c >= 16 && c <= 55) {
-        byte = host_.vicRead(gAddress());
-        const int xscroll = s_.reg[0x16] & 7;
-        auto& slot = s_.pend[s_.pend[0].valid ? 1 : 0];
-        slot.at = static_cast<int16_t>(8 * (c - 1) + 4 + xscroll);
-        slot.data = byte;
-        slot.cdata = s_.display ? s_.matrix[s_.vmli] : 0;
-        slot.valid = 1;
-        if (s_.display) {   // rule 4
-            s_.vc = (s_.vc + 1) & 0x3FF;
+        if (s_.display) {
+            // P10: BMM acts if it is set now or was a cycle ago. When it has just changed
+            // and the address moves from RAM into the character ROM, the low byte is still
+            // the old mode's.
+            const uint8_t prev = s_.reg11Prev;
+            uint16_t a = gAddress(static_cast<uint8_t>(r11 | (prev & 0x20)));
+            if ((r11 ^ prev) & 0x20) {
+                const uint16_t from = gAddress(prev), to = gAddress(r11);
+                if (!host_.vicIsCharRom(from) && host_.vicIsCharRom(to))
+                    a = static_cast<uint16_t>((from & 0x00FF) | (to & 0x3F00));
+            }
+            byte = host_.vicRead(a);
+            s_.vc = (s_.vc + 1) & 0x3FF;    // rule 4
             s_.vmli = static_cast<uint8_t>((s_.vmli + 1) % 40);
+        } else {
+            byte = host_.vicRead((r11 & 0x40) ? 0x39FF : 0x3FFF);   // idle state, §3.7.1
         }
+        s_.gbuf = byte;
     } else {
         int sprite = -1;
         for (int n = 0; n < 8; ++n)
@@ -132,6 +165,18 @@ void Vic2::phase1() {
     s_.baLow = baLow;
     s_.baRun = baLow ? static_cast<uint8_t>(std::min(s_.baRun + 1, 4)) : 0;
     s_.aecLow = baLow && s_.baRun >= 4;
+    s_.reg11Prev = r11;
+
+    // Light pen: a new frame allows a new latch (taken at once if the line is still low);
+    // a latch asked for by the last cycle's access happens now.
+    if (L == 0 && c == 2) {
+        s_.lpTriggered = 0;
+        if (s_.lpLow) latchLightPen(true);
+    }
+    if (s_.lpPending) {
+        s_.lpPending = 0;
+        latchLightPen(false);
+    }
 }
 
 void Vic2::phase2(uint8_t cpuData) {
@@ -149,65 +194,110 @@ void Vic2::phase2(uint8_t cpuData) {
     s_.matrix[s_.vmli] = v;
 }
 
-// One pixel: graphics sequencer (§3.7.3), border unit (§3.9).
-void Vic2::pixel(int px, int x, uint8_t* out) {
-    for (auto& p : s_.pend)
-        if (p.valid && p.at == px) {
-            s_.shData = p.data;
-            s_.shC = p.cdata;
-            s_.shPixel = 0;
-            p.valid = 0;
-        }
+namespace {
+// A pixel on its way to the output: a color 0-15, or a reference to a color register.
+constexpr uint8_t kRefBorder = 0x20, kRefBg0 = 0x21;
+} // namespace
 
-    const uint8_t r11 = s_.reg[0x11], r16 = s_.reg[0x16];
-    const uint8_t* bg = &s_.reg[0x21];
-    uint8_t color = bg[0] & 0x0F;
-    if (s_.shPixel < 8) {
-        const int i = s_.shPixel++;
-        const bool bit = (s_.shData >> (7 - i)) & 1;
-        const unsigned pair = (s_.shData >> (6 - (i & 6))) & 3;
-        const uint16_t cd = s_.shC;
-        switch (((r11 & 0x60) >> 4) | ((r16 & 0x10) >> 4)) {
-        case 0: color = bit ? (cd >> 8) & 0x0F : bg[0] & 0x0F; break;            // standard text
-        case 1:                                                                    // multicolor text
-            if (cd & 0x800) color = pair == 3 ? (cd >> 8) & 0x07 : bg[pair] & 0x0F;
-            else color = bit ? (cd >> 8) & 0x07 : bg[0] & 0x0F;
-            break;
-        case 2: color = bit ? (cd >> 4) & 0x0F : cd & 0x0F; break;               // standard bitmap
-        case 3:                                                                    // multicolor bitmap
-            color = pair == 0 ? bg[0] & 0x0F : pair == 1 ? (cd >> 4) & 0x0F : pair == 2 ? cd & 0x0F : (cd >> 8) & 0x0F;
-            break;
-        case 4: color = bit ? (cd >> 8) & 0x0F : bg[(cd >> 6) & 3] & 0x0F; break; // ECM text
-        default: color = 0; break;                                                 // invalid modes
-        }
+// One pixel of the graphics data path (hw/vic2.md P4, P6, P7).
+uint8_t Vic2::graphicsPixel(int i) {
+    if (i == s_.xscrollPipe) {
+        s_.shData = s_.gPipe;
+        s_.shC = s_.cPipe1;
+        s_.mcFlop = 1;
     }
-
-    const int csel = (r16 >> 3) & 1, rsel = (r11 >> 3) & 1;
-    if (x == kRight[csel]) s_.mainBorder = 1;                                      // rule 1
-    if (x == kLeft[csel]) {
-        if (s_.line == kBottom[rsel]) s_.vertPending = 1;                         // rule 4
-        s_.vertBorder = s_.vertPending;
-        if (!s_.vertBorder) s_.mainBorder = 0;                                    // rule 6
+    // Pixel forming.
+    const bool wide = (s_.mode11 & 0x20) || (s_.shC & 0x0800);   // BMM, or color bit 3
+    if (s_.mode16b) {
+        if (!wide) s_.pixelReg = (s_.shData & 0x80) ? 3 : 0;
+        else if (s_.mcFlop) s_.pixelReg = s_.shData >> 6;
+    } else {
+        s_.pixelReg = (s_.shData & 0x80) ? (wide ? 2 : 3) : 0;
     }
-    if (s_.vertBorder) color = bg[0] & 0x0F;   // the sequencer's output is off
-    *out = s_.mainBorder ? (s_.reg[0x20] & 0x0F) : color;
+    const unsigned v = s_.pixelReg;
+    s_.shData = static_cast<uint8_t>(s_.shData << 1);
+    s_.mcFlop ^= 1;
+    // Color decode.
+    const uint16_t cd = s_.shC;
+    const uint8_t color = (cd >> 8) & 0x0F, hi = (cd >> 4) & 0x0F, lo = cd & 0x0F;
+    switch (((s_.mode11 & 0x60) >> 4) | (s_.mode16 >> 4)) {   // ECM, BMM, MCM
+    case 0: return v >= 2 ? color : kRefBg0;                                              // text
+    case 1: return v == 3 ? static_cast<uint8_t>(color & 7) : static_cast<uint8_t>(kRefBg0 + v);   // multicolor text
+    case 2: return v >= 2 ? hi : lo;                                                      // bitmap
+    case 3: return v == 0 ? kRefBg0 : v == 1 ? hi : v == 2 ? lo : color;                  // multicolor bitmap
+    case 4: return v >= 2 ? color : static_cast<uint8_t>(kRefBg0 + ((cd >> 6) & 3));      // ECM text
+    default: return 0;                                                                    // invalid modes
+    }
 }
 
 void Vic2::render() {
     const int c = s_.cycle;
-    // Vertical flip-flop (§3.9 rules 2-5 as the reference emulator applies them): the top
-    // comparator, with DEN, resets it in any cycle of the line; a bottom match in any cycle
-    // is held and takes effect at cycle 1 of the next line or at the left comparator.
-    {
-        const uint8_t r11 = s_.reg[0x11];
-        const int rsel = (r11 >> 3) & 1;
-        if (s_.line == kTop[rsel] && (r11 & 0x10)) s_.vertBorder = s_.vertPending = 0;
+    const uint8_t r11 = s_.reg[0x11], r16 = s_.reg[0x16];
+    const int csel = (r16 >> 3) & 1, rsel = (r11 >> 3) & 1;
+
+    // Side border comparators of the coming cycle (P2).
+    const bool borderBefore = s_.mainBorder;
+    const int next = c == t_->cyclesPerLine ? 1 : c + 1;
+    if (next == (csel ? 17 : 18)) {
         if (s_.line == kBottom[rsel]) s_.vertPending = 1;
-        if (c == 1) s_.vertBorder = s_.vertPending;
+        s_.vertBorder = s_.vertPending;
+        if (!s_.vertBorder) s_.mainBorder = 0;
     }
+    if (next == (csel ? 57 : 56)) s_.mainBorder = 1;
+
+    // Eight pixels of graphics; the mode bits arrive part-way through (P5).
+    uint8_t px[8];
+    const uint8_t mode11 = r11 & 0x60, mcm = r16 & 0x10;
+    for (int i = 0; i < 8; ++i) {
+        if (i == 4) {
+            s_.mode16 = mcm;
+            s_.mode11 |= mode11;
+        } else if (i == 6) {
+            s_.mode11 &= mode11;
+        } else if (i == 7) {
+            if (s_.mode16 && !s_.mode16b) s_.mcFlop = 0;
+            s_.mode16b = s_.mode16;
+        }
+        px[i] = graphicsPixel(i);
+    }
+
+    // Border (P3).
+    if (borderBefore || s_.mainBorder) {
+        const int last = csel ? 8 : 7;
+        if (borderBefore)
+            for (int i = 0; i < last; ++i) px[i] = kRefBorder;
+        if (!csel && s_.mainBorder) px[7] = kRefBorder;
+    }
+
+    // Output stage (P8): 8 pixels behind, register references resolved one pixel ahead.
+    if (s_.colorLatchReg != 0xFF) s_.creg[s_.colorLatchReg & 0x0F] = s_.colorLatchVal;
+    // Position: 12 pixels before the start of this cycle (P9). The first 12 pixels of a
+    // line fall before cycle 1, in horizontal blanking; they are kept at the end of this
+    // line's row, where the reference's whole-raster pictures have them.
+    const int width = 8 * t_->cyclesPerLine;
     uint8_t* row = &pixels_[static_cast<size_t>(s_.line) * kMaxRasterWidth];
-    const int px0 = 8 * (c - 1);
-    for (int p = 0; p < 8; ++p) pixel(px0 + p, xAt(px0 + p), &row[px0 + p]);
+    int at = 8 * (c - 1) - 12;
+    for (int i = 0; i < 8; ++i, ++at) {
+        uint8_t& ahead = s_.ring[(i + 1) & 7];
+        if (ahead >= 0x20) ahead = s_.creg[ahead & 0x0F];
+        row[at < 0 ? at + width : at] = s_.ring[i] & 0x0F;
+        s_.ring[i] = px[i];
+    }
+    s_.colorLatchReg = s_.colorPendReg;
+    s_.colorLatchVal = s_.colorPendVal;
+    s_.colorPendReg = 0xFF;
+
+    // What enters the data path for the next steps (P4).
+    s_.gPipe = s_.gPipeValid ? s_.gbuf : 0;
+    s_.cPipe1 = s_.cPipe0;
+    if (c >= 15 && c <= 54 && !s_.vertBorder) {
+        s_.gPipeValid = 1;
+        s_.xscrollPipe = r16 & 7;
+        s_.cPipe0 = s_.display ? s_.matrix[s_.dmli < 40 ? s_.dmli++ : 39] : 0;
+    } else {
+        s_.gPipeValid = 0;
+        s_.dmli = 0;
+    }
 }
 
 void Vic2::endCycle() {
@@ -263,6 +353,13 @@ void Vic2::write(unsigned r, uint8_t v) {
     case 0x1E: case 0x1F: return;               // collision registers cannot be written
     default:
         if (r < 0x2F) s_.reg[r] = v;
+        if (r >= 0x20 && r < 0x2F) {   // color registers reach the output stage later (P8)
+            // (One write per cycle on the machine; a test rig writing several at once must
+            // not lose one.)
+            if (s_.colorPendReg != 0xFF) s_.creg[s_.colorPendReg & 0x0F] = s_.colorPendVal;
+            s_.colorPendReg = static_cast<uint8_t>(r - 0x20);
+            s_.colorPendVal = v & 0x0F;
+        }
         return;
     }
 }

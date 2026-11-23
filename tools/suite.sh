@@ -42,7 +42,7 @@ run_one() {
             vicii-ntscold) model=ntsc-old; vmodel=oldntsc ;;
             cia-new) cia=new; ciaref=1; ckey="+cianew" ;;
             vicii-new) skip="new VIC-II not emulated yet" ;;
-            comment:*|expect:*) ;;
+            comment:*|expect:*|warn:*) ;;   # notes for people, not requirements
             *) skip="needs $o" ;;
         esac
     done

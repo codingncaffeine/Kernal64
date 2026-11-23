@@ -10,7 +10,8 @@
 //                   decides BA and whether AEC stays low in the second phase
 //   (the 6510's second-phase access, when AEC is high)
 //   phase2(cpuData) the c-access that a bad line makes in the second phase
-//   render()        the cycle's eight pixels into the raster buffer
+//   render()        eight pixels through the graphics data path, the border unit and the
+//                   output stage, with the registers as the CPU's access left them
 //   endCycle()      advances the raster position
 #pragma once
 
@@ -27,6 +28,7 @@ class VicHost {
 public:
     virtual uint8_t vicRead(uint16_t addr14) = 0;   // through the PLA, in the selected bank
     virtual uint8_t colorRead(uint16_t addr10) = 0; // 4-bit color RAM
+    virtual bool vicIsCharRom(uint16_t addr14) const = 0;   // the address selects the character ROM
 protected:
     ~VicHost() = default;
 };
@@ -47,6 +49,14 @@ public:
     bool aecLow() const { return s_.aecLow != 0; }  // the VIC-II keeps the second phase
     bool irq() const { return (s_.irqLatch & s_.irqEnable & 0x0F) != 0; }
     uint8_t lastByte() const { return s_.lastByte; } // what the first-phase access read
+
+    // The light pen input (CIA 1 port B bit 4 on the C64), called when the line may have
+    // changed: while it is low and nothing was latched in this frame, the position is
+    // latched in the next cycle (§3.11; hw/vic2.md rule 16).
+    void setLightPen(bool low) {
+        s_.lpLow = low ? 1 : 0;
+        if (low) s_.lpPending = 1;
+    }
 
     uint8_t read(unsigned reg);           // reg = address & $3F; side effects ($D01E/$D01F)
     uint8_t peek(unsigned reg) const;     // without side effects
@@ -79,23 +89,41 @@ public:
         uint8_t ref = 0xFF;              // refresh counter, §3.13
         uint16_t matrix[40] = {};        // video matrix/color line: color << 8 | pointer
         uint8_t spritePtr[8] = {};       // last p-access per sprite
-        // Graphics sequencer, §3.7.3: queued g-access results, each loaded into the
-        // shift register at its pixel.
-        struct Pending { int16_t at; uint8_t data; uint16_t cdata; uint8_t valid; } pend[2] = {};
+        // Graphics data path (hw/vic2.md P4-P7): the g-access byte and its matrix data on
+        // their way to the shift register, the shift register, and the mode bits as the
+        // sequencer sees them.
+        uint8_t gbuf = 0;                // byte of the last g-access
+        uint8_t gPipe = 0;               // what the shift register takes at its next load
+        uint8_t gPipeValid = 0;          // the coming g-access enters the path
+        uint16_t cPipe0 = 0, cPipe1 = 0; // matrix data: color << 8 | pointer
+        uint8_t xscrollPipe = 0;         // the pixel of a render step at which the load happens
+        uint8_t dmli = 0;                // column of the matrix line entering the path
         uint8_t shData = 0;              // the byte in the shift register
         uint16_t shC = 0;                // its video matrix data
-        int8_t shPixel = 8;              // pixel index within it; 8 = run empty
+        uint8_t mcFlop = 0;              // multicolor flip-flop: set = take a 2-bit pixel now
+        uint8_t pixelReg = 0;            // the pixel value formed last (0-3)
+        uint8_t mode11 = 0;              // ECM/BMM ($D011 bits 6, 5) as piped
+        uint8_t mode16 = 0, mode16b = 0; // MCM ($D016 bit 4) for the color decode / pixel forming
+        uint8_t reg11Prev = 0;           // $D011 one cycle ago (g-access address, P10)
+        // Output stage (P8): rendered pixels wait 8 pixels; a value >= $20 is a reference
+        // to color register $D0xx, resolved just before output.
+        uint8_t ring[8] = {};
+        uint8_t creg[16] = {};           // $D020-$D02E as the output stage sees them
+        uint8_t colorLatchReg = 0xFF, colorLatchVal = 0;   // write reaching creg at the next step
+        uint8_t colorPendReg = 0xFF, colorPendVal = 0;     // write of this cycle
         uint8_t mainBorder = 1, vertBorder = 1;   // §3.9
         uint8_t vertPending = 1;         // a bottom match waiting for cycle 1 / the left comparator
         uint8_t rasterMatched = 0;       // the raster compare matched in the last cycle
+        uint8_t lpLow = 0, lpPending = 0, lpTriggered = 0;   // light pen: line, latch due, latched this frame
     };
 #pragma pack(pop)
     const State& state() const { return s_; }
     void setState(const State& s) { s_ = s; }
 
 private:
-    uint16_t gAddress() const;
-    void pixel(int px, int x, uint8_t* out);
+    uint16_t gAddress(uint8_t r11) const;
+    uint8_t graphicsPixel(int i);
+    void latchLightPen(bool held);
     int spritePCycle(int n) const;
 
     VicHost& host_;

@@ -5,9 +5,10 @@
 Another Commodore 64 emulator: written from scratch, cycle-exact, and shipped as a
 libretro core for RetroArch and Emutastic.
 
-**Status:** early development. The 6510 CPU, the memory map and the VIC-II's text and
-bitmap display are in: the machine boots to the BASIC start-up screen on PAL and NTSC
-models. Keyboard, sound, sprites, cartridges, tape and disk are still to come.
+**Status:** early development. The 6510 CPU, the memory map, both generations of the CIA
+with keyboard and joysticks, and the VIC-II's text and bitmap display are in: the machine
+boots to BASIC and takes typing on PAL and NTSC models. Sprites, sound, cartridges, tape
+and disk are still to come.
 
 ## Building on Linux
 

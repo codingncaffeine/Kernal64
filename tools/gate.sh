@@ -9,7 +9,7 @@
 # per-opcode bus traces, the functional and undocumented-opcode test programs and
 # the transistor-level chip; the VIC-II against the article's rules and the start-up
 # screen against the reference emulator (tools/oracle/build-vice.sh); the reference
-# suite's CPU, CIA, interrupt and general programs on both CIA types; our own probe
+# suite's CPU, CIA, interrupt, general and VIC-II programs on both CIA types; our own probe
 # programs; the core loading in RetroArch behind the wall.
 # The third-party suites come from tools/fetch.sh.
 # Runs on a quarter of the cores at low priority; its build folder is removed at exit.
@@ -55,6 +55,11 @@ for model in pal ntsc ntsc-old; do
         >"$BUILD/host-$model.log" 2>&1 || { tail -5 "$BUILD/host-$model.log"; bad "conformance ($model)"; }
     grep -q "missing system files" "$BUILD/host-$model.log" && bad "system ROMs not found in $ROMS"
 done
+# The border option: the picture handed to the frontend has the size asked for.
+for want in "none 320x200" "small 384x270"; do
+    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 60 --check --option kernal64_border="${want% *}" >"$BUILD/host-border.log" 2>&1
+    grep -q "last frame ${want#* } " "$BUILD/host-border.log" || bad "border option ${want% *}: not ${want#* }"
+done
 
 step "memory map and boot"
 if [ -f "$ROOT/gitignore/external/pla/PLA.BIN" ]; then
@@ -74,10 +79,10 @@ if [ -x "$ROOT/gitignore/external/vice/build/src/x64sc" ] && command -v podman >
         || { tail -6 "$BUILD/refcheck.log"; bad "start-up screen differs from the reference"; }
 else bad "reference emulator missing: tools/oracle/build-vice.sh"; fi
 
-step "CPU, CIA, interrupt and general test programs against the reference emulator"
+step "CPU, CIA, interrupt, general and VIC-II test programs against the reference emulator"
 # (Lorenz's suite is in "general". Programs waiting for later hardware: tests/suite-known.txt.)
 if [ -f "$ROOT/gitignore/external/testprogs/testbench/c64-testlist.in" ]; then
-    tools/suite.sh '^\.\./(CIA|interrupts|general|CPU)/' "$BUILD/k64run" >"$BUILD/suite.log" 2>&1 \
+    tools/suite.sh '^\.\./(CIA|interrupts|general|CPU|VICII)/' "$BUILD/k64run" >"$BUILD/suite.log" 2>&1 \
         || { grep -E '^(WORSE|FIXED)' "$BUILD/suite.log" | head -8; bad "test programs worse than the reference"; }
     tail -1 "$BUILD/suite.log"
 else bad "test programs missing: tools/oracle/build-vice.sh"; fi

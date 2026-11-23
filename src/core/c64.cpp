@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 5;
+constexpr uint32_t kStateVersion = 6;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
@@ -89,16 +89,19 @@ unsigned C64::vicBank() const {
     return 3u - (cia2_.portAOut() & 3u);
 }
 
-uint8_t C64::vicFetch(uint16_t vaddr) const {
+bool C64::vicIsCharRom(uint16_t vaddr) const {
     const unsigned bank = vicBank();
     uint16_t in = pla::nAEC | pla::RnW | pla::nLORAM | pla::nHIRAM | pla::nCHAREN | pla::nEXROM | pla::nGAME |
                   pla::BA | pla::A15 | pla::A14 | pla::A13 | pla::A12; // address bus pulled up in VIC cycles
     if (!(bank & 1)) in |= pla::nVA14;
     if (vaddr & 0x2000) in |= pla::VA13;
     if (vaddr & 0x1000) in |= pla::VA12;
-    const uint8_t out = pla::table()[in];
-    if (!(out & pla::nCHARROM)) return chargen_[vaddr & 0x0FFF];
-    return ram_[(bank << 14) | (vaddr & 0x3FFF)];
+    return !(pla::table()[in] & pla::nCHARROM);
+}
+
+uint8_t C64::vicFetch(uint16_t vaddr) const {
+    if (vicIsCharRom(vaddr)) return chargen_[vaddr & 0x0FFF];
+    return ram_[(vicBank() << 14) | (vaddr & 0x3FFF)];
 }
 
 // ---- CPU accesses ---------------------------------------------------------------
@@ -184,10 +187,19 @@ void C64::ioWrite(uint16_t a, uint8_t v) {
         if (debugCart_ && a == 0xD7FF) debugExit_ = v;
         s_.sid[a & 0x1F] = v;
         return;
-    case 0xC: cia1_.write(a, v); return;
+    case 0xC:
+        cia1_.write(a, v);
+        if ((a & 0x0F) < 4) updateLightPen();   // ports and directions
+        return;
     case 0xD: cia2_.write(a, v); return;
     default: return;
     }
+}
+
+// The light pen line is CIA 1's port B bit 4 (also the fire button of control port 1 and
+// a keyboard row), so software can pull it low through the port (hw/cia.md rule 16).
+void C64::updateLightPen() {
+    vic_.setLightPen(!(ciaPortB(0, cia1_.portBOut()) & 0x10));
 }
 
 // ---- input and the CIA ports (hw/cia.md rules 16-17) -----------------------------
@@ -196,12 +208,17 @@ void C64::setKey(int column, int row, bool down) {
     if (column < 0 || column > 7 || row < 0 || row > 7) return;
     const uint8_t bit = static_cast<uint8_t>(1 << row);
     s_.keys[column] = static_cast<uint8_t>(down ? (s_.keys[column] | bit) : (s_.keys[column] & ~bit));
+    updateLightPen();
 }
 
-void C64::releaseAllKeys() { for (auto& k : s_.keys) k = 0; }
+void C64::releaseAllKeys() {
+    for (auto& k : s_.keys) k = 0;
+    updateLightPen();
+}
 
 void C64::setJoystick(int port, uint8_t lines) {
     if (port == 1 || port == 2) s_.joy[port - 1] = lines & 0x1F;
+    updateLightPen();
 }
 
 void C64::setRestore(bool down) { s_.restore = down ? 1 : 0; }
@@ -353,7 +370,7 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     get(&c1, sizeof c1);
     get(&c2, sizeof c2);
     if (vs.cycle < 1 || vs.cycle > timing_->cyclesPerLine || vs.line < 0 || vs.line >= timing_->linesPerFrame ||
-        vs.vmli >= 40 || vs.shPixel < 0 || vs.shPixel > 8)
+        vs.vmli >= 40 || vs.dmli > 40 || vs.xscrollPipe > 7)
         return false;
     s_ = s;
     vic_.setState(vs);

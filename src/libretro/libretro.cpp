@@ -3,6 +3,7 @@
 #include "../core/roms.h"
 #include "libretro.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -30,6 +31,10 @@ std::vector<int16_t> audioOut;
 double audioCarry = 0.0;
 
 constexpr unsigned kSampleRate = 48000;
+
+// The part of the visible picture that is shown (core option kernal64_border).
+struct Crop { int x = 0, y = 0, w = 0, h = 0; };
+Crop crop;
 
 void log(retro_log_level level, const char* fmt, ...) {
     char buf[512];
@@ -123,13 +128,34 @@ k64::CiaModel ciaFromOptions() {
     return k64::CiaModel::Mos6526;
 }
 
+// Border option: "full" shows everything the chip sends between the blanking intervals,
+// "small" the 320x200 window with up to 32 pixels of border left and right and 36 lines
+// above and below (as much of that as the model's picture has, the same on both sides),
+// "none" the window alone. The window starts at X coordinate $18, raster line 51 (40
+// columns, 25 lines).
+Crop cropFromOptions() {
+    const auto& t = machine->timing();
+    Crop full{0, 0, t.visibleWidth, t.visibleLines};
+    retro_variable var{"kernal64_border", nullptr};
+    if (!envCb || !envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) || !var.value || !std::strcmp(var.value, "full")) return full;
+    int windowPixel = 0;
+    while (windowPixel < 8 * t.cyclesPerLine && machine->vic().xAt(windowPixel) != 0x18) ++windowPixel;
+    const int x0 = windowPixel - t.firstVisiblePixel, y0 = 51 - t.firstVisibleLine;
+    const int right = t.visibleWidth - x0 - 320, below = t.visibleLines - y0 - 200;
+    if (x0 < 0 || y0 < 0 || right < 0 || below < 0) return full;
+    const bool none = !std::strcmp(var.value, "none");
+    const int mx = none ? 0 : std::min({32, x0, right}), my = none ? 0 : std::min({36, y0, below});
+    return {x0 - mx, y0 - my, 320 + 2 * mx, 200 + 2 * my};
+}
+
 void fillAvInfo(retro_system_av_info* info) {
     const auto& t = machine ? machine->timing() : k64::kTimingPal;
-    info->geometry.base_width = static_cast<unsigned>(t.visibleWidth);
-    info->geometry.base_height = static_cast<unsigned>(t.visibleLines);
+    const int w = machine ? crop.w : t.visibleWidth, h = machine ? crop.h : t.visibleLines;
+    info->geometry.base_width = static_cast<unsigned>(w);
+    info->geometry.base_height = static_cast<unsigned>(h);
     info->geometry.max_width = k64::kMaxRasterWidth;
     info->geometry.max_height = k64::kMaxRasterHeight;
-    info->geometry.aspect_ratio = static_cast<float>(t.visibleWidth * t.pixelAspect() / t.visibleLines);
+    info->geometry.aspect_ratio = static_cast<float>(w * t.pixelAspect() / h);
     info->timing.fps = t.framesPerSecond();
     info->timing.sample_rate = kSampleRate;
 }
@@ -147,6 +173,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
     static const retro_variable vars[] = {
         {"kernal64_model", "Machine; pal|ntsc|ntsc-old"},
         {"kernal64_cia", "CIA chips; 6526|8521"},
+        {"kernal64_border", "Border; full|small|none"},
         {"kernal64_joyport", "RetroPad is the joystick in control port; 2|1"},
         {nullptr, nullptr},
     };
@@ -197,6 +224,7 @@ RETRO_API bool retro_load_game(const retro_game_info*) {
     }
     machine = std::make_unique<k64::C64>(modelFromOptions());
     machine->setCiaModel(ciaFromOptions());
+    crop = cropFromOptions();
     audioCarry = 0.0;
     log(RETRO_LOG_INFO, "version %s, machine %s, CIA %s", KERNAL64_VERSION, machine->timing().name,
         machine->ciaModel() == k64::CiaModel::Mos8521 ? "8521" : "6526");
@@ -236,12 +264,15 @@ RETRO_API void retro_run(void) {
     if (envCb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
         machine->setCiaModel(ciaFromOptions());
         const k64::VicModel m = modelFromOptions();
-        if (m != machine->timing().model) {
-            machine->setModel(m);
-            retro_system_av_info av{};
-            fillAvInfo(&av);
-            envCb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
-        }
+        const bool newModel = m != machine->timing().model;
+        if (newModel) machine->setModel(m);
+        const Crop c = cropFromOptions();
+        const bool newCrop = c.x != crop.x || c.y != crop.y || c.w != crop.w || c.h != crop.h;
+        crop = c;
+        retro_system_av_info av{};
+        fillAvInfo(&av);
+        if (newModel) envCb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
+        else if (newCrop) envCb(RETRO_ENVIRONMENT_SET_GEOMETRY, &av.geometry);
     }
     if (inputPollCb) inputPollCb();
     applyInput();   // once per frame, at the frame boundary (D9)
@@ -250,8 +281,8 @@ RETRO_API void retro_run(void) {
 
     const auto& t = machine->timing();
     machine->visibleFrame(frameOut.data());
-    videoCb(frameOut.data(), static_cast<unsigned>(t.visibleWidth), static_cast<unsigned>(t.visibleLines),
-            static_cast<size_t>(t.visibleWidth) * sizeof(uint32_t));
+    videoCb(frameOut.data() + static_cast<size_t>(crop.y) * static_cast<size_t>(t.visibleWidth) + static_cast<size_t>(crop.x),
+            static_cast<unsigned>(crop.w), static_cast<unsigned>(crop.h), static_cast<size_t>(t.visibleWidth) * sizeof(uint32_t));
 
     // One frame of audio; the fraction of a sample left over is carried to the next frame.
     audioCarry += kSampleRate / machine->timing().framesPerSecond();

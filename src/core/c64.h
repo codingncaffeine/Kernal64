@@ -92,6 +92,8 @@ private:
     uint8_t ciaPortB(int cia, uint8_t driven) override;
     void keyboardLines(uint8_t paDriven, uint8_t pbDriven, uint8_t& pa, uint8_t& pb) const;
     uint8_t colorRead(uint16_t a) override { return colorRam_[a & 0x3FF]; }
+    bool vicIsCharRom(uint16_t vaddr14) const override;
+    void updateLightPen();   // CIA 1 port B bit 4 is the VIC-II's light pen input
 
     uint16_t plaInputsCpu(uint16_t a, bool read) const;
     uint8_t portPins() const;    // the 6510 port lines as the PLA sees them

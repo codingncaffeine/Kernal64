@@ -36,6 +36,7 @@ struct Host final : VicHost {
         return mem[a & 0x3FFF];
     }
     uint8_t colorRead(uint16_t a) override { return color[a & 0x3FF]; }
+    bool vicIsCharRom(uint16_t) const override { return false; }   // all RAM
 };
 
 struct Rig {
@@ -138,11 +139,12 @@ void testAccessSchedule() {
             if (a.size() != 1) continue;
             uint16_t want = 0x3FFF;   // idle access / idle-state g-access
             if (c >= 11 && c <= 15) want = static_cast<uint16_t>(0x3F00 | (0xFF - 10 - (c - 11)));  // refresh, line 2
-            const int p0 = last - 5;  // sprite 0 p-access: 58 / 59 / 60
-            for (int n = 0; n < 8; ++n) {
-                const int pc = n < 3 ? p0 + 2 * n : 1 + 2 * (n - 3);
-                if (c == pc) want = static_cast<uint16_t>(0x0400 | 0x3F8 | n);
-            }
+            // Sprite p-accesses: 6569 58, 60, 62, 1, 3, 5, 7, 9; 6567R56A 59, 61, 63, 1, 3, 5, 7, 9;
+            // 6567R8 59, 61, 63, 65, 2, 4, 6, 8.
+            static constexpr int kP[3][8] = {{58, 60, 62, 1, 3, 5, 7, 9}, {59, 61, 63, 1, 3, 5, 7, 9}, {59, 61, 63, 65, 2, 4, 6, 8}};
+            const int* p = kP[last == 63 ? 0 : last == 64 ? 1 : 2];
+            for (int n = 0; n < 8; ++n)
+                if (c == p[n]) want = static_cast<uint16_t>(0x0400 | 0x3F8 | n);
             CHECK(a[0] == want, "%s line 2 cycle %d: access $%04x, expected $%04x", t->name, c, a[0], want);
         }
         CHECK(r.at(2, 30, 2).empty(), "%s: no second-phase access without a bad line", t->name);
@@ -430,15 +432,18 @@ void testDoubledLine() {
 // §3.9 rules 2-3 are checked in cycle 63: RSEL 1 -> 0 written in cycle 63 of line 247 still
 // closes the border (the check sees the new comparator), written in line 248 it does not.
 void testVerticalCheckCycle() {
-    for (int writeLine : {247, 248}) {
+    // The comparison in a cycle sees the registers as the cycle before left them (P1), so
+    // the last write that still closes the border in line 247 is the one in cycle 62.
+    struct Case { int line, cycle; bool open; };
+    for (const Case k : {Case{247, 62, false}, Case{247, 63, true}, Case{248, 1, true}}) {
         Rig r(kTimingPal);
         textScreen(r);
-        r.onCycle = [writeLine](Rig& rr, int line, int cycle) {
-            if (line == writeLine && cycle == (writeLine == 247 ? 63 : 1)) rr.vic.write(0x11, 0x13);
+        r.onCycle = [k](Rig& rr, int line, int cycle) {
+            if (line == k.line && cycle == k.cycle) rr.vic.write(0x11, 0x13);
         };
         r.runTo(260, 1);
         const bool open = r.px(255, 100) != 0x0E;
-        CHECK(open == (writeLine == 248), "RSEL 1->0 at line %d: lower border %s", writeLine, open ? "open" : "closed");
+        CHECK(open == k.open, "RSEL 1->0 at line %d cycle %d: lower border %s", k.line, k.cycle, open ? "open" : "closed");
     }
 }
 
