@@ -16,7 +16,6 @@ SOURCES=(
   "dormann|https://github.com/klaus2m5/6502_65c02_functional_tests.git|7954e2dbb49c469ea286070bf46cdd71aeb29e4b||GPL-3.0"
   "seddon|https://github.com/tom-seddon/6502-tests.git|6ecccbfebdb9e10588b1019166bcb5b3b6e617bc||GPL-3.0"
   "perfect6502|https://github.com/mist64/perfect6502.git|09fc542877a84318291aa42dab143a3e2c3db974||MIT"
-  "resid|https://github.com/daglem/reSID.git|ef7873fc8c8379dc14cef8d9ccf9b3d34d0cc439||GPL-2.0-or-later"
 )
 
 want() { [ $# -eq 1 ] && return 0; local n; for n in "${@:2}"; do [ "$n" = "$1" ] && return 0; done; return 1; }

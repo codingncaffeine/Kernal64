@@ -4,6 +4,7 @@
 #include "libretro.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -28,7 +29,7 @@ retro_log_printf_t logCb;
 std::unique_ptr<k64::C64> machine;
 std::vector<uint32_t> frameOut;
 std::vector<int16_t> audioOut;
-double audioCarry = 0.0;
+std::vector<float> audioMono;
 
 constexpr unsigned kSampleRate = 48000;
 
@@ -219,7 +220,6 @@ RETRO_API void retro_set_controller_port_device(unsigned, unsigned) {}
 
 RETRO_API void retro_reset(void) {
     if (machine) machine->reset();
-    audioCarry = 0.0;
 }
 
 RETRO_API bool retro_load_game(const retro_game_info*) {
@@ -231,8 +231,8 @@ RETRO_API bool retro_load_game(const retro_game_info*) {
     machine = std::make_unique<k64::C64>(modelFromOptions());
     machine->setCiaModel(ciaFromOptions());
     machine->setSidModel(sidFromOptions());
+    machine->setAudioRate(kSampleRate);
     crop = cropFromOptions();
-    audioCarry = 0.0;
     log(RETRO_LOG_INFO, "version %s, machine %s, CIA %s", KERNAL64_VERSION, machine->timing().name,
         machine->ciaModel() == k64::CiaModel::Mos8521 ? "8521" : "6526");
 
@@ -292,31 +292,33 @@ RETRO_API void retro_run(void) {
     videoCb(frameOut.data() + static_cast<size_t>(crop.y) * static_cast<size_t>(t.visibleWidth) + static_cast<size_t>(crop.x),
             static_cast<unsigned>(crop.w), static_cast<unsigned>(crop.h), static_cast<size_t>(t.visibleWidth) * sizeof(uint32_t));
 
-    // One frame of audio; the fraction of a sample left over is carried to the next frame.
-    audioCarry += kSampleRate / machine->timing().framesPerSecond();
-    const size_t frames = static_cast<size_t>(audioCarry);
-    audioCarry -= static_cast<double>(frames);
-    audioOut.assign(frames * 2, 0);
+    // The audio this frame produced: mono, the same on both channels.
+    const size_t frames = machine->audioAvailable();
+    audioMono.resize(frames);
+    machine->readAudio(audioMono.data(), frames);
+    audioOut.resize(frames * 2);
+    for (size_t i = 0; i < frames; ++i) {
+        const float v = audioMono[i] * 32767.0f;
+        const int16_t s = static_cast<int16_t>(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : std::lrintf(v));
+        audioOut[2 * i] = audioOut[2 * i + 1] = s;
+    }
     size_t done = 0;
     while (done < frames && audioBatchCb) done += audioBatchCb(audioOut.data() + done * 2, frames - done);
 }
 
-RETRO_API size_t retro_serialize_size(void) { return machine ? machine->stateSize() + sizeof(double) : 0; }
+RETRO_API size_t retro_serialize_size(void) { return machine ? machine->stateSize() : 0; }
 
 RETRO_API bool retro_serialize(void* data, size_t size) {
     if (!machine || size < retro_serialize_size()) return false;
     auto* out = static_cast<uint8_t*>(data);
     machine->saveState(out);
-    std::memcpy(out + machine->stateSize(), &audioCarry, sizeof(double));
     return true;
 }
 
 RETRO_API bool retro_unserialize(const void* data, size_t size) {
     if (!machine || size < retro_serialize_size()) return false;
     const auto* in = static_cast<const uint8_t*>(data);
-    if (!machine->loadState(in, machine->stateSize())) return false;
-    std::memcpy(&audioCarry, in + machine->stateSize(), sizeof(double));
-    return true;
+    return machine->loadState(in, machine->stateSize());
 }
 
 RETRO_API void retro_cheat_reset(void) {}

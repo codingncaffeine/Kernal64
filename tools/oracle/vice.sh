@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Runs the reference emulator (built by tools/oracle/build-vice.sh) headless in its
-# container, with no network, no sound and no input. The repository is mounted at /k64,
-# so file arguments are given relative to the repository root as /k64/... paths.
+# container, with no network, no sound hardware and no input. The repository is mounted
+# at /k64, so file arguments are given relative to the repository root as /k64/... paths.
+#
+# Its sound chip must be running for any program that reads it, so sound emulation is on
+# and written to /dev/null through the file-writing device. (With the "dummy" device the
+# sample buffer is never emptied: after the first buffer the SID stops being clocked,
+# and programs that wait for an oscillator or envelope value never finish.)
 #
 #   tools/oracle/vice.sh [x64sc options...]
 #
@@ -27,4 +32,4 @@ exec podman run --rm -t --network none --cpus 1 -v "$ROOT":/k64:Z k64-vice-oracl
     -VICIIextpal -VICIIpalette /k64/tools/oracle/index.vpl -VICIIfilter 0 \
     -raminitstartvalue 0 -raminitvalueinvert 64 -raminitvalueoffset 0 -raminitpatterninvert 0 \
     -raminitstartrandom 0 -raminitrepeatrandom 0 -raminitrandomchance 0 \
-    -sounddev dummy +sound "$@"
+    -sound -sounddev wav -soundarg /dev/null "$@"

@@ -1,0 +1,12 @@
+combined waveforms: accumulator values (of 4096) whose OSC byte equals the samples
+chip  combination               reference   suite 0   suite 1 chips differ
+6581  sawtooth+triangle              4096      4075      4071           21
+6581  pulse+triangle                 4043      3336      3337          759
+6581  pulse+sawtooth                 3931      2744      2745         1367
+6581  pulse+sawtooth+triangle        4094      4082      4082           14
+6581  smallest distance of a line voltage from the threshold: 9.74e-07 of the supply voltage
+8580  sawtooth+triangle              4056      3916      3914          166
+8580  pulse+triangle                 4042      3939      3917          147
+8580  pulse+sawtooth                 4024      3857      3883          224
+8580  pulse+sawtooth+triangle        4054      4037      4041           33
+8580  smallest distance of a line voltage from the threshold: 9.04e-07 of the supply voltage

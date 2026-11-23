@@ -4,10 +4,14 @@
 //   k64host CORE.so [--content FILE] [--frames N] [--option KEY=VALUE]...
 //                   [--system DIR] [--save DIR] [--dump FILE.ppm] [--check]
 //                   [--type TEXT] [--type-at FRAME] [--expect-screen TEXT]
+//                   [--expect-tone HZ DB_MIN DB_MAX] [--expect-silence]
 //
 // --type presses the keys for TEXT one at a time from frame --type-at (default 200),
 // each held 3 frames and released 3 ("\n" = RETURN). --expect-screen fails the run
 // unless TEXT is in the C64 text screen ($0400), read through RETRO_MEMORY_SYSTEM_RAM.
+// --expect-tone fails the run unless the last half second of audio is a tone of HZ (within
+// 0.1 %) at a level between DB_MIN and DB_MAX (RMS, dB below full scale); --expect-silence
+// unless every sample of the run is zero. The audio is only ever looked at as numbers.
 // --check runs the conformance checks and exits non-zero on the first failure.
 // Without it the run prints a summary only.
 #include "libretro.h"
@@ -50,7 +54,7 @@ struct Frame {
     std::vector<uint32_t> pixels;
 } lastFrame;
 unsigned framesSeen = 0;
-uint64_t audioFrames = 0;
+uint64_t audioFrames = 0, audioFramesFirst = 0;
 int failures = 0;
 
 void fail(const char* fmt, ...) {
@@ -121,10 +125,45 @@ void videoRefresh(const void* data, unsigned width, unsigned height, size_t pitc
                     width * sizeof(uint32_t));
 }
 
-void audioSample(int16_t, int16_t) { ++audioFrames; }
-size_t audioBatch(const int16_t*, size_t frames) {
+std::vector<int16_t> audioLeft;   // everything the core sent, left channel
+bool audioChannelsDiffer = false;
+void audioSample(int16_t l, int16_t r) {
+    ++audioFrames;
+    audioLeft.push_back(l);
+    if (l != r) audioChannelsDiffer = true;
+}
+size_t audioBatch(const int16_t* data, size_t frames) {
     audioFrames += frames;
+    for (size_t i = 0; i < frames; ++i) {
+        audioLeft.push_back(data[2 * i]);
+        if (data[2 * i] != data[2 * i + 1]) audioChannelsDiffer = true;
+    }
     return frames;
+}
+// Frequency (from the first to the last upward crossing of the mean, each placed between
+// its two samples) and level (RMS around the mean, in dB below full scale) of the last half
+// second of audio.
+struct Tone { double hz, db; };
+Tone measureTone(double sampleRate) {
+    const size_t n = static_cast<size_t>(sampleRate / 2);
+    if (audioLeft.size() < n + 1) return {0.0, -200.0};
+    const int16_t* x = audioLeft.data() + (audioLeft.size() - n);
+    double mean = 0.0;
+    for (size_t i = 0; i < n; ++i) mean += x[i];
+    mean /= static_cast<double>(n);
+    double sq = 0.0, first = 0.0, last = 0.0;
+    int crossings = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const double a = i > 0 ? x[i - 1] - mean : 0.0, b = x[i] - mean;
+        sq += b * b;
+        if (i > 0 && a < 0.0 && b >= 0.0) {
+            last = static_cast<double>(i - 1) + a / (a - b);
+            if (crossings++ == 0) first = last;
+        }
+    }
+    const double rms = std::sqrt(sq / static_cast<double>(n)) / 32768.0;
+    const double hz = crossings > 1 ? (crossings - 1) / ((last - first) / sampleRate) : 0.0;
+    return {hz, rms > 0.0 ? 20.0 * std::log10(rms) : -200.0};
 }
 // Scripted typing: the key held during the current frame (or none).
 std::string typeText;
@@ -141,6 +180,7 @@ unsigned keyFor(char ch) {
     case '-': return RETROK_EQUALS;         // = = -
     case '.': return RETROK_PERIOD;
     case ',': return RETROK_COMMA;
+    case ':': return RETROK_SEMICOLON;      // ; = :
     case '/': return RETROK_SLASH;
     default: return RETROK_UNKNOWN;
     }
@@ -189,6 +229,8 @@ int main(int argc, char** argv) {
     unsigned frames = 60;
     bool check = false;
     std::vector<std::string> expectScreen;
+    double expectHz = 0.0, expectDbMin = 0.0, expectDbMax = 0.0;
+    bool expectSilence = false;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -206,6 +248,8 @@ int main(int argc, char** argv) {
             for (size_t p = 0; (p = typeText.find("\\n", p)) != std::string::npos;) typeText.replace(p, 2, "\n");
         } else if (a == "--type-at") typeAt = static_cast<unsigned>(std::stoul(next()));
         else if (a == "--expect-screen") expectScreen.push_back(next());
+        else if (a == "--expect-tone") { expectHz = std::stod(next()); expectDbMin = std::stod(next()); expectDbMax = std::stod(next()); }
+        else if (a == "--expect-silence") expectSilence = true;
         else if (a == "--option") {
             std::string kv = next();
             auto eq = kv.find('=');
@@ -255,6 +299,7 @@ int main(int argc, char** argv) {
     for (unsigned f = 0; f < frames; ++f) {
         currentFrame = f;
         c.retro_run();
+        if (f == 0) audioFramesFirst = audioFrames;
         hashes.push_back(fnv1a(lastFrame.pixels.data(), lastFrame.pixels.size() * 4));
         if (f + 1 == frames / 2) {
             stateAtHalf.resize(stateSize);
@@ -274,10 +319,12 @@ int main(int argc, char** argv) {
             fail("frame %ux%u differs from the reported geometry", lastFrame.width, lastFrame.height);
         if (lastFrame.width > av.geometry.max_width || lastFrame.height > av.geometry.max_height)
             fail("frame larger than the reported maximum");
-        // Audio: the batch per frame must add up to the sample rate over time, within one sample.
-        const double expected = frames * av.timing.sample_rate / av.timing.fps;
-        if (std::fabs(static_cast<double>(audioFrames) - expected) > 1.0)
-            fail("audio %llu frames, expected %.2f", static_cast<unsigned long long>(audioFrames), expected);
+        // Audio: the batches must add up to the sample rate over time, within one sample.
+        // Counted from the second frame: the first one after power on is a short one (it
+        // ends where the first vertical blanking starts).
+        const double expected = (frames - 1) * av.timing.sample_rate / av.timing.fps;
+        if (std::fabs(static_cast<double>(audioFrames - audioFramesFirst) - expected) > 1.0)
+            fail("audio %llu frames after the first, expected %.2f", static_cast<unsigned long long>(audioFrames - audioFramesFirst), expected);
         if (stateSize == 0) fail("serialize size is zero");
 
         // Restoring the half-way state and running the second half again must reproduce every frame.
@@ -316,6 +363,19 @@ int main(int argc, char** argv) {
             for (const auto& e : expectScreen)
                 if (screen.find(e) == std::string::npos) fail("text not on the screen: \"%s\"\n%s", e.c_str(), screen.c_str());
         }
+    }
+
+    if (expectHz > 0.0) {
+        const Tone t = measureTone(av.timing.sample_rate);
+        std::printf("audio: %.2f Hz at %.1f dB\n", t.hz, t.db);
+        if (std::fabs(t.hz - expectHz) > expectHz * 0.001) fail("tone of %.2f Hz, expected %.2f", t.hz, expectHz);
+        if (t.db < expectDbMin || t.db > expectDbMax) fail("level %.1f dB, expected %.1f .. %.1f", t.db, expectDbMin, expectDbMax);
+        if (audioChannelsDiffer) fail("left and right channels differ");
+    }
+    if (expectSilence) {
+        size_t loud = 0;
+        for (int16_t v : audioLeft) loud += v != 0;
+        if (loud) fail("%zu audio samples are not zero", loud);
     }
 
     c.retro_unload_game();

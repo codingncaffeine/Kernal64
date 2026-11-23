@@ -9,6 +9,8 @@
 
 namespace k64 {
 
+struct WaveTables;
+
 enum class SidModel : uint8_t { Mos6581, Mos8580 };
 
 class Sid {
@@ -17,7 +19,7 @@ public:
 
     void setModel(SidModel model);
     SidModel model() const { return model_; }
-    void reset();   // the RES pin; the oscillators' accumulators keep their value (W4)
+    void reset();   // the RES pin; accumulators and envelope counters keep their value (W4, E7)
 
     void clock();
     uint8_t read(unsigned reg);            // reg = address & $1F
@@ -43,13 +45,17 @@ public:
         uint16_t triSawPipeline = 0x555;   // 8580: triangle/sawtooth one cycle late
         uint32_t floatingTtl = 0;    // cycles until a floating DAC input has faded
         // Envelope generator.
-        uint16_t rate = 0, ratePeriod = 9;
+        uint16_t rate = 0, rateCompare = 8;
+        uint8_t rateMatch = 0;       // the rate counter equaled its compare value a cycle ago
         uint8_t expCounter = 0, expPeriod = 1;
-        uint8_t env = 0;             // the envelope counter
-        uint8_t envPipeline = 0;     // a decrement decided in the last cycle
-        uint8_t holdZero = 1;
+        uint8_t env = 0xAA;          // the envelope counter; odd bits set at power on
+        uint8_t envRead = 0xAA;      // what ENV3 shows: the counter one cycle ago
+        uint8_t envPipeline = 0;     // cycles until the counter steps
+        uint8_t expPipeline = 0;     // cycles until the exponential counter's match takes effect
+        uint8_t statePipeline = 0;   // cycles left of a state change started by the gate
+        uint8_t holdZero = 0;
         uint8_t attack = 0, decay = 0, sustain = 0, release = 0;
-        uint8_t state = Release;
+        uint8_t state = Release, nextState = Release;
     };
     struct State {
         Voice voice[3];
@@ -61,8 +67,28 @@ public:
     const State& state() const { return s_; }
     void setState(const State& s) { s_ = s; }
 
+    // W10: the 12 output bits of a combination of triangle (1), sawtooth (2) and pulse (4)
+    // for the upper 12 accumulator bits, pulse level high; and the smallest distance of any
+    // line voltage of that model's combinations from the switching threshold (in units of
+    // the supply voltage), for the tools.
+    static uint16_t combinedWave(SidModel model, unsigned waveform, unsigned index);
+    static double combinedWaveMargin(SidModel model);
+
+    // D1: what the waveform DAC (12 bits) and the envelope DAC (8 bits) make of a code,
+    // on the scale of the code (0 .. 4095, 0 .. 255).
+    static uint16_t waveDac(SidModel model, unsigned code);
+    static uint16_t envelopeDac(SidModel model, unsigned code);
+    // D2: a voice's output: the waveform DAC's level around its zero level, times the
+    // envelope DAC's level. About -2048*255 .. 2047*255.
+    int voiceOutput(int voice) const;
+    // The chip's audio output, about -1 .. 1. PROVISIONAL (hw/sid.md section F is not built):
+    // the voices are summed whatever the filter routing says, times the volume register.
+    double audioOut() const;
+
 private:
     void clockEnvelope(Voice& v);
+    void stepStateChange(Voice& v);
+    void fadeNoise(Voice& v);
     void setExpPeriod(Voice& v);
     void clockOscillator(Voice& v);
     void clockNoise(Voice& v);
@@ -73,6 +99,7 @@ private:
     void writeControl(Voice& v, const Voice& source, uint8_t control);
 
     SidModel model_;
+    const WaveTables* tables_;   // W10: the combined waveforms of this chip model
     State s_;
 };
 

@@ -11,6 +11,7 @@
 #include "vic2.h"
 #include "cia6526.h"
 #include "sid.h"
+#include "audio.h"
 
 #include <array>
 #include <cstddef>
@@ -37,6 +38,12 @@ public:
     SidModel sidModel() const { return sid_.model(); }
     const Sid& sid() const { return sid_; }
     const Timing& timing() const { return *timing_; }
+
+    // Audio: produced once a sample rate is set (the test tools run without it). Mono,
+    // about -1 .. 1; whatever a frame produced is read after it.
+    void setAudioRate(double sampleRate);
+    size_t audioAvailable() const { return resampler_.available(); }
+    size_t readAudio(float* dst, size_t max) { return resampler_.read(dst, max); }
 
     void runFrame();    // one video frame of cycles, ending where vertical blanking starts
     void tick();        // one system cycle
@@ -138,6 +145,9 @@ private:
     Vic2 vic_{*this, kTimingPal};
     Cia6526 cia1_{*this, 0}, cia2_{*this, 1};
     Sid sid_;
+    BoardFilter boardFilter_;
+    Resampler resampler_;   // not part of a save state: it carries on across a load
+    double audioRate_ = 0.0;
 };
 
 } // namespace k64

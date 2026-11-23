@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 8;
+constexpr uint32_t kStateVersion = 9;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
@@ -27,7 +27,15 @@ void C64::setRoms(const RomSet& roms) {
 void C64::setModel(VicModel model) {
     timing_ = &timingFor(model);
     vic_.setTiming(*timing_);
+    setAudioRate(audioRate_);   // the clock changed
     reset();
+}
+
+void C64::setAudioRate(double sampleRate) {
+    audioRate_ = sampleRate;
+    if (audioRate_ <= 0.0) return;
+    boardFilter_.configure(timing_->clockHz);
+    resampler_.configure(timing_->clockHz, audioRate_);
 }
 
 void C64::reset() {
@@ -39,6 +47,7 @@ void C64::reset() {
     colorRam_.fill(0);
     vic_.reset();
     sid_ = Sid(sid_.model());   // power on: the oscillators start from their power-on value
+    boardFilter_.reset();
     cia1_.reset();
     cia2_.reset();
     cpu_.reset();
@@ -290,6 +299,7 @@ void C64::tick() {
     s_.cia2IrqSeen = cia2_.irq();
     cpu_.tick();
     sid_.clock();
+    if (audioRate_ > 0.0) resampler_.push(static_cast<float>(boardFilter_.clock(sid_.audioOut())));
     cia1_.clock();
     cia2_.clock();
     // The TOD pins see the mains frequency (hw/cia.md rule 18): exactly mainsHz ticks per
@@ -329,7 +339,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
+    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -350,6 +360,8 @@ void C64::saveState(uint8_t* out) const {
     put(&c2, sizeof c2);
     const Sid::State ss = sid_.state();
     put(&ss, sizeof ss);
+    const BoardFilter::State bs = boardFilter_.state();
+    put(&bs, sizeof bs);
     put(ram_.data(), ram_.size());
     put(colorRam_.data(), colorRam_.size());
     const auto snap = cpu_.snapshot();
@@ -378,6 +390,8 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     get(&c2, sizeof c2);
     Sid::State ss;
     get(&ss, sizeof ss);
+    BoardFilter::State bs;
+    get(&bs, sizeof bs);
     if (vs.cycle < 1 || vs.cycle > timing_->cyclesPerLine || vs.line < 0 || vs.line >= timing_->linesPerFrame ||
         vs.vmli >= 40 || vs.dmli > 40 || vs.xscrollPipe > 7)
         return false;
@@ -386,6 +400,7 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     cia1_.setState(c1);
     cia2_.setState(c2);
     sid_.setState(ss);
+    boardFilter_.setState(bs);
     get(ram_.data(), ram_.size());
     get(colorRam_.data(), colorRam_.size());
     Cpu6502<CpuBus>::Snapshot snap;

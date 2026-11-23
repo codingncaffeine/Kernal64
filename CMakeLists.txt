@@ -23,10 +23,13 @@ add_library(k64core STATIC
   src/core/vic2.cpp
   src/core/cia6526.cpp
   src/core/sid.cpp
+  src/core/audio.cpp
   src/core/roms.cpp
 )
 target_include_directories(k64core PUBLIC src/core)
-target_compile_options(k64core PRIVATE ${K64_WARNINGS})
+# No fused multiply-add: floating-point state (the audio output network) must come out the
+# same on every platform, or save states and netplay checksums differ between them.
+target_compile_options(k64core PRIVATE ${K64_WARNINGS} -ffp-contract=off)
 
 # The libretro core.
 add_library(kernal64_libretro SHARED src/libretro/libretro.cpp)
@@ -64,29 +67,28 @@ if(EXISTS ${K64_P6502}/perfect6502.c)
   target_link_libraries(cpudiff PRIVATE p6502)
 endif()
 
-# Differential test of the SID against the reference engine, built only when its fetched
-# source is present (tools/fetch.sh resid). Never shipped.
-set(K64_RESID ${CMAKE_SOURCE_DIR}/gitignore/external/resid/src)
-if(EXISTS ${K64_RESID}/sid.cc)
-  set(RESID_INLINING 1)
-  set(RESID_INLINE inline)
-  set(RESID_BRANCH_HINTS 1)
-  set(RESID_FPGA_CODE 0)
-  set(RESID_CONSTEVAL consteval)
-  set(RESID_CONSTEXPR "static constexpr")
-  set(RESID_CONSTINIT constinit)
-  set(HAVE_BUILTIN_EXPECT 1)
-  configure_file(${K64_RESID}/siddefs.h.in ${CMAKE_BINARY_DIR}/resid/siddefs.h @ONLY)
+# Differential test of the SID against the reference engine: the copy inside the reference
+# emulator's tree (tools/oracle/build-vice.sh), which is the one the test programs are
+# checked with. Built only when that tree is present. Never shipped.
+set(K64_RESID ${CMAKE_SOURCE_DIR}/gitignore/external/vice/src-tree/src/resid)
+set(K64_RESID_CONFIG ${CMAKE_SOURCE_DIR}/gitignore/external/vice/build/src/resid)
+if(EXISTS ${K64_RESID}/sid.cc AND EXISTS ${K64_RESID_CONFIG}/siddefs.h)
   add_library(resid STATIC ${K64_RESID}/sid.cc ${K64_RESID}/voice.cc ${K64_RESID}/wave.cc ${K64_RESID}/envelope.cc
-              ${K64_RESID}/filter.cc ${K64_RESID}/extfilt.cc ${K64_RESID}/pot.cc ${K64_RESID}/version.cc)
-  target_include_directories(resid SYSTEM PUBLIC ${CMAKE_BINARY_DIR}/resid ${K64_RESID})
+              ${K64_RESID}/filter8580new.cc ${K64_RESID}/extfilt.cc ${K64_RESID}/pot.cc
+              ${K64_RESID}/dac.cc ${K64_RESID}/version.cc)
+  target_include_directories(resid SYSTEM PUBLIC ${K64_RESID_CONFIG} ${K64_RESID})
   target_compile_definitions(resid PRIVATE VERSION="1.0")
   target_compile_options(resid PRIVATE -w)
   add_executable(siddiff tools/siddiff/main.cpp)
-  target_include_directories(siddiff SYSTEM PRIVATE ${K64_RESID}/..)
+  target_include_directories(siddiff SYSTEM PRIVATE ${K64_RESID}/..)   # its headers as "resid/sid.h"
   target_link_libraries(siddiff PRIVATE k64core resid)
   target_compile_options(siddiff PRIVATE ${K64_WARNINGS})
 endif()
+
+# Checks the audio output path (rate conversion, the board's output network) with numbers.
+add_executable(audiotest tools/audiotest/main.cpp)
+target_link_libraries(audiotest PRIVATE k64core)
+target_compile_options(audiotest PRIVATE ${K64_WARNINGS})
 
 # Runs 6502 test program images (functional test, illegal-opcode tests).
 add_executable(imgtest tools/imgtest/main.cpp)

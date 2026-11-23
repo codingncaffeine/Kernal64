@@ -17,8 +17,8 @@
 #   WORSE      reference passes, we do not       better  we pass, the reference does not
 #   known      WORSE, and listed with its reason in tests/suite-known.txt (hardware of a
 #              later phase); FIXED = listed there but no longer worse: remove the line
-# The SID directory's exit-code programs are judged by their own verdict alone (WORSE when
-# they fail): they were checked on real chips, and the reference emulator fails many.
+# The SID directory's exit-code programs were checked on real chips: failing one is WORSE
+# even where the reference emulator fails it too.
 # Exit status 0 when no test is WORSE or FIXED. A quarter of the machine's cores run tests at a time
 # (K64_SUITE_JOBS overrides), at low priority. The seconds each of our runs took are in
 # scratch/suite/times.txt, slowest first.
@@ -82,7 +82,7 @@ run_one() {
         nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" --autostart "$file" --cycles "$cycles" \
             --raster "$out/$tag.raw" >"$out/$tag.k64.log" 2>&1
         if [ ! -s "$shots/$key2.png" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
-            K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sound -sidenginemodel $sidref -ciamodel $ciaref -jamaction 1 -warp -VICIIborders 2 \
+            K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sidenginemodel $sidref -ciamodel $ciaref -jamaction 1 -warp -VICIIborders 2 \
                 -limitcycles "$cycles" -autostartprgmode 1 -autostart "/k64/${file#"$root"/}" \
                 -exitscreenshot "/k64/${shots#"$root"/}/$key2.png" >"$out/$tag.ref.log" 2>&1
         fi
@@ -98,26 +98,21 @@ run_one() {
     nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" --autostart "$file" --debugcart --cycles "$cycles" \
         >"$out/$tag.k64.log" 2>&1
     local ours=$?
-    # The SID programs carry their own verdict, checked on real chips; the reference
-    # emulator's sound engine is older than many of them and fails where the chip passes.
-    # They are judged by the program alone.
-    if [ "${dir#../SID/}" != "$dir" ]; then
-        if [ $ours = 0 ]; then printf '%-9s %s (ours 0, judged by the program)\n' same-pass "$name"
-        else printf '%-9s %s (ours %s, judged by the program)\n' WORSE "$name" "$ours"; fi
-        return
-    fi
     local rel="${file#"$root"/}"
     local cache="$root/gitignore/external/suite-ref.cache" key ref
     key="$(sha1sum "$file" | cut -c1-16) $vkey$ckey $cycles"
     ref="$(grep -F -- "$key " "$cache" 2>/dev/null | tail -1 | awk '{print $NF}')"
     if [ -z "$ref" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
-        K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sound -sidenginemodel $sidref -ciamodel $ciaref -debugcart -jamaction 1 -warp \
+        K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sidenginemodel $sidref -ciamodel $ciaref -debugcart -jamaction 1 -warp \
             -limitcycles "$cycles" -autostartprgmode 1 -autostart "/k64/$rel" >"$out/$tag.ref.log" 2>&1
         ref=$?
         flock "$cache.lock" sh -c "echo '$key $ref' >> '$cache'"
     fi
     local r
-    if [ $ours = 0 ] && [ $ref = 0 ]; then r=same-pass
+    # The SID directory's programs carry their own verdict, checked on real chips: failing
+    # one is WORSE even where the reference emulator fails it too.
+    if [ "${dir#../SID/}" != "$dir" ] && [ $ours != 0 ]; then r=WORSE
+    elif [ $ours = 0 ] && [ $ref = 0 ]; then r=same-pass
     elif [ $ours != 0 ] && [ $ref != 0 ]; then r=same-fail
     elif [ $ref = 0 ]; then r=WORSE
     else r=better; fi

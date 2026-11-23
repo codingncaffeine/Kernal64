@@ -8,7 +8,8 @@
 # read-out and the KERNAL booting to BASIC on every model; the CPU against the
 # per-opcode bus traces, the functional and undocumented-opcode test programs and
 # the transistor-level chip; the SID's digital part against the reference engine cycle by
-# cycle; the VIC-II against the article's rules and the start-up
+# cycle, its DACs code by code and its combined waveforms against chip samples; the audio
+# output path as numbers and a tone through the API; the VIC-II against the article's rules and the start-up
 # screen against the reference emulator (tools/oracle/build-vice.sh); the reference
 # suite's CPU, CIA, interrupt, general and VIC-II programs on both CIA types and both VIC-II
 # generations; our own probe and raster-effect programs; the core loading in RetroArch
@@ -51,9 +52,10 @@ ROMS="$ROOT/gitignore"
 
 step "libretro conformance"
 for model in pal ntsc ntsc-old pal-new ntsc-new pal-old; do
-    # Typing at the READY prompt through the API: BASIC must answer.
+    # Typing at the READY prompt through the API: BASIC must answer. Nothing has touched the
+    # SID: every audio sample is zero.
     "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 400 --check --option kernal64_model=$model \
-        --type 'PRINT 6*7\n' --expect-screen ' 42' \
+        --type 'PRINT 6*7\n' --expect-screen ' 42' --expect-silence \
         >"$BUILD/host-$model.log" 2>&1 || { tail -5 "$BUILD/host-$model.log"; bad "conformance ($model)"; }
     grep -q "missing system files" "$BUILD/host-$model.log" && bad "system ROMs not found in $ROMS"
 done
@@ -61,6 +63,19 @@ done
 for want in "none 320x200" "small 384x270"; do
     "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 60 --check --option kernal64_border="${want% *}" >"$BUILD/host-border.log" 2>&1
     grep -q "last frame ${want#* } " "$BUILD/host-border.log" || bad "border option ${want% *}: not ${want#* }"
+done
+
+step "audio"
+# The rate conversion and the board's output network, as numbers.
+"$BUILD/audiotest" >"$BUILD/audiotest.log" 2>&1 || { tail -5 "$BUILD/audiotest.log"; bad "audio output path"; }
+# Through the API: a triangle on voice 1 (frequency register 7493, full volume and sustain)
+# comes out at register * clock / 2^24 Hz, one voice's level, on both chips and clocks.
+for run in "pal 440.02 6581" "ntsc 456.76 6581" "ntsc-old 456.76 8580" "pal-new 440.02 8580"; do
+    # shellcheck disable=SC2086
+    set -- $run
+    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1000 --option kernal64_model=$1 --option kernal64_sid=$3 \
+        --type 'POKE54296,15:POKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n' --expect-tone $2 -16 -13 \
+        >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "tone ($1, $3)"; }
 done
 
 step "memory map and boot"
@@ -127,14 +142,22 @@ else bad "chip comparison not built: tools/fetch.sh perfect6502"; fi
 step "SID against the reference engine"
 if [ -x "$BUILD/siddiff" ]; then
     for m in 6581 8580; do
-        for run in "2 300000 6" "16 300000 6" "400 3000000 6" "40000 40000000 3"; do
+        # A write every N cycles: dense traffic down to almost none (the last run leaves the
+        # chip alone long enough for the 8580's slow fades).
+        for run in "2 300000 6" "16 300000 6" "400 3000000 6" "40000 40000000 3" "3000000 60000000 3"; do
             # shellcheck disable=SC2086
             set -- $run
             "$BUILD/siddiff" --model $m --every "$1" --cycles "$2" --seeds "$3" >"$BUILD/siddiff.log" 2>&1 \
                 || { grep -A7 DIFFERS "$BUILD/siddiff.log" | head -8; bad "SID comparison ($m, a write every $1 cycles)"; }
         done
     done
-else bad "SID comparison not built: tools/fetch.sh resid"; fi
+    # The combined waveforms are a model, not the reference's sampled tables: its match
+    # with the chip samples is a number, kept in tests/wave-score.txt. A change of the
+    # model changes the numbers and has to change that file with them.
+    "$BUILD/siddiff" --score "$EXT/testprogs/SID/resid-test" >"$BUILD/wave-score.txt" 2>&1
+    diff -u tests/wave-score.txt "$BUILD/wave-score.txt" || bad "combined waveforms: the score differs from tests/wave-score.txt"
+    "$BUILD/siddiff" --dacs >"$BUILD/dacs.log" 2>&1 || { cat "$BUILD/dacs.log"; bad "DAC tables against the reference"; }
+else bad "SID comparison not built: tools/oracle/build-vice.sh"; fi
 
 if [ "$QUICK" = 0 ]; then
     step "RetroArch behind the wall"

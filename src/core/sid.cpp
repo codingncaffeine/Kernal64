@@ -1,33 +1,250 @@
 #include "sid.h"
 
+#include <array>
+#include <cmath>
+
 namespace k64 {
 
 namespace {
-// E1: cycles per envelope step for the rate values 0-15 (the data sheet's times / 256,
-// one more than rounded, as measured on the chip).
-constexpr uint16_t kRatePeriod[16] = {9,   32,  63,   95,   149,  220,   267,   313,
-                                      392, 977, 1954, 3126, 3907, 11720, 19532, 31251};
-// W4: cycles of TEST until the noise register's cells have drifted to all ones.
-constexpr uint32_t kNoiseReset[2] = {0x8000, 0x950000};
-// W8: cycles until a floating waveform DAC input reads 0.
-constexpr uint32_t kFloatingTtl[2] = {200000, 5000000};
+// E1: what the rate counter is compared with for the rate values 0-15. The match clears the
+// counter a cycle later, so an envelope step takes one cycle more than this: 9, 32, 63, ...
+// (the data sheet's times / 256).
+constexpr uint16_t kRateCompare[16] = {8,   31,  62,   94,   148,  219,   266,   312,
+                                       391, 976, 1953, 3125, 3906, 11719, 19531, 31250};
+// W4: cycles of TEST until the first cells of the noise register have drifted to one, and
+// from one step of that drift to the next.
+constexpr uint32_t kNoiseFadeStart[2] = {35000, 2519864};
+constexpr uint32_t kNoiseFadeStep[2] = {1000, 315000};
+// W8: cycles until a floating waveform DAC input loses its first bits, and per step after.
+constexpr uint32_t kFloatingStart[2] = {182000, 4400000};
+constexpr uint32_t kFloatingStep[2] = {1500, 50000};
 // X3: cycles until the last byte on the data bus has faded.
 constexpr uint32_t kBusTtl[2] = {0x1D00, 0xA2000};
 // W3/W10: the noise register bits behind waveform output bits 11..4.
 constexpr int kNoiseTap[8] = {20, 18, 14, 11, 9, 5, 2, 0};
+
+// ---- combined waveforms (W10) -----------------------------------------------------------
+//
+// Selecting more than one of triangle, sawtooth and pulse shorts their sources together on
+// the twelve DAC input lines. The model is that circuit as a network of conductances:
+//
+//   line W(n)  --gs--  D(n)        sawtooth: accumulator bit n (gsTop for bit 11)
+//   line W(n)  --gt--  D(n-1)      triangle: accumulator bit n-1; W(0) --gtLow-- ground
+//   line W(n)  --gp--  P(n)        pulse: a tap of the pulse line
+//   P(n) --gl-- P(n+1), P(11) --gFeed-- supply       the pulse line, fed at the top end
+//   D(k) --gHigh-- supply (bit set)  or  --gLow-- ground (bit clear)
+//
+// A driver pulls up weakly and down strongly, so a clear bit wins and also drags the lines
+// near it down: through its neighbors' drivers (sawtooth + triangle put D(n) on two lines)
+// and through the pulse line. A line reads 1 above the threshold. All conductances are
+// relative to the sawtooth switch (gs = 1), voltages to the supply.
+//
+// The values are fitted so that the upper 8 bits equal what was sampled from real chips
+// through OSC3 for all 4096 accumulator values (tools/siddiff --waves scores them); the
+// circuit, not a table, decides every bit, including the low four that OSC3 cannot show.
+struct WaveNet {
+    double gLow, gHigh;   // a driver's pull to ground / to the supply
+    double gt, gtLow;     // triangle switch; line 0 to ground
+    double gtUpper;       // 8580: triangle switches of lines 11-4
+    double gsTop;         // sawtooth switch of line 11
+    double gp, gl, gFeed; // pulse switch, pulse line segment, the line's feed
+    double threshold;
+};
+// [chip][combination]; 0 = not part of that combination's circuit.
+constexpr WaveNet kWaveNet[2][4] = {
+    {
+     {1.4709, 0.0415058, 0.937336, 1.98729, 0.937336, 1.16369, 0, 0, 0, 0.336462},   // ST
+     {21.0333, 0.103829, 1, 31.9139, 1, 0, 1.02409, 13.3887, 0.485742, 0.420355},   // PT
+     {2.20441, 0.590311, 0, 0, 0, 1096.63, 0.767794, 15.92, 1.07649, 0.789634},   // PS
+     {4.09184, 0.0261213, 0.778112, 1.14991, 0.778112, 0.321844, 0.550316, 29.6968, 1.34472, 0.54279},   // PST
+    },
+    {
+     {0.877857, 0.0103743, 0.425589, 0.604121, 0.613909, 0.571147, 0, 0, 0, 0.157904},   // ST
+     {105.487, 0.0832156, 1, 2.14399, 1.19217, 0, 2.31849, 4.92373, 0.383194, 0.309318},   // PT
+     {2.76336, 0.0326999, 0, 0, 0, 0.702409, 1.04312, 2.44159, 0.150155, 0.277722},   // PS
+     {0.151016, 0.00999101, 0.163315, 0.221118, 0.314586, 1.47723, 0.0989549, 0.0775693, 0.0418464, 0.434977},   // PST
+    },
+};
 } // namespace
 
-Sid::Sid(SidModel model) : model_(model) { reset(); }
+struct WaveTables {
+    std::array<std::array<uint16_t, 4096>, 4> wave;   // ST, PT, PS, PST
+    double margin = 1.0;   // the smallest distance of a line voltage from the threshold
+};
 
-void Sid::setModel(SidModel model) { model_ = model; }
+namespace {
+
+// Node 3n = D(n), 3n+1 = W(n), 3n+2 = P(n): every connection stays within 4 places, so the
+// node equations are a band matrix (symmetric, diagonally dominant: no pivoting needed).
+constexpr int kNodes = 36, kBand = 4;
+
+WaveTables buildWaveTables(SidModel model) {
+    WaveTables t;
+    for (int c = 0; c < 4; ++c) {
+        const unsigned wf = c == 0 ? 3 : c == 1 ? 5 : c == 2 ? 6 : 7;
+        const WaveNet& p = kWaveNet[static_cast<int>(model)][c];
+        const bool saw = wf & 2, tri = wf & 1, pulse = wf & 4;
+        double base[kNodes][2 * kBand + 1] = {};
+        double baseRhs[kNodes] = {};
+        bool used[kNodes] = {};
+        auto link = [&](int a, int b, double g) {
+            base[a][kBand] += g; base[b][kBand] += g;
+            base[a][kBand + b - a] -= g; base[b][kBand + a - b] -= g;
+        };
+        for (int n = 0; n < 12; ++n) used[3 * n + 1] = true;
+        if (saw) for (int n = 0; n < 12; ++n) { link(3 * n + 1, 3 * n, n == 11 ? p.gsTop : 1.0); used[3 * n] = true; }
+        if (tri) {
+            for (int n = 1; n < 12; ++n) {
+                link(3 * n + 1, 3 * (n - 1), (model == SidModel::Mos8580 && n >= 4) ? p.gtUpper : p.gt);
+                used[3 * (n - 1)] = true;
+            }
+            base[1][kBand] += p.gtLow;
+        }
+        if (pulse) {
+            for (int n = 0; n < 12; ++n) { link(3 * n + 1, 3 * n + 2, p.gp); used[3 * n + 2] = true; }
+            for (int n = 0; n < 11; ++n) link(3 * n + 2, 3 * n + 5, p.gl);
+            base[35][kBand] += p.gFeed;
+            baseRhs[35] += p.gFeed;
+        }
+        for (int i = 0; i < kNodes; ++i) if (!used[i]) base[i][kBand] = 1;
+
+        for (unsigned x = 0; x < 4096; ++x) {
+            unsigned bits = x;
+            // The triangle alone folds: with the top bit set the inverted bits are selected.
+            // With the sawtooth also selected there is no fold, and on the 6581 the top
+            // bit's line is held low (the chips' samples do not depend on it).
+            if (tri && !saw && (x & 0x800)) bits = ~x;
+            if (tri && saw && model == SidModel::Mos6581) bits &= 0x7FF;
+            double a[kNodes][2 * kBand + 1], r[kNodes];
+            for (int i = 0; i < kNodes; ++i) {
+                for (int j = 0; j <= 2 * kBand; ++j) a[i][j] = base[i][j];
+                r[i] = baseRhs[i];
+            }
+            for (int k = 0; k < 12; ++k) {
+                if (!used[3 * k]) continue;
+                if (bits >> k & 1) { a[3 * k][kBand] += p.gHigh; r[3 * k] += p.gHigh; }
+                else a[3 * k][kBand] += p.gLow;
+            }
+            for (int i = 0; i < kNodes; ++i) {
+                for (int k = i + 1; k <= i + kBand && k < kNodes; ++k) {
+                    const double f = a[k][kBand + i - k] / a[i][kBand];
+                    if (f == 0) continue;
+                    for (int j = i; j <= i + kBand && j < kNodes; ++j) a[k][kBand + j - k] -= f * a[i][kBand + j - i];
+                    r[k] -= f * r[i];
+                }
+            }
+            uint16_t out = 0;
+            for (int i = kNodes - 1; i >= 0; --i) {
+                double v = r[i];
+                for (int j = i + 1; j <= i + kBand && j < kNodes; ++j) v -= a[i][kBand + j - i] * r[j];
+                r[i] = v / a[i][kBand];
+                if (i % 3 == 1) {
+                    const double d = r[i] - p.threshold;
+                    if (d > 0) out = static_cast<uint16_t>(out | (1u << (i / 3)));
+                    if (std::fabs(d) < t.margin) t.margin = std::fabs(d);
+                }
+            }
+            t.wave[c][x] = out;
+        }
+    }
+    return t;
+}
+
+const WaveTables& waveTables(SidModel model) {
+    static const WaveTables tables[2] = {buildWaveTables(SidModel::Mos6581), buildWaveTables(SidModel::Mos8580)};
+    return tables[static_cast<int>(model)];
+}
+} // namespace
+
+// ---- DACs (D1, D2) ------------------------------------------------------------------------
+//
+// Both DACs are R-2R ladders: every bit drives its node through 2R, neighboring nodes are
+// joined by R, the output is the top bit's node. The 8580's ladder is as in the textbook
+// (2R/R = 2, the bottom node terminated with 2R to ground). The 6581's has no termination
+// and 2R/R is about 2.2, so its steps are uneven. A bit that is off still passes a little
+// (the switch transistor leaks).
+namespace {
+struct Ladder { double ratio; bool terminated; double leak; };
+constexpr Ladder kLadder[2] = {{2.20, false, 0.0075}, {2.00, true, 0.0035}};
+
+template <int Bits>
+std::array<uint16_t, 1 << Bits> buildDac(const Ladder& l) {
+    // The output for one bit alone at 1 V: the node equations of the ladder are tridiagonal.
+    double weight[Bits];
+    const double g2 = 1.0 / l.ratio;   // the 2R leg, with R = 1
+    for (int bit = 0; bit < Bits; ++bit) {
+        double diag[Bits], rhs[Bits];
+        for (int i = 0; i < Bits; ++i) {
+            diag[i] = g2 + (i > 0 ? 1.0 : 0.0) + (i < Bits - 1 ? 1.0 : 0.0) + (i == 0 && l.terminated ? g2 : 0.0);
+            rhs[i] = i == bit ? g2 : 0.0;
+        }
+        for (int i = 1; i < Bits; ++i) {   // eliminate the -1 below the diagonal
+            const double f = -1.0 / diag[i - 1];
+            diag[i] += f;                  // minus f times the -1 above the diagonal
+            rhs[i] -= f * rhs[i - 1];
+        }
+        weight[bit] = rhs[Bits - 1] / diag[Bits - 1];
+    }
+    std::array<uint16_t, 1 << Bits> table{};
+    for (unsigned code = 0; code < (1u << Bits); ++code) {
+        double v = 0;
+        for (int bit = 0; bit < Bits; ++bit) v += ((code >> bit & 1) ? 1.0 : l.leak) * weight[bit];
+        table[code] = static_cast<uint16_t>(((1 << Bits) - 1) * v + 0.5);
+    }
+    return table;
+}
+
+struct DacTables {
+    std::array<uint16_t, 4096> wave;
+    std::array<uint16_t, 256> envelope;
+};
+const DacTables& dacTables(SidModel model) {
+    static const DacTables tables[2] = {{buildDac<12>(kLadder[0]), buildDac<8>(kLadder[0])},
+                                        {buildDac<12>(kLadder[1]), buildDac<8>(kLadder[1])}};
+    return tables[static_cast<int>(model)];
+}
+// D2: the waveform code at which a voice's output equals its level with the envelope at 0.
+constexpr int kWaveZero[2] = {0x380, 0x9E0};
+} // namespace
+
+uint16_t Sid::waveDac(SidModel model, unsigned code) { return dacTables(model).wave[code & 0xFFF]; }
+uint16_t Sid::envelopeDac(SidModel model, unsigned code) { return dacTables(model).envelope[code & 0xFF]; }
+
+int Sid::voiceOutput(int voice) const {
+    const Voice& v = s_.voice[voice];
+    const DacTables& d = dacTables(model_);
+    return (static_cast<int>(d.wave[v.out]) - kWaveZero[static_cast<int>(model_)]) * static_cast<int>(d.envelope[v.env]);
+}
+
+double Sid::audioOut() const {
+    int sum = voiceOutput(0) + voiceOutput(1);
+    // X4: mode bit 7 silences voice 3 when it is not routed to the filter.
+    if (!(s_.reg[0x18] & 0x80) || (s_.reg[0x17] & 0x04)) sum += voiceOutput(2);
+    return sum * (s_.reg[0x18] & 0x0F) / (15.0 * 3.0 * 2048.0 * 255.0);
+}
+
+uint16_t Sid::combinedWave(SidModel model, unsigned waveform, unsigned index) {
+    const int c = (waveform & 7) == 3 ? 0 : (waveform & 7) == 5 ? 1 : (waveform & 7) == 6 ? 2 : 3;
+    return waveTables(model).wave[c][index & 0xFFF];
+}
+
+double Sid::combinedWaveMargin(SidModel model) { return waveTables(model).margin; }
+
+Sid::Sid(SidModel model) : model_(model), tables_(&waveTables(model)) { reset(); }
+
+void Sid::setModel(SidModel model) {
+    model_ = model;
+    tables_ = &waveTables(model);
+}
 
 void Sid::reset() {
     for (Voice& v : s_.voice) {
-        const uint32_t acc = v.acc;
-        const uint16_t pipeline = v.triSawPipeline;
+        const Voice before = v;
         v = Voice{};
-        v.acc = acc;               // not changed by reset (W4)
-        v.triSawPipeline = pipeline;
+        v.acc = before.acc;                 // not changed by reset (W4)
+        v.triSawPipeline = before.triSawPipeline;
+        v.env = before.env;                 // nor is the envelope counter (E7)
+        v.envRead = before.envRead;
         setNoiseOut(v);
     }
     for (uint8_t& r : s_.reg) r = 0;
@@ -53,49 +270,60 @@ void Sid::setExpPeriod(Voice& v) {
     }
 }
 
+// E3: a gate change takes effect in steps over the next cycles.
+void Sid::stepStateChange(Voice& v) {
+    --v.statePipeline;
+    if (v.nextState == Attack) {
+        if (v.statePipeline == 0) {
+            v.state = Attack;
+            v.rateCompare = kRateCompare[v.attack];
+            v.holdZero = 0;
+        }
+    } else if ((v.state == Attack && v.statePipeline == 0) || (v.state == DecaySustain && v.statePipeline == 1)) {
+        v.state = Release;
+        v.rateCompare = kRateCompare[v.release];
+    }
+}
+
 void Sid::clockEnvelope(Voice& v) {
-    if (v.envPipeline) {   // E5: the decrement decided a cycle ago
-        v.env = static_cast<uint8_t>(v.env - 1);
-        v.envPipeline = 0;
+    v.envRead = v.env;   // E8
+    if (v.statePipeline) stepStateChange(v);
+
+    if (v.envPipeline && --v.envPipeline == 0 && !v.holdZero) {   // the counter steps
+        if (v.state == Attack) {
+            v.env = static_cast<uint8_t>(v.env + 1);
+            if (v.env == 0xFF) {
+                v.state = DecaySustain;
+                v.rateCompare = kRateCompare[v.decay];
+            }
+        } else {
+            v.env = static_cast<uint8_t>(v.env - 1);
+        }
         setExpPeriod(v);
     }
-    // E1: 15 bits; past $7FFF the counter goes on from 1.
-    v.rate = static_cast<uint16_t>(v.rate + 1);
-    if (v.rate & 0x8000) v.rate = static_cast<uint16_t>((v.rate + 1) & 0x7FFF);
-    if (v.rate != v.ratePeriod) return;
-    v.rate = 0;
 
-    if (v.state != Attack) {   // E2
-        v.expCounter = static_cast<uint8_t>(v.expCounter + 1);
-        if (v.expCounter != v.expPeriod) return;
+    if (v.expPipeline && --v.expPipeline == 0) {   // E2: the exponential counter's match
+        v.expCounter = 0;
+        if ((v.state == DecaySustain && v.env != v.sustain * 0x11) || v.state == Release) v.envPipeline = 1;
+    } else if (v.rateMatch) {   // E1: the rate counter's match, a cycle after it happened
+        v.rate = 0;
+        v.rateMatch = 0;
+        if (v.state == Attack) {
+            v.expCounter = 0;
+            v.envPipeline = 2;
+        } else if (!v.holdZero) {
+            v.expCounter = static_cast<uint8_t>(v.expCounter + 1);
+            if (v.expCounter == v.expPeriod) v.expPipeline = v.expPeriod != 1 ? 2 : 1;
+        }
     }
-    v.expCounter = 0;
-    if (v.holdZero) return;
-    switch (v.state) {
-    case Attack:
-        v.env = static_cast<uint8_t>(v.env + 1);
-        if (v.env == 0xFF) {
-            v.state = DecaySustain;
-            v.ratePeriod = kRatePeriod[v.decay];
-        }
-        break;
-    case DecaySustain:
-        if (v.env == v.sustain * 0x11) return;   // E3: both nibbles compared
-        if (v.expPeriod != 1) {
-            v.envPipeline = 1;
-            return;
-        }
-        v.env = static_cast<uint8_t>(v.env - 1);
-        break;
-    default:   // Release
-        if (v.expPeriod != 1) {
-            v.envPipeline = 1;
-            return;
-        }
-        v.env = static_cast<uint8_t>(v.env - 1);
-        break;
+
+    // E1: 15 bits; past $7FFF the counter goes on from 1.
+    if (v.rate != v.rateCompare) {
+        v.rate = static_cast<uint16_t>(v.rate + 1);
+        if (v.rate & 0x8000) v.rate = static_cast<uint16_t>((v.rate + 1) & 0x7FFF);
+    } else {
+        v.rateMatch = 1;
     }
-    setExpPeriod(v);
 }
 
 // ---- oscillator and noise (W1-W4) ------------------------------------------------------
@@ -120,12 +348,18 @@ void Sid::noiseWriteBack(Voice& v) {
     v.noiseOut = static_cast<uint16_t>(v.noiseOut & v.out);
 }
 
+// W4: with TEST held the register's cells drift to one: bit 0, and every cell above a cell
+// that is one (bit 0 included).
+void Sid::fadeNoise(Voice& v) {
+    v.noise |= 1;
+    v.noise = (v.noise | (v.noise << 1)) & 0x7FFFFF;
+    setNoiseOut(v);
+    if (v.noise != 0x7FFFFF) v.noiseReset = kNoiseFadeStep[static_cast<int>(model_)];
+}
+
 void Sid::clockOscillator(Voice& v) {
     if (v.test) {
-        if (v.noiseReset && --v.noiseReset == 0) {
-            v.noise = 0x7FFFFF;
-            setNoiseOut(v);
-        }
+        if (v.noiseReset && --v.noiseReset == 0) fadeNoise(v);
         v.pulseOut = 0xFFF;
         return;   // the accumulator is held; msbRising keeps its last value, as on the reference
     }
@@ -144,14 +378,9 @@ uint16_t Sid::waveValue(const Voice& v, unsigned index) const {
     switch (v.waveform & 7) {
     case 1: return tri;
     case 2: return saw;
-    // W10, PROVISIONAL: the combinations of triangle, sawtooth and pulse short the
-    // sources together on the chip; until the model for that is settled they are the
-    // plain AND of their parts (the pulse level is applied by the caller).
-    case 3: return tri & saw;
-    case 5: return tri;
-    case 6: return saw;
-    case 7: return tri & saw;
-    default: return 0xFFF;   // none of the three, or pulse alone
+    case 0: case 4: return 0xFFF;   // none of the three, or pulse alone
+    // W10: the sources shorted on the lines (the pulse level is applied by the caller).
+    default: return tables_->wave[(v.waveform & 7) == 3 ? 0 : (v.waveform & 7) == 5 ? 1 : (v.waveform & 7) == 6 ? 2 : 3][index];
     }
 }
 
@@ -181,7 +410,9 @@ void Sid::formOutput(Voice& v, const Voice& source) {
             v.acc &= (static_cast<uint32_t>(out) << 12) | 0x7FFFFF;
         if (v.waveform > 8 && !v.test && v.shiftPipeline != 1) noiseWriteBack(v);
     } else if (v.floatingTtl && --v.floatingTtl == 0) {
-        v.out = v.osc = 0;   // W8
+        // W8: the floating lines lose their charge; a bit goes when the bit above it is gone.
+        v.out = v.osc = static_cast<uint16_t>(v.out & (v.out >> 1));
+        if (v.out) v.floatingTtl = kFloatingStep[static_cast<int>(model_)];
     }
     v.pulseOut = ((v.acc >> 12) >= v.pw) ? 0xFFF : 0;   // W7: used in the next cycle
 }
@@ -207,7 +438,7 @@ uint8_t Sid::read(unsigned reg) {
     switch (reg & 0x1F) {
     case 0x19: case 0x1A: s_.bus = 0xFF; s_.busTtl = ttl; break;   // X5: nothing connected
     case 0x1B: s_.bus = static_cast<uint8_t>(s_.voice[2].osc >> 4); s_.busTtl = ttl; break;
-    case 0x1C: s_.bus = s_.voice[2].env; s_.busTtl = ttl; break;
+    case 0x1C: s_.bus = s_.voice[2].envRead; s_.busTtl = ttl; break;
     default: break;   // write-only: the bus value (X3)
     }
     return s_.bus;
@@ -223,12 +454,13 @@ void Sid::writeControl(Voice& v, const Voice& source, uint8_t control) {
     if (!prevTest && v.test) {   // W4
         v.acc = 0;
         v.shiftPipeline = 0;
-        v.noiseReset = kNoiseReset[m];
+        v.noiseReset = kNoiseFadeStart[m];
         v.pulseOut = 0xFFF;
     } else if (prevTest && !v.test) {
         // The shift that TEST held half-way completes; a combination with noise selected
-        // until now may first write its output back.
-        bool writeBack = prevWave > 8 && v.waveform != 8;
+        // until now may first write its output back (W4). Not when the new selection is
+        // noise alone, except on the 8580 coming from triangle + sawtooth (+ pulse).
+        bool writeBack = prevWave > 8 && (v.waveform != 8 || (model_ == SidModel::Mos8580 && (prevWave & 3) == 3));
         if (prevWave == 0xC && (model_ == SidModel::Mos6581 || (v.waveform != 0x9 && v.waveform != 0xE))) writeBack = false;
         if (model_ == SidModel::Mos6581 &&
             (((prevWave & 3) == 1 && (v.waveform & 3) == 2) || ((prevWave & 3) == 2 && (v.waveform & 3) == 1)))
@@ -239,18 +471,20 @@ void Sid::writeControl(Voice& v, const Voice& source, uint8_t control) {
         setNoiseOut(v);
     }
     if (v.waveform) formOutput(v, source);
-    else if (prevWave) v.floatingTtl = kFloatingTtl[m];
+    else if (prevWave) v.floatingTtl = kFloatingStart[m];
 
-    // E3: the gate.
+    // E3: the gate. The change of state is spread over the next cycles (stepStateChange).
     const uint8_t gate = control & 0x01;
     if (!v.gate && gate) {
-        v.state = Attack;
-        v.ratePeriod = kRatePeriod[v.attack];
-        v.holdZero = 0;
-        v.envPipeline = 0;
+        v.nextState = Attack;
+        v.state = DecaySustain;   // for the first cycle the decay rate is the one selected
+        v.rateCompare = kRateCompare[v.decay];
+        v.statePipeline = 2;
+        if (v.rateMatch || v.expPipeline == 2) v.envPipeline = (v.expPeriod == 1 || v.expPipeline == 2) ? 2 : 4;
+        else if (v.expPipeline == 1) v.statePipeline = 3;
     } else if (v.gate && !gate) {
-        v.state = Release;
-        v.ratePeriod = kRatePeriod[v.release];
+        v.nextState = Release;
+        v.statePipeline = v.envPipeline ? 3 : 2;
     }
     v.gate = gate;
 }
@@ -278,13 +512,13 @@ void Sid::write(unsigned reg, uint8_t value) {
     case 5:   // E6
         v.attack = value >> 4;
         v.decay = value & 0x0F;
-        if (v.state == Attack) v.ratePeriod = kRatePeriod[v.attack];
-        else if (v.state == DecaySustain) v.ratePeriod = kRatePeriod[v.decay];
+        if (v.state == Attack) v.rateCompare = kRateCompare[v.attack];
+        else if (v.state == DecaySustain) v.rateCompare = kRateCompare[v.decay];
         break;
     default:
         v.sustain = value >> 4;
         v.release = value & 0x0F;
-        if (v.state == Release) v.ratePeriod = kRatePeriod[v.release];
+        if (v.state == Release) v.rateCompare = kRateCompare[v.release];
         break;
     }
 }
