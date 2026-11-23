@@ -17,7 +17,8 @@
 # generations, its cartridge programs with the cartridge plugged in; our own probe,
 # cartridge and raster-effect programs; the freeze of a freezer cartridge against dumps
 # measured on real ones; cartridge and program files as content through the
-# API; the core loading in RetroArch behind the wall.
+# API; the 1541's 6522 against its data sheet's rules and its board booting the DOS ROM;
+# the core loading in RetroArch behind the wall.
 # The third-party suites come from tools/fetch.sh.
 # Runs on a quarter of the cores at low priority (independent single-threaded runs go side
 # by side in batches of that size); its build folder is removed at exit.
@@ -176,6 +177,8 @@ script "raster-effect programs" "$BUILD/effects.log" tools/effects.sh "$BUILD/k6
 # Independent of each other: side by side.
 side "VIC-II rule tests" "$BUILD/victest.log" "$BUILD/victest"
 side "SID paddle converter rules" "$BUILD/sidtest.log" "$BUILD/sidtest"
+side "6522 rule tests" "$BUILD/viatest.log" "$BUILD/viatest"
+side "1541 board with its ROM" "$BUILD/drivetest.log" "$BUILD/drivetest" "$ROMS"
 if [ -d "$EXT/singlestep/6502/v1" ]; then
     side "per-opcode bus traces" "$BUILD/cputest.log" "$BUILD/cputest" "$EXT/singlestep/6502/v1" --quiet
 else bad "per-opcode suite missing: tools/fetch.sh singlestep"; fi
