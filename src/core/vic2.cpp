@@ -56,6 +56,18 @@ uint16_t Vic2::gAddress(uint8_t r11) const {
     return a;
 }
 
+// Sprites whose DMA holds BA low in a cycle: from three cycles before a sprite's p-access
+// to the cycle after it (S2).
+uint8_t Vic2::spriteBaMask(int cycle) const {
+    uint8_t mask = 0;
+    const int n = t_->cyclesPerLine;
+    for (int s = 0; s < 8; ++s) {
+        const int d = ((cycle - spritePCycle(s)) % n + n) % n;   // cycles after the p-access
+        if (d <= 1 || d >= n - 3) mask |= static_cast<uint8_t>(1 << s);
+    }
+    return mask;
+}
+
 // Latches the light pen position once per frame (§3.11): half the X coordinate of this
 // cycle's start (6567/6569); a line still held low when the frame starts latches a fixed X
 // in line 0. Nothing is latched in the last line after its first cycle, but the frame's one
@@ -136,18 +148,59 @@ void Vic2::phase1() {
         }
         s_.gbuf = byte;
     } else {
-        int sprite = -1;
-        for (int n = 0; n < 8; ++n)
-            if (spritePCycle(n) == c) sprite = n;
+        int sprite = -1, second = -1;   // p-access of a sprite / its second data byte
+        for (int n = 0; n < 8; ++n) {
+            const int p = spritePCycle(n);
+            if (p == c) sprite = n;
+            else if (p % t_->cyclesPerLine + 1 == c) second = n;
+        }
         if (sprite >= 0) {
             const uint16_t vm = static_cast<uint16_t>((s_.reg[0x18] & 0xF0) << 6);
             byte = host_.vicRead(static_cast<uint16_t>(vm | 0x3F8 | sprite));
             s_.spritePtr[sprite] = byte;
+        } else if (second >= 0 && (s_.spriteDma & (1 << second))) {
+            byte = host_.vicRead(static_cast<uint16_t>((s_.spritePtr[second] << 6) | s_.mc[second]));
+            s_.mc[second] = (s_.mc[second] + 1) & 0x3F;
         } else {
-            byte = host_.vicRead(0x3FFF);   // idle access (also the unused s-access slots)
+            byte = host_.vicRead(0x3FFF);   // idle access (also a sprite's slot without DMA)
         }
+        if (second >= 0) s_.spriteData[second] = (s_.spriteData[second] & 0xFF00FFu) | (static_cast<uint32_t>(byte) << 8);
     }
     s_.lastByte = byte;
+    s_.busPhi2 = 0xFF;
+
+    // Sprite counters and flags, S1.
+    {
+        const int cpl = t_->cyclesPerLine;
+        const int dmaCheck = cpl == 63 ? 55 : 56, displayCheck = cpl == 65 ? 59 : 58;
+        const uint8_t enable = s_.reg[0x15];
+        if (c == 16) {
+            for (int n = 0; n < 8; ++n) {
+                if (!(s_.expFlop & (1 << n))) continue;
+                s_.mcBase[n] = s_.mc[n];
+                if (s_.mcBase[n] == 63) s_.spriteDma &= static_cast<uint8_t>(~(1 << n));
+            }
+        }
+        if (c == dmaCheck || c == dmaCheck + 1) {
+            for (int n = 0; n < 8; ++n) {
+                const uint8_t b = static_cast<uint8_t>(1 << n);
+                if ((enable & b) && s_.reg[2 * n + 1] == (raster & 0xFF) && !(s_.spriteDma & b)) {
+                    s_.spriteDma |= b;
+                    s_.mcBase[n] = 0;
+                    s_.expFlop |= b;
+                }
+            }
+        }
+        if (c == 56) s_.expFlop ^= static_cast<uint8_t>(s_.spriteDma & s_.reg[0x17]);
+        if (c == displayCheck) {
+            for (int n = 0; n < 8; ++n) {
+                const uint8_t b = static_cast<uint8_t>(1 << n);
+                s_.mc[n] = s_.mcBase[n];
+                if (!(s_.spriteDma & b)) s_.spriteDisplay &= static_cast<uint8_t>(~b);
+                else if ((enable & b) && s_.reg[2 * n + 1] == (raster & 0xFF)) s_.spriteDisplay |= b;
+            }
+        }
+    }
 
     if (c == 58) {          // rule 5
         if (s_.rc == 7) {
@@ -161,7 +214,7 @@ void Vic2::phase1() {
 
     // BA and AEC, §2.4.3 / §3.7.2 rule 3: AEC stays low in the second phase from the fourth
     // cycle of BA low.
-    const bool baLow = c >= 12 && c <= 54 && s_.badLine;
+    const bool baLow = (c >= 12 && c <= 54 && s_.badLine) || (s_.spriteDma & spriteBaMask(c));
     s_.baLow = baLow;
     s_.baRun = baLow ? static_cast<uint8_t>(std::min(s_.baRun + 1, 4)) : 0;
     s_.aecLow = baLow && s_.baRun >= 4;
@@ -181,6 +234,20 @@ void Vic2::phase1() {
 
 void Vic2::phase2(uint8_t cpuData) {
     const int c = s_.cycle;
+    // A sprite's first and third data bytes (S2): from memory when its DMA is on and the
+    // VIC-II holds the bus, else whatever is on the chip's data bus.
+    for (int n = 0; n < 8; ++n) {
+        const int p = spritePCycle(n);
+        const bool first = p == c, third = p % t_->cyclesPerLine + 1 == c;
+        if (!first && !third) continue;
+        uint8_t byte = s_.busPhi2;
+        if (s_.spriteDma & (1 << n)) {
+            if (s_.aecLow) byte = host_.vicRead(static_cast<uint16_t>((s_.spritePtr[n] << 6) | s_.mc[n]));
+            s_.mc[n] = (s_.mc[n] + 1) & 0x3F;
+        }
+        if (first) s_.spriteData[n] = (s_.spriteData[n] & 0x00FFFFu) | (static_cast<uint32_t>(byte) << 16);
+        else s_.spriteData[n] = (s_.spriteData[n] & 0xFFFF00u) | byte;
+    }
     if (c < 15 || c > 54 || !s_.badLine) return;
     // c-access. With AEC still high the VIC-II's data drivers are closed: it reads $FF, and
     // as color the low nybble of the CPU's data bus (§3.14.6).
@@ -199,6 +266,58 @@ namespace {
 constexpr uint8_t kRefBorder = 0x20, kRefBg0 = 0x21;
 } // namespace
 
+// One pixel of the sprites (hw/vic2.md S3): starts sprites at their X coordinate, moves the
+// running ones on, and puts the pixel of the lowest-numbered sprite into px[i] unless the
+// graphics pixel there is foreground and the sprite is behind it.
+void Vic2::spritePixel(int i, int x, uint8_t* px) {
+    if (s_.sPending & ~s_.sActive & ~s_.sHalt) {
+        for (int n = 0; n < 8; ++n) {
+            const uint8_t b = static_cast<uint8_t>(1 << n);
+            if ((s_.sPending & b) && !(s_.sActive & b) && !(s_.sHalt & b) && s_.sXPipe[n] == x) {
+                s_.sExpFlops |= b;
+                s_.sMcFlops |= b;
+                s_.sActive |= b;
+            }
+        }
+    }
+    if (!s_.sActive) return;
+    int shown = -1;
+    uint8_t hit = 0;
+    for (int n = 7; n >= 0; --n) {
+        const uint8_t b = static_cast<uint8_t>(1 << n);
+        if (!(s_.sActive & b)) continue;
+        if (!s_.sShift[n] && !s_.sPixel[n]) {   // run empty
+            s_.sActive &= static_cast<uint8_t>(~b);
+            continue;
+        }
+        if (!(s_.sHalt & b)) {
+            if (s_.sExpFlops & b) {
+                if (s_.sMcBits & b) {
+                    if (s_.sMcFlops & b) s_.sPixel[n] = static_cast<uint8_t>((s_.sShift[n] >> 22) & 3);
+                    s_.sMcFlops ^= b;
+                } else {
+                    s_.sPixel[n] = static_cast<uint8_t>(((s_.sShift[n] >> 23) & 1) << 1);
+                }
+                s_.sShift[n] <<= 1;
+            }
+            if (s_.sExpXBits & b) s_.sExpFlops ^= b;
+            else s_.sExpFlops |= b;
+        }
+        if (s_.sPixel[n]) {
+            shown = n;
+            hit |= b;
+        }
+    }
+    if (hit) {
+        if (!(pri_[i] && (s_.sPriBits & (1 << shown)))) {
+            const uint8_t v = s_.sPixel[shown];
+            px[i] = v == 1 ? 0x25 : v == 3 ? 0x26 : static_cast<uint8_t>(0x27 + shown);   // register references
+        }
+        if (pri_[i]) s_.collData |= hit;
+        if (hit & (hit - 1)) s_.collSprite |= hit;
+    }
+}
+
 // One pixel of the graphics data path (hw/vic2.md P4, P6, P7).
 uint8_t Vic2::graphicsPixel(int i) {
     if (i == s_.xscrollPipe) {
@@ -215,6 +334,7 @@ uint8_t Vic2::graphicsPixel(int i) {
         s_.pixelReg = (s_.shData & 0x80) ? (wide ? 2 : 3) : 0;
     }
     const unsigned v = s_.pixelReg;
+    pri_[i] = v & 2;
     s_.shData = static_cast<uint8_t>(s_.shData << 1);
     s_.mcFlop ^= 1;
     // Color decode.
@@ -259,6 +379,50 @@ void Vic2::render() {
             s_.mode16b = s_.mode16;
         }
         px[i] = graphicsPixel(i);
+    }
+
+    // Sprites over the graphics (S3). The pixels' X coordinates are this cycle's first X,
+    // low three bits dropped, counting up.
+    {
+        uint8_t dataCycle = 0, pointerCycle = 0;   // the sprite fetching bytes 1-2 / pointer and byte 0 now
+        for (int n = 0; n < 8; ++n) {
+            const int p = spritePCycle(n);
+            if (p == c) pointerCycle = static_cast<uint8_t>(1 << n);
+            else if (p % t_->cyclesPerLine + 1 == c) dataCycle = static_cast<uint8_t>(1 << n);
+        }
+        const int x0 = xAt(8 * (c - 1)) & ~7;
+        const bool latchDisplay = c == (t_->cyclesPerLine == 65 ? 59 : 58);
+        const bool canSS = s_.collSprite == 0, canSB = s_.collData == 0;
+        for (int i = 0; i < 8; ++i) {
+            if (i == 2) {
+                s_.sActive &= static_cast<uint8_t>(~dataCycle);
+            } else if (i == 3) {
+                s_.sHalt |= pointerCycle;
+            } else if (i == 4) {
+                if (latchDisplay) s_.sPending = s_.spriteDisplay;
+                if (dataCycle)
+                    for (int n = 0; n < 8; ++n)
+                        if (dataCycle & (1 << n)) s_.sShift[n] = s_.spriteData[n];
+            } else if (i == 6) {
+                s_.sPriBits = s_.reg[0x1B];
+                s_.sExpXBits = s_.reg[0x1D];
+            } else if (i == 7) {
+                const uint8_t toggled = s_.reg[0x1C] ^ s_.sMcBits;
+                s_.sMcFlops &= static_cast<uint8_t>(~toggled);
+                s_.sMcBits = s_.reg[0x1C];
+                s_.sHalt &= static_cast<uint8_t>(~dataCycle);
+            }
+            spritePixel(i, x0 + i, px);
+        }
+        for (int n = 0; n < 8; ++n)
+            s_.sXPipe[n] = static_cast<uint16_t>(s_.reg[2 * n] | ((s_.reg[0x10] & (1 << n)) ? 0x100 : 0));
+        // A collision register that was read is cleared after this step; a register going
+        // from empty to set raises its interrupt (S4).
+        if (s_.clearColl == 0x1E) s_.collSprite = 0;
+        if (s_.clearColl == 0x1F) s_.collData = 0;
+        s_.clearColl = 0;
+        if (canSS && s_.collSprite) s_.irqLatch |= 0x04;
+        if (canSB && s_.collData) s_.irqLatch |= 0x02;
     }
 
     // Border (P3).
@@ -334,14 +498,27 @@ uint8_t Vic2::peek(unsigned r) const {
 uint8_t Vic2::read(unsigned r) {
     r &= 0x3F;
     const uint8_t v = peek(r);
-    if (r == 0x1E) s_.collSprite = 0;
-    if (r == 0x1F) s_.collData = 0;
+    if (r == 0x1E || r == 0x1F) s_.clearColl = static_cast<uint8_t>(r);   // cleared after the next step (S4)
+    s_.busPhi2 = v;
     return v;
 }
 
 void Vic2::write(unsigned r, uint8_t v) {
     r &= 0x3F;
+    s_.busPhi2 = v;
     switch (r) {
+    case 0x17:
+        // Clearing a sprite's Y expansion while its flip-flop is clear sets the flip-flop;
+        // in cycle 15 the data counter is also mixed with its base ("sprite crunch").
+        for (int n = 0; n < 8; ++n) {
+            const uint8_t b = static_cast<uint8_t>(1 << n);
+            if ((v & b) || (s_.expFlop & b) || v == s_.reg[r]) continue;
+            if (s_.cycle == 15)
+                s_.mc[n] = static_cast<uint8_t>((0x2A & (s_.mcBase[n] & s_.mc[n])) | (0x15 & (s_.mcBase[n] | s_.mc[n])));
+            s_.expFlop |= b;
+        }
+        s_.reg[r] = v;
+        return;
     case 0x11:
         s_.reg[r] = v;
         s_.rasterCompare = static_cast<uint16_t>((s_.rasterCompare & 0xFF) | ((v & 0x80) << 1));

@@ -3,7 +3,11 @@
 // changing at random cycles, and compares every bus cycle.
 //
 //   cpudiff [--seeds N] [--first S] [--cycles N] [--irq] [--nmi] [--rdy] [--all-opcodes]
-//           [--exclude HEX,HEX,...] [--probe OPCODE_HEX]
+//           [--exclude HEX,HEX,...] [--only HEX,HEX,...] [--dense] [--probe OPCODE_HEX]
+//
+// --only builds the programs from the listed opcodes alone, and --dense changes the lines
+// every few cycles: together they test how a few instructions (flag changes, stack) meet
+// interrupts and halts.
 //
 // --probe loops one opcode in immediate mode over random A, X, flags and operand
 // (LDA #p, PHA, PLP, LDA #a, LDX #x, OP #i, then A, X and P are stored) and
@@ -75,7 +79,8 @@ int main(int argc, char** argv) {
     int seeds = 4, first = 1;
     long cycles = 20000;
     bool useIrq = false, useNmi = false, useRdy = false, allOps = false, volatileMem = false;
-    std::vector<int> excluded;
+    std::vector<int> excluded, only;
+    bool dense = false;
     int probe = -1;
     std::vector<uint8_t> scan;
     int scanLen = 2;
@@ -100,6 +105,11 @@ int main(int argc, char** argv) {
             for (char* tok = std::strtok(argv[++i], ","); tok; tok = std::strtok(nullptr, ","))
                 excluded.push_back(static_cast<int>(std::strtol(tok, nullptr, 16)));
         }
+        else if (a == "--only" && i + 1 < argc) {
+            for (char* tok = std::strtok(argv[++i], ","); tok; tok = std::strtok(nullptr, ","))
+                only.push_back(static_cast<int>(std::strtol(tok, nullptr, 16)));
+        }
+        else if (a == "--dense") dense = true;
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
 
@@ -115,6 +125,11 @@ int main(int argc, char** argv) {
                               op == 0x0B || op == 0x2B || op == 0x4B || op == 0x6B;
         bool skip = false;
         for (int e : excluded) skip |= e == op;
+        if (!only.empty()) {
+            bool listed = false;
+            for (int o : only) listed |= o == op;
+            skip |= !listed;
+        }
         if (!jam && !skip && (allOps || !unstable)) allowed.push_back(static_cast<uint8_t>(op));
     }
 
@@ -198,9 +213,9 @@ int main(int argc, char** argv) {
         bool excludedStop = false;
         for (; n < cycles; ++n) {
             // Change the lines between cycles, the same way on both.
-            if (useIrq && --irqHold <= 0) { ln.irq = !ln.irq && pick(3) == 0; irqHold = 1 + static_cast<int>(pick(ln.irq ? 40 : 400)); }
-            if (useNmi && --nmiHold <= 0) { ln.nmi = !ln.nmi && pick(4) == 0; nmiHold = 1 + static_cast<int>(pick(ln.nmi ? 20 : 900)); }
-            if (useRdy && --rdyHold <= 0) { ln.rdy = !(ln.rdy && pick(3) == 0); rdyHold = 1 + static_cast<int>(pick(ln.rdy ? 200 : 14)); }
+            if (useIrq && --irqHold <= 0) { ln.irq = !ln.irq && pick(3) == 0; irqHold = 1 + static_cast<int>(pick(ln.irq ? 40 : dense ? 12 : 400)); }
+            if (useNmi && --nmiHold <= 0) { ln.nmi = !ln.nmi && pick(4) == 0; nmiHold = 1 + static_cast<int>(pick(ln.nmi ? 20 : dense ? 60 : 900)); }
+            if (useRdy && --rdyHold <= 0) { ln.rdy = !(ln.rdy && pick(3) == 0); rdyHold = 1 + static_cast<int>(pick(ln.rdy ? (dense ? 10 : 200) : 14)); }
             p6502_set_irq(chip, ln.irq); p6502_set_nmi(chip, ln.nmi); p6502_set_rdy(chip, ln.rdy);
             if (volatileMem && !ln.rdy && !recent.empty() && !recent.back().first.write) {
                 const uint16_t at = recent.back().first.addr;

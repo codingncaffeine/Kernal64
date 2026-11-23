@@ -114,6 +114,9 @@ if [ -x "$BUILD/cpudiff" ]; then
         "$BUILD/cpudiff" --seeds 8 --cycles 20000 $lines >"$BUILD/cpudiff.log" 2>&1 \
             || { grep -A3 DIFFERS "$BUILD/cpudiff.log" | head -5; bad "chip comparison (${lines:-no lines})"; }
     done
+    # Flag and stack instructions alone, with the lines changing every few cycles.
+    "$BUILD/cpudiff" --seeds 40 --cycles 20000 --irq --rdy --volatile --dense --only 08,28,58,78,ea,48,68,a9,40,e8 >"$BUILD/cpudiff.log" 2>&1 \
+        || { grep -A3 DIFFERS "$BUILD/cpudiff.log" | head -5; bad "chip comparison (flag and stack instructions, dense)"; }
 else bad "chip comparison not built: tools/fetch.sh perfect6502"; fi
 
 if [ "$QUICK" = 0 ]; then

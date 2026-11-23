@@ -191,11 +191,14 @@ public:
             // Halted at the start of an instruction, the chip keeps sampling interrupts: one that
             // becomes pending during the halt is taken when it ends; one already decided stays
             // decided even if its line goes away.
+            // PLP loads the flags as its last cycle completes: while that cycle is stretched,
+            // the chip still decides with the I flag from before it (hw/cpu.md rule 14b).
+            const uint8_t p = (st_.t == 0 && st_.op == 0x28) ? pre_.st.r.p : st_.r.p;
             if (st_.t == 0 && !st_.jammed && !afterQuickBranch_)
-                st_.takeInterrupt = st_.takeInterrupt || nmiPending_ || (irq_ && !(st_.r.p & flag::I));
+                st_.takeInterrupt = st_.takeInterrupt || nmiPending_ || (irq_ && !(p & flag::I));
             // A halted cycle repeats the previous one, and with it that cycle's interrupt sample
             // (which an in-page branch uses as its decision, rule 9).
-            poll_ = nmiPending_ || (irq_ && !(st_.r.p & flag::I));
+            poll_ = nmiPending_ || (irq_ && !(p & flag::I));
             return;
         }
         afterSequence_ = false;

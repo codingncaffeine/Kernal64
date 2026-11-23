@@ -89,6 +89,21 @@ public:
         uint8_t ref = 0xFF;              // refresh counter, §3.13
         uint16_t matrix[40] = {};        // video matrix/color line: color << 8 | pointer
         uint8_t spritePtr[8] = {};       // last p-access per sprite
+        // Sprites (hw/vic2.md S1-S4). One bit per sprite in the masks.
+        uint8_t mc[8] = {}, mcBase[8] = {};      // data counters, §3.8.1
+        uint8_t spriteDma = 0;           // DMA on
+        uint8_t spriteDisplay = 0;       // display on
+        uint8_t expFlop = 0xFF;          // Y expansion flip-flops
+        uint32_t spriteData[8] = {};     // the three bytes fetched for the line
+        uint8_t busPhi2 = 0xFF;          // the chip's own data bus in the second phase ($FF unless the CPU used a register)
+        // Sprite drawing: shift registers and the per-pixel state of S3.
+        uint32_t sShift[8] = {};
+        uint8_t sPixel[8] = {};
+        uint16_t sXPipe[8] = {};         // X coordinates as the comparators see them
+        uint8_t sPending = 0, sActive = 0, sHalt = 0;
+        uint8_t sExpFlops = 0, sMcFlops = 0;      // X expansion / multicolor flip-flops
+        uint8_t sMcBits = 0, sPriBits = 0, sExpXBits = 0;   // $D01C, $D01B, $D01D as piped
+        uint8_t clearColl = 0;           // $1E / $1F: that collision register was read
         // Graphics data path (hw/vic2.md P4-P7): the g-access byte and its matrix data on
         // their way to the shift register, the shift register, and the mode bits as the
         // sequencer sees them.
@@ -123,12 +138,15 @@ public:
 private:
     uint16_t gAddress(uint8_t r11) const;
     uint8_t graphicsPixel(int i);
+    void spritePixel(int i, int x, uint8_t* px);
+    uint8_t spriteBaMask(int cycle) const;
     void latchLightPen(bool held);
     int spritePCycle(int n) const;
 
     VicHost& host_;
     const Timing* t_;
     State s_;
+    uint8_t pri_[8] = {};            // foreground flags of the step's graphics pixels
     std::vector<uint8_t> pixels_;
 };
 
