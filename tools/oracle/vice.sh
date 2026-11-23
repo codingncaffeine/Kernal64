@@ -24,10 +24,14 @@
 # cartridge then fails its own test). The suite's files are never written.
 # K64_VICE_MODEL picks the machine (c64 = 6569 PAL, ntsc = 6567R8, oldntsc = 6567R56A);
 # it is set before the ROMs because choosing a model resets them.
+# K64_VICE_DRIVE=1 gives drive 8 (a 1541) its DOS ROM (byte-identical to the user's); without
+# it the drive has no ROM and the bus has no device, as in every run made before that switch.
 # Typical: -limitcycles N -exitscreenshot /k64/scratch/out.png -VICIIborders 2 (whole raster)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VICE="/k64/gitignore/external/vice"
+DRIVE=()
+[ "${K64_VICE_DRIVE:-0}" = 1 ] && DRIVE=(-drive8type 1541 -dos1541 "$VICE/src-tree/data/DRIVES/dos1541-325302-01+901229-05.bin")
 exec podman run --rm -t --network none --cpus 1 -v "$ROOT":/k64:Z k64-vice-oracle \
     nice -n 10 "$VICE/build/src/x64sc" -default -model "${K64_VICE_MODEL:-c64}" \
     -kernal "$VICE/src-tree/data/C64/kernal-901227-03.bin" -basic "$VICE/src-tree/data/C64/basic-901226-01.bin" \
@@ -35,5 +39,5 @@ exec podman run --rm -t --network none --cpus 1 -v "$ROOT":/k64:Z k64-vice-oracl
     -VICIIextpal -VICIIpalette /k64/tools/oracle/index.vpl -VICIIfilter 0 \
     -raminitstartvalue 0 -raminitvalueinvert 64 -raminitvalueoffset 0 -raminitpatterninvert 0 \
     -raminitstartrandom 0 -raminitrepeatrandom 0 -raminitrandomchance 0 \
-    +easyflashcrtwrite \
+    +easyflashcrtwrite "${DRIVE[@]}" \
     -sound -sounddev wav -soundarg /dev/null "$@"

@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "cartridge.h"
 #include "prg.h"
+#include "c1541.h"
 
 #include <array>
 #include <cstddef>
@@ -50,6 +51,16 @@ public:
     const Cartridge& cartridge() const { return cart_; }
     // The button on a freezer cartridge; without such a cartridge it does nothing.
     void setFreezeButton(bool down) { cart_.setFreezeButton(down); }
+
+    // Drive 8 on the serial bus: a 1541, there when its ROMs are and it is wanted (default
+    // yes: the reference emulator's default machine has one). Switching it on while the
+    // machine runs is switching the drive on: it starts from its power-on state.
+    void setDriveWanted(bool on) {
+        if (on && !driveWanted_) { drive_.setBus(false, false, false); drive_.reset(); }
+        driveWanted_ = on;
+    }
+    bool driveAttached() const { return driveWanted_ && drive_.hasRoms(); }
+    const C1541& drive() const { return drive_; }
 
     // A program to put into memory and start with RUN once the KERNAL waits for a key
     // after this and every later reset() (an empty one: none). The wait can be made
@@ -156,6 +167,7 @@ private:
         uint64_t autostartReadyAt = 0;    // the cycle the KERNAL first waited for a key in
         uint8_t cia1IrqSeen = 0, cia2IrqSeen = 0, vicIrqSeen = 0;   // the interrupt lines as the CPU sees them
         uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
+        uint32_t drivePhase = 0;          // the drive's clock against ours: += driveNum_ per cycle, a drive cycle per driveDen_
     };
 #pragma pack(pop)
 
@@ -171,6 +183,9 @@ private:
     bool romsOk_ = false;
     bool debugCart_ = false;
     int debugExit_ = -1;
+    C1541 drive_;
+    bool driveWanted_ = true;
+    uint32_t driveNum_ = 1, driveDen_ = 1;   // drive cycles per machine cycle, exactly (setModel)
     CpuBus bus_{this};
     Cpu6502<CpuBus> cpu_{bus_};
     Vic2 vic_{*this, kTimingPal};

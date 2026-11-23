@@ -9,11 +9,20 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 15;
+constexpr uint32_t kStateVersion = 16;
+
+// The 1541 runs on its own 16 MHz crystal divided by 16 (hw/drive.md D1): 1 MHz. Against the
+// machine's clock that is exactly 18,000,000 / 17,734,475 drive cycles per machine cycle on
+// PAL (17.734475 MHz / 18) and 308 / 315 = 44 / 45 on NTSC (315/22 MHz / 14).
+void driveRatio(const Timing& t, uint32_t& num, uint32_t& den) {
+    if (t.clockHz < 1.0e6) { num = 18'000'000; den = 17'734'475; }
+    else { num = 44; den = 45; }
+}
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
     vic_.setTiming(*timing_);
+    driveRatio(*timing_, driveNum_, driveDen_);
     reset();
 }
 
@@ -22,11 +31,13 @@ void C64::setRoms(const RomSet& roms) {
     if (roms.has(RomRole::Basic)) std::copy_n(roms.get(RomRole::Basic).begin(), basic_.size(), basic_.begin());
     if (roms.has(RomRole::Kernal)) std::copy_n(roms.get(RomRole::Kernal).begin(), kernal_.size(), kernal_.begin());
     if (roms.has(RomRole::Chargen)) std::copy_n(roms.get(RomRole::Chargen).begin(), chargen_.size(), chargen_.begin());
+    drive_.setRoms(roms);
 }
 
 void C64::setModel(VicModel model) {
     timing_ = &timingFor(model);
     vic_.setTiming(*timing_);
+    driveRatio(*timing_, driveNum_, driveDen_);
     setAudioRate(audioRate_);   // the clock changed
     reset();
 }
@@ -53,6 +64,8 @@ void C64::reset() {
     cia2_.reset();
     cpu_.reset();
     cart_.reset();
+    drive_.setBus(false, false, false);
+    drive_.reset();   // the serial bus's RESET line is the machine's
     s_.autostartPending = autostart_.data.empty() ? 0 : 1;
     updatePots();
 }
@@ -353,9 +366,12 @@ uint8_t C64::ciaPortA(int cia, uint8_t driven) {
         keyboardLines(driven, cia1_.portBOut(), pa, pb);
         return pa;
     }
-    // CIA 2: serial bus. The outputs (bits 3-5) drive the lines through inverters; the
-    // inputs read CLK (bit 6) and DATA (bit 7). No device is attached yet.
-    const bool clk = !(driven & 0x10), data = !(driven & 0x20);
+    // CIA 2: serial bus. The outputs (bits 3-5: ATN, CLK, DATA) pull the lines through
+    // inverters; the inputs read CLK (bit 6) and DATA (bit 7) as they are: low when any
+    // device pulls them.
+    const bool drive = driveAttached();
+    const bool clk = !(driven & 0x10) && !(drive && drive_.pullsClk());
+    const bool data = !(driven & 0x20) && !(drive && drive_.pullsData());
     return static_cast<uint8_t>((driven & 0x3F) | (clk ? 0x40 : 0) | (data ? 0x80 : 0)) &
            static_cast<uint8_t>(driven | 0x3F);
 }
@@ -400,6 +416,17 @@ void C64::tick() {
     cia1_.clock();
     cia2_.clock();
     if (cart_.clocked()) cart_.clock();
+    if (driveAttached()) {
+        // The drive sees the lines as our CIA 2 pulls them after this cycle's access, and
+        // runs the cycles its own clock has reached.
+        const uint8_t pa = cia2_.portAOut();
+        drive_.setBus((pa & 0x08) != 0, (pa & 0x10) != 0, (pa & 0x20) != 0);
+        s_.drivePhase += driveNum_;
+        while (s_.drivePhase >= driveDen_) {
+            s_.drivePhase -= driveDen_;
+            drive_.tick();
+        }
+    }
     // The TOD pins see the mains frequency (hw/cia.md rule 18): exactly mainsHz ticks per
     // second of machine cycles, spread evenly.
     s_.todCount += static_cast<uint32_t>(timing_->mainsHz);
@@ -442,7 +469,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
+    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot) + C1541::stateSize();
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -471,6 +498,8 @@ void C64::saveState(uint8_t* out) const {
     put(colorRam_.data(), colorRam_.size());
     const auto snap = cpu_.snapshot();
     put(&snap, sizeof snap);
+    drive_.saveState(out);
+    out += C1541::stateSize();
     cart_.saveContent(out);
 }
 
@@ -516,6 +545,8 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     Cpu6502<CpuBus>::Snapshot snap;
     get(&snap, sizeof snap);
     cpu_.restore(snap);
+    drive_.loadState(in);
+    in += C1541::stateSize();
     cart_.loadContent(in);
     return true;
 }

@@ -10,7 +10,7 @@
 // --freeze-frames holds the RetroPad button the core uses as a cartridge's freeze button
 // (a click of the right stick) during each frame N and the one after it.
 // --type presses the keys for TEXT one at a time from frame --type-at (default 200),
-// each held 3 frames and released 3 ("\n" = RETURN). --expect-screen fails the run
+// each held 3 frames and released 3 ("\n" = RETURN; " # $ ? are typed with SHIFT). --expect-screen fails the run
 // unless TEXT is in the C64 text screen ($0400), read through RETRO_MEMORY_SYSTEM_RAM.
 // --expect-tone fails the run unless the last half second of audio is a tone of HZ (within
 // 0.1 %) at a level between DB_MIN and DB_MAX (RMS, dB below full scale); --expect-level
@@ -188,9 +188,17 @@ unsigned keyFor(char ch) {
     case ',': return RETROK_COMMA;
     case ':': return RETROK_SEMICOLON;      // ; = :
     case '/': return RETROK_SLASH;
+    case ';': return RETROK_QUOTE;          // ' = ;
+    case '=': return RETROK_BACKSLASH;      // \ = =
+    // With SHIFT (shifted() below): the C64's own shifted keys.
+    case '"': return RETROK_2;
+    case '#': return RETROK_3;
+    case '$': return RETROK_4;
+    case '?': return RETROK_SLASH;
     default: return RETROK_UNKNOWN;
     }
 }
+bool shifted(char ch) { return ch == '"' || ch == '#' || ch == '$' || ch == '?'; }
 std::vector<unsigned> freezeFrames;
 void inputPoll() {}
 int16_t inputState(unsigned port, unsigned device, unsigned, unsigned id) {
@@ -202,6 +210,7 @@ int16_t inputState(unsigned port, unsigned device, unsigned, unsigned id) {
     if (port != 0 || device != RETRO_DEVICE_KEYBOARD || currentFrame < typeAt) return 0;
     const unsigned step = (currentFrame - typeAt) / 6, phase = (currentFrame - typeAt) % 6;
     if (step >= typeText.size() || phase >= 3) return 0;
+    if (id == RETROK_LSHIFT && shifted(typeText[step])) return 1;
     return keyFor(typeText[step]) == id ? 1 : 0;
 }
 

@@ -35,6 +35,8 @@
 // --type-at CYCLE TEXT (with --cycles; may be given several times) puts TEXT into the
 //   KERNAL's keyboard buffer at that machine cycle, as if typed ("\r" = RETURN, "\xNN" = the
 //   PETSCII code NN, e.g. "\x86" = F3; at most 10 characters).
+// --drive puts a 1541 on the serial bus as drive 8 (its ROMs must be in the folder). Off by
+//   default: every expected result so far was made without one, on both emulators.
 // --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
 #include "c64.h"
 #include "roms.h"
@@ -78,6 +80,7 @@ int main(int argc, char** argv) {
     std::vector<int> freezePc;
     uint64_t freezeHold = 1, freezeRelease = 0;
     std::vector<std::pair<uint64_t, std::string>> typeAt;
+    bool drive = false;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
@@ -119,6 +122,7 @@ int main(int argc, char** argv) {
             }
             typeAt.emplace_back(at, text.substr(0, 10));
         }
+        else if (a == "--drive") drive = true;
         else if (a == "--where" && i + 1 < argc) where = static_cast<int>(std::strtoul(argv[++i], nullptr, 16));
         else if (a == "--dump" && i + 1 < argc) {
             char* end = nullptr;
@@ -131,6 +135,7 @@ int main(int argc, char** argv) {
     const k64::RomSet roms = k64::findRoms(argv[1]);
     static k64::C64 machine(model);
     machine.setRoms(roms);
+    machine.setDriveWanted(drive);
     machine.setCiaModel(cia);
     machine.setSidModel(sid);
     machine.setSidNoisePulseDrains(noisePulseDrains);

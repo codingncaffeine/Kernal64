@@ -136,6 +136,11 @@ bool sidNoisePulseDrainsFromOptions() {
     return !(envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "leaves it alone"));
 }
 
+bool driveFromOptions() {
+    retro_variable var{"kernal64_drive8", nullptr};
+    return !(envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "off"));
+}
+
 k64::SidModel sidFromOptions() {
     retro_variable var{"kernal64_sid", nullptr};
     if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "8580"))
@@ -238,6 +243,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
         {"kernal64_sid", "SID chip; 6581|8580"},
         {"kernal64_sid_noise_pulse", "6581: noise + pulse on the noise register; drains it|leaves it alone"},
         {"kernal64_border", "Border; full|small|none"},
+        {"kernal64_drive8", "Drive 8 (1541); on|off"},
         {"kernal64_joyport", "RetroPad is the joystick in control port; 2|1"},
         {nullptr, nullptr},
     };
@@ -300,6 +306,7 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
     machine->setCiaModel(ciaFromOptions());
     machine->setSidModel(sidFromOptions());
     machine->setSidNoisePulseDrains(sidNoisePulseDrainsFromOptions());
+    machine->setDriveWanted(driveFromOptions());
     machine->setAudioRate(kSampleRate);
     crop = cropFromOptions();
     log(RETRO_LOG_INFO, "version %s, machine %s, CIA %s", KERNAL64_VERSION, machine->timing().name,
@@ -316,6 +323,13 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
         else missing += std::string(missing.empty() ? "" : ", ") + k64::romName(r);
     }
     machine->setRoms(roms);
+    if (roms.has(k64::RomRole::Drive1541Low) && roms.has(k64::RomRole::Drive1541High)) {
+        for (k64::RomRole r : {k64::RomRole::Drive1541Low, k64::RomRole::Drive1541High})
+            log(RETRO_LOG_INFO, "%s: from %s", k64::romName(r), roms.from[static_cast<size_t>(r)].c_str());
+    } else if (driveFromOptions()) {
+        log(RETRO_LOG_WARN, "no 1541 ROMs in %s: drive 8 is off", sysDir);
+        notify("Kernal64: no 1541 ROMs in the system folder: drive 8 is off");
+    }
     if (info && (info->data || info->path) && !loadContent(info)) {
         machine.reset();
         return false;
@@ -342,6 +356,7 @@ RETRO_API void retro_run(void) {
         machine->setCiaModel(ciaFromOptions());
         machine->setSidModel(sidFromOptions());
         machine->setSidNoisePulseDrains(sidNoisePulseDrainsFromOptions());
+        machine->setDriveWanted(driveFromOptions());
         const k64::VicModel m = modelFromOptions();
         const bool newModel = m != machine->timing().model;
         if (newModel) machine->setModel(m);

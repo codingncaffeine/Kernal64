@@ -30,7 +30,8 @@ frontend's system folder:
 - `basic.901226-01.bin` — BASIC
 - `kernal.901227-03.bin` — KERNAL (a combined 16 KB BASIC + KERNAL image also works)
 - `characters.901225-01.bin` — character set
-- `1541-c000.325302-01.bin` and `1541-e000.901229-05.bin` — disk drive
+- `1541-c000.325302-01.bin` and `1541-e000.901229-05.bin` — disk drive (a combined 16 KB
+  image also works; without them drive 8 is off)
 
 Files are recognized by their contents, not their names.
 
@@ -56,6 +57,7 @@ Files are recognized by their contents, not their names.
 | `kernal64_sid` | `6581`, `8580` | The SID chip |
 | `kernal64_sid_noise_pulse` | `drains it`, `leaves it alone` | 6581 only. Real 6581s differ in what noise combined with pulse does to the noise generator: on most it empties it within a few cycles, on some it does not |
 | `kernal64_border` | `full`, `small`, `none` | How much of the border is shown |
+| `kernal64_drive8` | `on`, `off` | A 1541 as drive 8 on the serial bus (disk images are not mounted yet) |
 | `kernal64_joyport` | `2`, `1` | The control port the RetroPad's joystick is in |
 
 ## Test cartridges

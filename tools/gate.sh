@@ -84,8 +84,16 @@ for model in pal ntsc ntsc-old pal-new ntsc-new pal-old; do
     side "conformance ($model)" "$BUILD/host-$model.log" "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 400 --check \
         --option kernal64_model=$model --type 'PRINT 6*7\n' --expect-screen ' 42' --expect-silence
 done
+# Drive 8 over the serial bus: BASIC reads the 1541's error channel, which holds the DOS's
+# power-on message; a state saved half-way through must replay (the drive is in it).
+for model in pal ntsc; do
+    side "1541 error channel over the serial bus ($model)" "$BUILD/host-drive-$model.log" "$BUILD/k64host" "$CORE" \
+        --system "$ROMS" --frames 1030 --check --option kernal64_model=$model --type-at 200 \
+        --type '10 OPEN1,8,15\n20 INPUT#1,A,B$,C,D\n30 ?A;B$;C;D\nRUN\n' --expect-screen '73 CBM DOS V2.6 1541'
+done
 sides
 grep -q "missing system files" "$BUILD"/host-*.log && bad "system ROMs not found in $ROMS"
+grep -q "no 1541 ROMs" "$BUILD"/host-*.log && bad "1541 ROMs not found in $ROMS"
 # The border option: the picture handed to the frontend has the size asked for.
 for want in "none 320x200" "small 384x270"; do
     "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 60 --check --option kernal64_border="${want% *}" >"$BUILD/host-border.log" 2>&1

@@ -37,6 +37,12 @@ public:
     bool led() const;         // the activity light
     bool motor() const;       // the spindle motor
 
+    // Save states: everything the board holds, constant size. The ROMs and the jumpers are
+    // settings, not state.
+    static size_t stateSize();
+    void saveState(uint8_t* out) const;
+    void loadState(const uint8_t* in);
+
     // For tests and tools.
     const CpuRegs& cpuRegs() const { return cpu_.regs(); }
     bool cpuAtInstructionStart() const { return cpu_.atInstructionStart(); }
