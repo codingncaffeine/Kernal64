@@ -37,6 +37,7 @@
 //   PETSCII code NN, e.g. "\x86" = F3; at most 10 characters).
 // --drive puts a 1541 on the serial bus as drive 8 (its ROMs must be in the folder). Off by
 //   default: every expected result so far was made without one, on both emulators.
+// --disk FILE (D64 or G64) puts the disk in drive 8 (and implies --drive).
 // --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
 #include "c64.h"
 #include "roms.h"
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
     uint64_t freezeHold = 1, freezeRelease = 0;
     std::vector<std::pair<uint64_t, std::string>> typeAt;
     bool drive = false;
+    std::string diskFile;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
@@ -123,6 +125,7 @@ int main(int argc, char** argv) {
             typeAt.emplace_back(at, text.substr(0, 10));
         }
         else if (a == "--drive") drive = true;
+        else if (a == "--disk" && i + 1 < argc) { diskFile = argv[++i]; drive = true; }
         else if (a == "--where" && i + 1 < argc) where = static_cast<int>(std::strtoul(argv[++i], nullptr, 16));
         else if (a == "--dump" && i + 1 < argc) {
             char* end = nullptr;
@@ -157,6 +160,17 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "k64run: %s: %s\n", cartFile.c_str(), error.c_str());
             return 3;
         }
+    }
+    if (!diskFile.empty()) {
+        std::vector<uint8_t> bytes;
+        auto disk = std::make_shared<k64::GcrDisk>();
+        std::string error;
+        if (!readFile(diskFile, bytes)) { std::fprintf(stderr, "k64run: cannot open %s\n", diskFile.c_str()); return 3; }
+        if (!k64::parseDisk(bytes.data(), bytes.size(), *disk, error)) {
+            std::fprintf(stderr, "k64run: %s: %s\n", diskFile.c_str(), error.c_str());
+            return 3;
+        }
+        machine.insertDisk(disk);
     }
     if (!autostart.empty()) {
         std::vector<uint8_t> bytes;

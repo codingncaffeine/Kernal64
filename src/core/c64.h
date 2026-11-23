@@ -61,11 +61,18 @@ public:
     }
     bool driveAttached() const { return driveWanted_ && drive_.hasRoms(); }
     const C1541& drive() const { return drive_; }
+    // The disk in drive 8 (it can change while the machine runs, as a disk is swapped).
+    void insertDisk(std::shared_ptr<const GcrDisk> disk) { drive_.insertDisk(std::move(disk)); }
+    void ejectDisk() { drive_.ejectDisk(); }
 
     // A program to put into memory and start with RUN once the KERNAL waits for a key
     // after this and every later reset() (an empty one: none). The wait can be made
     // `delayCycles` longer, to move the start against the frame.
     void setAutostart(const ProgramFile& program, uint64_t delayCycles = 0);
+    // Text typed after this and every later reset(), as the KERNAL asks for keys: put into its
+    // keyboard buffer ten keys at a time whenever it waits with the buffer empty ("\r" =
+    // RETURN). A disk starts with LOAD"*",8,1 and RUN, as on the real machine. Empty: none.
+    void setAutotype(const std::string& text) { autotype_ = text; s_.autotypePos = 0; }
 
     // Audio: produced once a sample rate is set (the test tools run without it). Mono,
     // about -1 .. 1; whatever a frame produced is read after it.
@@ -167,7 +174,8 @@ private:
         uint64_t autostartReadyAt = 0;    // the cycle the KERNAL first waited for a key in
         uint8_t cia1IrqSeen = 0, cia2IrqSeen = 0, vicIrqSeen = 0;   // the interrupt lines as the CPU sees them
         uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
-        uint32_t drivePhase = 0;          // the drive's clock against ours: += driveNum_ per cycle, a drive cycle per driveDen_
+        uint32_t drivePhase = 0;
+        uint16_t autotypePos = 0;         // keys of the autotype text already typed          // the drive's clock against ours: += driveNum_ per cycle, a drive cycle per driveDen_
     };
 #pragma pack(pop)
 
@@ -176,6 +184,7 @@ private:
     Cartridge cart_;
     ProgramFile autostart_;      // settings, like the ROMs: not part of the state
     uint64_t autostartDelay_ = 0;
+    std::string autotype_;
     std::array<uint8_t, 65536> ram_{};
     std::array<uint8_t, 1024> colorRam_{};
     std::array<uint8_t, 8192> basic_{}, kernal_{};

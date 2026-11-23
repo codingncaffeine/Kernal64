@@ -201,6 +201,17 @@ bool loadContent(const retro_game_info* info) {
                 static_cast<unsigned>(image.chips.size()));
             return true;
         }
+    } else if ((bytes.size() >= 8 && !std::memcmp(bytes.data(), "GCR-1541", 8)) || bytes.size() == 174848 ||
+               bytes.size() == 175531 || bytes.size() == 196608 || bytes.size() == 197376) {
+        auto disk = std::make_shared<k64::GcrDisk>();
+        if (!machine->driveAttached()) {
+            error = "a disk needs drive 8: the 1541 ROMs in the system folder and the drive switched on";
+        } else if (k64::parseDisk(bytes.data(), bytes.size(), *disk, error)) {
+            machine->insertDisk(disk);
+            machine->setAutotype("LOAD\"*\",8,1\rRUN\r");
+            log(RETRO_LOG_INFO, "disk in drive 8, started with LOAD\"*\",8,1 and RUN");
+            return true;
+        }
     } else {
         k64::ProgramFile program;
         if (k64::parseProgram(bytes.data(), bytes.size(), program, error)) {
@@ -283,7 +294,7 @@ RETRO_API void retro_get_system_info(retro_system_info* info) {
     std::memset(info, 0, sizeof *info);
     info->library_name = "Kernal64";
     info->library_version = KERNAL64_VERSION;
-    info->valid_extensions = "crt|prg|p00|t64";
+    info->valid_extensions = "crt|prg|p00|t64|d64|g64";
     info->need_fullpath = false;
     info->block_extract = false;
 }

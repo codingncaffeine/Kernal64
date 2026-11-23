@@ -442,6 +442,15 @@ void C64::tick() {
     ++s_.cycle;
     if (vic_.line() == 0 && vic_.cycleInLine() == 1) ++s_.frame;
     // The KERNAL's input loop polls the keyboard buffer at $E5CD: from there on it is ready.
+    if (s_.autotypePos < autotype_.size() && cpu_.regs().pc == 0xE5CD && ram_[0xC6] == 0) {
+        size_t n = 0;
+        while (n < 10 && s_.autotypePos < autotype_.size()) {
+            const char c = autotype_[s_.autotypePos++];
+            ram_[0x0277 + n++] = static_cast<uint8_t>(c);
+            if (c == '\r') break;   // one line at a time: what follows waits for the next prompt
+        }
+        ram_[0xC6] = static_cast<uint8_t>(n);
+    }
     if (s_.autostartPending && cpu_.regs().pc == 0xE5CD) {
         if (!s_.autostartReadyAt) s_.autostartReadyAt = s_.cycle;
         if (s_.cycle >= s_.autostartReadyAt + autostartDelay_) injectProgram();

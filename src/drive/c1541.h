@@ -1,14 +1,17 @@
 // The 1541's board: a 6502, 2K of RAM, the DOS ROM, a 6522 for the serial bus and one
 // for the disk mechanism. Rules and sources: local-notes/hw/drive.md.
 //
-// So far the board alone: it boots its ROM and answers the serial bus's lines. The disk
-// mechanism (rotation, the head, SYNC, byte ready) is not built yet: the second 6522
-// sees no disk.
+// The disk mechanism: the spindle, the head on its stepper, and the read circuit (zone
+// clock, bit-cell counter, shift register, SYNC and BYTE READY), hw/drive.md R. Writing is
+// not built yet.
 #pragma once
 
 #include "cpu6502.h"
 #include "roms.h"
 #include "via6522.h"
+#include "disk.h"
+
+#include <memory>
 
 #include <array>
 #include <cstdint>
@@ -37,6 +40,12 @@ public:
     bool led() const;         // the activity light
     bool motor() const;       // the spindle motor
 
+    // The disk in the drive (none: empty). Shared with whoever made it; the drive only reads it.
+    void insertDisk(std::shared_ptr<const GcrDisk> disk) { disk_ = std::move(disk); }
+    void ejectDisk() { disk_.reset(); }
+    bool hasDisk() const { return disk_ != nullptr; }
+    int halfTrack() const { return m_.halfTrack; }
+
     // Save states: everything the board holds, constant size. The ROMs and the jumpers are
     // settings, not state.
     static size_t stateSize();
@@ -61,7 +70,25 @@ private:
     void write(uint16_t a, uint8_t v);
     uint8_t viaPortA(int via, uint8_t out, uint8_t ddr) override;
     uint8_t viaPortB(int via, uint8_t out, uint8_t ddr) override;
-    void viaOutputs(int) override {}
+    void viaOutputs(int via) override;
+    void mechanism();         // one drive cycle of the spindle and the read circuit
+    bool readMode() const { return via2_.cb2Out(); }
+    bool soe() const { return via2_.ca2Out(); }
+
+#pragma pack(push, 1)
+    struct Mech {
+        uint8_t halfTrack = 36;     // 2 = track 1 (the head starts over the directory track)
+        uint8_t phase = 0;          // the stepper's phase as last driven (PB0-PB1)
+        uint32_t angle = 0;         // the disk's position: 16 MHz ticks into the revolution
+        uint8_t ue7 = 0, uf4 = 0;   // zone clock divider and bit-cell counter
+        uint16_t shift = 0;         // the last ten bits read
+        uint8_t bits = 0;           // bits since the last byte or SYNC
+        uint8_t latch = 0;          // the byte port A reads
+        uint8_t flux = 0;           // a flux change reaches the counters in the next tick
+        uint8_t readyIn = 0;        // drive cycles until BYTE READY goes low (0 = none due)
+        uint8_t readyLow = 0;       // BYTE READY is low (until the next bit)
+    };
+#pragma pack(pop)
 
     std::array<uint8_t, 2048> ram_{};
     std::array<uint8_t, 16384> rom_{};
@@ -73,6 +100,8 @@ private:
     Cpu6502<Bus> cpu_{bus_};
     Via6522 via1_{*this, 0};   // the serial bus
     Via6522 via2_{*this, 1};   // the disk mechanism
+    Mech m_;
+    std::shared_ptr<const GcrDisk> disk_;
 };
 
 } // namespace k64

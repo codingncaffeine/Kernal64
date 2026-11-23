@@ -39,6 +39,7 @@ add_library(k64core STATIC
   src/drive/c1541.cpp
   src/media/crt.cpp
   src/media/prg.cpp
+  src/media/disk.cpp
 )
 target_include_directories(k64core PUBLIC src/core src/media src/drive)
 # No fused multiply-add: floating-point state (the audio output network) must come out the

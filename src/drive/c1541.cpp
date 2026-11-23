@@ -20,6 +20,7 @@ void C1541::reset() {
     via2_.reset();
     cpu_.reset();
     cycle_ = 0;
+    m_ = Mech{};
     via1_.setCa1(atnLow_);
 }
 
@@ -70,8 +71,9 @@ void C1541::setBus(bool atnLow, bool clkLow, bool dataLow) {
     via1_.setCa1(atnLow);   // ATN, inverted, is also the chip's CA1 input
 }
 
-uint8_t C1541::viaPortA(int, uint8_t out, uint8_t ddr) {
-    // Neither port A has anything on it that pulls (the disk's data path is not built).
+uint8_t C1541::viaPortA(int via, uint8_t out, uint8_t ddr) {
+    // The disk's 6522: port A's inputs are the read circuit's byte latch (R5).
+    if (via == 1) return static_cast<uint8_t>((out & ddr) | (m_.latch & ~ddr));
     return static_cast<uint8_t>(out | ~ddr);
 }
 
@@ -85,7 +87,12 @@ uint8_t C1541::viaPortB(int via, uint8_t out, uint8_t ddr) {
         if (atnLow_) pins |= 0x80;
         return pins;
     }
-    // The disk's 6522: no disk, so no SYNC (PB7 high) and the write protect sensor sees light (PB4 high).
+    // The disk's 6522 (R6): PB7 low while the read circuit sees SYNC; PB4 low while the
+    // write protect sensor is dark (a disk with its notch covered).
+    pins = static_cast<uint8_t>(pins & ~(0x80 | 0x10) & 0xFF);
+    pins = static_cast<uint8_t>(pins | ((out & ddr) & 0x90));
+    if (!(ddr & 0x80) && !(readMode() && m_.shift == 0x3FF)) pins |= 0x80;
+    if (!(ddr & 0x10) && !(disk_ && disk_->writeProtected)) pins |= 0x10;
     return pins;
 }
 
@@ -94,10 +101,75 @@ uint8_t C1541::viaPortB(int via, uint8_t out, uint8_t ddr) {
 bool C1541::led() const { return ((via2_.outB() | ~via2_.ddrB()) & 0x08) != 0; }
 bool C1541::motor() const { return ((via2_.outB() | ~via2_.ddrB()) & 0x04) != 0; }
 
+// ---- the disk mechanism (hw/drive.md R) -------------------------------------------
+
+namespace {
+constexpr uint32_t kTicksPerRev = 3'200'000;   // R1: 16 MHz at 300 rpm
+}
+
+// R2: the stepper's two lines count through four phases; one phase up moves the head a
+// half-track in (to higher tracks), one down moves it out. The disk keeps turning under it.
+void C1541::viaOutputs(int via) {
+    if (via != 1) return;
+    const uint8_t phase = static_cast<uint8_t>((via2_.outB() | ~via2_.ddrB()) & 3);
+    const int step = (phase - m_.phase) & 3;
+    if (step == 1 && m_.halfTrack < 2 + GcrDisk::kHalfTracks - 1) ++m_.halfTrack;
+    else if (step == 3 && m_.halfTrack > 2) --m_.halfTrack;
+    m_.phase = phase;
+}
+
+// One drive cycle = 16 ticks of the 16 MHz clock (R1-R4).
+void C1541::mechanism() {
+    // BYTE READY goes low at the cycle boundary it was due at (R4).
+    if (m_.readyIn && --m_.readyIn == 0) m_.readyLow = soe() ? 1 : 0;
+    const bool spinning = motor() && disk_ != nullptr;
+    const std::vector<uint8_t>* track = nullptr;
+    if (spinning) {
+        const auto& t = disk_->tracks[static_cast<size_t>(GcrDisk::index(m_.halfTrack))];
+        if (!t.empty()) track = &t;
+    }
+    const uint64_t bitsPerRev = track ? track->size() * 8 : 0;
+    const uint8_t zone = static_cast<uint8_t>(((via2_.outB() | ~via2_.ddrB()) >> 5) & 3);
+    for (int tick = 0; tick < 16; ++tick) {
+        // A flux change (a 1 on the disk) restarts both counters (R3).
+        if (m_.flux) {
+            m_.flux = 0;
+            m_.ue7 = zone;
+            m_.uf4 = 0;
+        }
+        if (++m_.ue7 == 16) {
+            m_.ue7 = zone;
+            m_.uf4 = static_cast<uint8_t>((m_.uf4 + 1) & 15);
+            if ((m_.uf4 & 3) == 2) {
+                // A bit cell ends: a 1 if no flux change came for a whole cell since the last.
+                m_.shift = static_cast<uint16_t>(((m_.shift << 1) | (m_.uf4 == 2 ? 1 : 0)) & 0x3FF);
+                m_.readyLow = 0;
+                if (readMode() && m_.shift == 0x3FF) {
+                    m_.bits = 0;   // SYNC: the byte count starts again
+                } else if (++m_.bits == 8) {
+                    m_.bits = 0;
+                    m_.latch = static_cast<uint8_t>(m_.shift);
+                    // BYTE READY at the next cycle boundary at least 10 ticks on (R4).
+                    m_.readyIn = static_cast<uint8_t>(16 - tick < 10 ? 2 : 1);
+                }
+            }
+        }
+        if (!spinning) continue;
+        // The disk moves one tick; a new bit cell under the head that holds a 1 is a flux change.
+        const uint32_t next = m_.angle + 1 == kTicksPerRev ? 0 : m_.angle + 1;
+        if (track) {
+            const uint64_t a = m_.angle * bitsPerRev / kTicksPerRev;
+            const uint64_t b = next ? next * bitsPerRev / kTicksPerRev : 0;
+            if (a != b && ((*track)[b >> 3] & (0x80 >> (b & 7)))) m_.flux = 1;
+        }
+        m_.angle = next;
+    }
+}
+
 // ---- save states ------------------------------------------------------------------
 
 size_t C1541::stateSize() {
-    return 2048 + sizeof(uint64_t) + 3 + 2 * sizeof(Via6522::State) + sizeof(Cpu6502<Bus>::Snapshot);
+    return 2048 + sizeof(uint64_t) + 3 + 2 * sizeof(Via6522::State) + sizeof(Cpu6502<Bus>::Snapshot) + sizeof(Mech);
 }
 
 void C1541::saveState(uint8_t* out) const {
@@ -110,6 +182,7 @@ void C1541::saveState(uint8_t* out) const {
     put(&via2_.state(), sizeof(Via6522::State));
     const auto snap = cpu_.snapshot();
     put(&snap, sizeof snap);
+    put(&m_, sizeof m_);
 }
 
 void C1541::loadState(const uint8_t* in) {
@@ -129,9 +202,13 @@ void C1541::loadState(const uint8_t* in) {
     Cpu6502<Bus>::Snapshot snap;
     get(&snap, sizeof snap);
     cpu_.restore(snap);
+    get(&m_, sizeof m_);
 }
 
 void C1541::tick() {
+    mechanism();
+    via2_.setCa1(!m_.readyLow);
+    cpu_.setSo(m_.readyLow != 0);
     cpu_.setIrq(via1_.irq() || via2_.irq());
     cpu_.tick();
     via1_.clock();

@@ -76,6 +76,7 @@ extra="$(nm -D --defined-only "$CORE" | awk '{print $3}' | grep -v '^retro_' || 
 
 # The machine needs the user's system ROMs (never in the repository): the gitignore folder.
 ROMS="$ROOT/gitignore"
+EXT="$ROOT/gitignore/external"
 
 step "libretro conformance"
 for model in pal ntsc ntsc-old pal-new ntsc-new pal-old; do
@@ -91,6 +92,10 @@ for model in pal ntsc; do
         --system "$ROMS" --frames 1030 --check --option kernal64_model=$model --type-at 200 \
         --type '10 OPEN1,8,15\n20 INPUT#1,A,B$,C,D\n30 ?A;B$;C;D\nRUN\n' --expect-screen '73 CBM DOS V2.6 1541'
 done
+# A disk as content: inserted, started with LOAD"*",8,1 and RUN; the suite's program reads
+# the drive's ROM over the bus with the DOS's memory-read command.
+side "disk as content, started by itself" "$BUILD/host-disk.log" "$BUILD/k64host" "$CORE" --system "$ROMS" \
+    --content "$EXT/testprogs/vdrive/test.d64" --frames 900 --check --expect-screen 'ROM:  254' --expect-screen 'ROM:  103'
 sides
 grep -q "missing system files" "$BUILD"/host-*.log && bad "system ROMs not found in $ROMS"
 grep -q "no 1541 ROMs" "$BUILD"/host-*.log && bad "1541 ROMs not found in $ROMS"
@@ -168,7 +173,6 @@ if [ -f "$ROOT/gitignore/external/testprogs/testbench/c64-testlist.in" ]; then
 else bad "test programs missing: tools/oracle/build-vice.sh"; fi
 
 step "own probe, cartridge and raster-effect programs, content files, VIC-II and SID rule tests, CPU tests"
-EXT="$ROOT/gitignore/external"
 # These scripts run their own lines side by side, so one after the other here.
 script() {
     local label="$1" log="$2"; shift 2
@@ -182,6 +186,7 @@ script "own cartridge programs" "$BUILD/carts.log" tools/carts.sh "$BUILD/k64run
 script "freeze against real cartridges" "$BUILD/freezer.log" tools/freezer.sh "$BUILD/k64run"
 script "content files" "$BUILD/media.log" tools/media.sh "$BUILD"
 script "raster-effect programs" "$BUILD/effects.log" tools/effects.sh "$BUILD/k64run"
+script "disks through drive 8 (directory and files byte for byte)" "$BUILD/disk.log" tools/disk.sh "$BUILD/k64run"
 # Independent of each other: side by side.
 side "VIC-II rule tests" "$BUILD/victest.log" "$BUILD/victest"
 side "SID paddle converter rules" "$BUILD/sidtest.log" "$BUILD/sidtest"

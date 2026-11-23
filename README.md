@@ -47,6 +47,9 @@ Files are recognized by their contents, not their names.
   nothing.
 - Program files (`.prg`, `.p00`) and the first program of a `.t64` container: put into
   memory once the machine has booted, and started with `RUN`.
+- Disk images (`.d64` with or without error bytes, `.g64`) in drive 8, a 1541 emulated
+  down to its read circuit and running its own DOS ROM: started with `LOAD"*",8,1` and
+  `RUN`, as on the real machine. Disks are read-only for now (writing comes next).
 
 ## Core options
 
@@ -57,7 +60,7 @@ Files are recognized by their contents, not their names.
 | `kernal64_sid` | `6581`, `8580` | The SID chip |
 | `kernal64_sid_noise_pulse` | `drains it`, `leaves it alone` | 6581 only. Real 6581s differ in what noise combined with pulse does to the noise generator: on most it empties it within a few cycles, on some it does not |
 | `kernal64_border` | `full`, `small`, `none` | How much of the border is shown |
-| `kernal64_drive8` | `on`, `off` | A 1541 as drive 8 on the serial bus (disk images are not mounted yet) |
+| `kernal64_drive8` | `on`, `off` | A 1541 as drive 8 on the serial bus (needed for disk images) |
 | `kernal64_joyport` | `2`, `1` | The control port the RetroPad's joystick is in |
 
 ## Test cartridges
