@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds the project's own test cartridges (tests/carts/banks.s, one image per bank, packed
-# by tools/mkcrt.py), runs each line of tests/carts/expected.txt on our machine and
+# Builds the project's own test cartridges (tests/carts/banks.s, one image per bank, and
+# tests/carts/flash.s for the flash type; packed by tools/mkcrt.py), runs each line of tests/carts/expected.txt on our machine and
 # compares the value the cartridge reports through the debug cartridge register with the
 # expected one (K64_CARTS_REF=1 also asks the reference emulator, which must report the
 # same).
@@ -11,7 +11,10 @@
 # TYPE is the hardware the test program is written for; a line that names another type for
 # the file's header plugs the same chips into other hardware, where the check must fail
 # at a known step. REFERENCE = "refuses": the reference emulator does not take a file with
-# these chips for that type (nothing to compare).
+# these chips for that type (nothing to compare); a number: the value the reference
+# reports where it departs from the chip's data sheet.
+# TYPE 32 (flash chips): BANKS is 0 for the checks both agree on, 1 to add the data-sheet-only
+# checks (flash.s STRICT).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 K64RUN="$(realpath "${1:-$ROOT/bin/k64run}")"
@@ -24,6 +27,16 @@ while read -r type banks want htype exrom game refwant; do
     tag="t$type-b$banks${htype:+-as$htype}"
     chips=()
     ok=1
+    cycles=3000000
+    if [ "$type" = 32 ]; then
+        # The code in the ROMH chip's banks 0 and 8, a marked bank 0 and 8 in the ROML chip.
+        fasm() { python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/carts/flash.s" -o "$1" -D "PART=$2" -D "BANK=$3" -D "STRICT=$banks"; }
+        fasm "$OUT/$tag-code.prg" 0 0 && fasm "$OUT/$tag-l0.prg" 1 0 && fasm "$OUT/$tag-l8.prg" 1 8 || ok=0
+        chips=("$OUT/$tag-l0.prg@0:8000" "$OUT/$tag-code.prg@0:a000" "$OUT/$tag-l8.prg@8:8000" "$OUT/$tag-code.prg@8:a000")
+        cycles=16000000
+        exrom=1; game=0
+        strict=$banks; banks=0
+    fi
     for ((b = 0; b < banks; b++)); do
         case "$type" in
             4|18) [ "$b" = 0 ] || break ;;   # one chip at $8000
@@ -40,11 +53,12 @@ while read -r type banks want htype exrom game refwant; do
     esac
     if [ "$ok" = 0 ]; then echo "FAIL type $type, $banks bank(s): does not assemble"; fails=$((fails + 1)); continue; fi
     python3 -I "$ROOT/tools/mkcrt.py" -o "$OUT/$tag.crt" --type "${htype:-$type}" --exrom "${exrom:-0}" --game "${game:-1}" "${chips[@]}"
-    "$K64RUN" "$ROOT/gitignore" --cart "$OUT/$tag.crt" --debugcart --cycles 3000000 >"$OUT/$tag.log" 2>&1
+    "$K64RUN" "$ROOT/gitignore" --cart "$OUT/$tag.crt" --debugcart --cycles "$cycles" >"$OUT/$tag.log" 2>&1
     got=$?
     line="type $type, $banks bank(s)${htype:+ in type $htype hardware}: ours $got, expected $want"
+    [ "$type" = 32 ] && line="type 32, flash chips$([ "$strict" = 1 ] && echo ", data sheet checks too"): ours $got, expected $want"
     if [ "${K64_CARTS_REF:-0}" = 1 ]; then
-        timeout 300 "$ROOT/tools/oracle/vice.sh" -debugcart -jamaction 1 -warp -limitcycles 3000000 \
+        timeout 300 "$ROOT/tools/oracle/vice.sh" -debugcart -jamaction 1 -warp -limitcycles "$cycles" \
             -cartcrt "/k64/${OUT#"$ROOT"/}/$tag.crt" >"$OUT/$tag.ref.log" 2>&1
         # Its exit status 1 is also its cycle limit: the reported value is in its log.
         ref="$(tr -d '\r' <"$OUT/$tag.ref.log" | sed -n 's/.*DBGCART: exit(\([0-9]*\)).*/\1/p' | tail -1)"

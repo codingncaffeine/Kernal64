@@ -59,6 +59,10 @@ for f in a.prg a.p00 a.t64 bad-end.t64; do
 done
 "$BIN/k64host" "$CORE" --system "$ROOT/gitignore" --content "$CRT" --frames 120 --check --expect-screen "CART PASS" >"$OUT/host.log" 2>&1 \
     && echo "ok   core: cartridge" || { bad "core: cartridge"; tail -3 "$OUT/host.log"; }
+# A cartridge that writes to its flash chips: a state saved in the middle of its erasing
+# and programming holds the chips' contents, and the replay from it ends in the same state.
+"$BIN/k64host" "$CORE" --system "$ROOT/gitignore" --content "$ROOT/scratch/carts/t32-b0.crt" --frames 100 --check >"$OUT/host.log" 2>&1 \
+    && echo "ok   core: flash cartridge, state in the middle of its writes" || { bad "core: flash cartridge state"; tail -3 "$OUT/host.log"; }
 # Without content the same checks must fail: the texts come from the content.
 "$BIN/k64host" "$CORE" --system "$ROOT/gitignore" --frames 300 --expect-screen "PRG PASS" >"$OUT/host.log" 2>&1 \
     && bad "core: PRG PASS on the screen without a program" || echo "ok   core: no program, no text"

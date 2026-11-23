@@ -19,6 +19,9 @@
 # Memory at power on is set to our machine's pattern (64 bytes $00, 64 bytes $FF, ...) with
 # no random bits: the reference's default pattern differs and flips random bits, so a
 # program that shows memory it never wrote would differ from run to run.
+# +easyflashcrtwrite: by default the reference writes a flash cartridge's contents back into
+# the cartridge FILE when it exits, which altered two of the suite's files (a programmed
+# cartridge then fails its own test). The suite's files are never written.
 # K64_VICE_MODEL picks the machine (c64 = 6569 PAL, ntsc = 6567R8, oldntsc = 6567R56A);
 # it is set before the ROMs because choosing a model resets them.
 # Typical: -limitcycles N -exitscreenshot /k64/scratch/out.png -VICIIborders 2 (whole raster)
@@ -32,4 +35,5 @@ exec podman run --rm -t --network none --cpus 1 -v "$ROOT":/k64:Z k64-vice-oracl
     -VICIIextpal -VICIIpalette /k64/tools/oracle/index.vpl -VICIIfilter 0 \
     -raminitstartvalue 0 -raminitvalueinvert 64 -raminitvalueoffset 0 -raminitpatterninvert 0 \
     -raminitstartrandom 0 -raminitrepeatrandom 0 -raminitrandomchance 0 \
+    +easyflashcrtwrite \
     -sound -sounddev wav -soundarg /dev/null "$@"

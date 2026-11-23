@@ -18,6 +18,16 @@ void place(uint8_t* window, size_t offset, const uint8_t* data, size_t size) {
     for (size_t i = 0; i < size && offset + i < kBank; ++i) window[offset + i] = data[i];
 }
 
+// T32's flash chips (the Am29F040B's data sheet; hw/cart.md FL). Times in machine cycles,
+// which are close to microseconds: the sheet's typical values.
+constexpr uint32_t kProgramCycles = 7;            // one byte
+constexpr uint32_t kEraseTimeoutCycles = 50;      // more sectors can be named within it
+constexpr uint32_t kSectorEraseCycles = 1000000;  // per sector
+constexpr uint32_t kChipEraseCycles = 8000000;
+constexpr size_t kSectorSize = 0x10000;
+enum FlashSeq : uint8_t { Idle, Unlock1, Unlock2, ProgramByte, EraseSetup, EraseUnlock1, EraseUnlock2 };
+enum FlashOp : uint8_t { None, Programming, ProgramFailed, EraseTimeout, SectorErasing, ChipErasing };
+
 // Type 7's register holds the bank number as bits 5-3 (low three) and bit 0 (the fourth).
 unsigned scrambledBank(unsigned v) { return ((v >> 3) & 7) | ((v & 1) << 3); }
 
@@ -49,11 +59,11 @@ bool Cartridge::attach(const CartImage& image, std::string& error) {
     const unsigned type = image.type;
     // The banks the chips name. Type 7's files carry the register value as bank number.
     auto bankOf = [type](const CartImage::Chip& c) { return type == 7 ? scrambledBank(c.bank) : unsigned{c.bank}; };
-    unsigned banks = 1;
+    unsigned banks = type == 32 ? 64 : 1;   // T32: two chips of 512K whatever the file fills
     for (const auto& c : image.chips) {
         if (c.data.empty()) continue;
         const unsigned b = bankOf(c);
-        if (b > 127) { error = "cartridge file names bank " + std::to_string(b); return false; }
+        if (b > 127 || (type == 32 && b > 63)) { error = "cartridge file names bank " + std::to_string(b); return false; }
         if (b + 1 > banks) banks = b + 1;
     }
     unsigned size = 1;
@@ -121,6 +131,8 @@ void Cartridge::reset() {
 
 bool Cartridge::setState(const State& s) {
     if (s.type != type_ || s.bank >= banks_ || s.bankH >= banks_) return false;
+    for (const Flash& f : s.flash)
+        if (f.seq > EraseUnlock2 || f.op > ChipErasing || (type_ != 32 && (f.op || f.autoselect || f.suspended))) return false;
     s_ = s;
     return true;
 }
@@ -133,10 +145,180 @@ void Cartridge::setBank(unsigned bank) {
 uint8_t Cartridge::readRomL(uint16_t addr) {
     if (type_ == 18) s_.bankH = (addr & 0x1000) ? 1 : 0;   // T18: which half was read picks ROMH's bank
     if (type_ == 10) s_.capacitor = 0;                      // T10
+    if (flashBusy(0)) return flashValue(0, addr, s_.flash[0].toggle);   // a read moves the toggle bits
     return peekRomL(addr);
 }
 
-uint8_t Cartridge::readRomH(uint16_t addr) { return peekRomH(addr); }
+uint8_t Cartridge::readRomH(uint16_t addr) {
+    if (flashBusy(1)) return flashValue(1, addr, s_.flash[1].toggle);
+    return peekRomH(addr);
+}
+
+// ---- T32: the flash chips ---------------------------------------------------------------
+
+// What a read of a chip gives while it is not simply showing its contents; `toggle` holds
+// the toggle bits and is moved as a read moves them.
+uint8_t Cartridge::flashValue(int chip, uint16_t addr, uint8_t& toggle) const {
+    const Flash& f = s_.flash[chip];
+    const std::vector<uint8_t>& rom = chip ? romH_ : romL_;
+    const size_t a = (size_t{s_.bank} << 13) | (addr & 0x1FFF);
+    const bool chosen = f.op == ChipErasing || ((f.sectors >> (a / kSectorSize)) & 1);
+    switch (f.op) {
+    case Programming: case ProgramFailed:
+        // DQ7 the complement of the bit being programmed, DQ6 toggles; DQ5 once it failed.
+        toggle ^= 0x40;
+        return static_cast<uint8_t>((~f.data & 0x80) | (toggle & 0x40) | (f.op == ProgramFailed ? 0x20 : 0));
+    case EraseTimeout: case SectorErasing: case ChipErasing:
+        // DQ7 0, DQ6 toggles, DQ2 toggles in a sector being erased, DQ3 once the time-out
+        // for naming more sectors is over.
+        toggle ^= chosen ? 0x44 : 0x40;
+        return static_cast<uint8_t>((toggle & (chosen ? 0x44 : 0x40)) | (f.op != EraseTimeout ? 0x08 : 0));
+    default: break;
+    }
+    if (f.autoselect) {
+        switch (a & 0xFF) {
+        case 0: return 0x01;   // manufacturer
+        case 1: return 0xA4;   // device
+        case 2: return 0x00;   // the sector is not protected
+        default: return rom[a];
+        }
+    }
+    if (f.suspended && chosen) {   // a sector whose erase is on hold: DQ7 1, DQ2 toggles
+        toggle ^= 0x04;
+        return static_cast<uint8_t>(0x80 | (toggle & 0x04));
+    }
+    return rom[a];
+}
+
+void Cartridge::flashWrite(int chip, uint16_t addr, uint8_t value) {
+    Flash& f = s_.flash[chip];
+    std::vector<uint8_t>& rom = chip ? romH_ : romL_;
+    const size_t a = (size_t{s_.bank} << 13) | (addr & 0x1FFF);
+    const unsigned key = a & 0x7FF;   // the upper address lines do not matter in a command
+    const uint8_t sector = static_cast<uint8_t>(1u << (a / kSectorSize));
+    switch (f.op) {
+    case Programming: case ChipErasing:
+        return;   // nothing is accepted until it has finished
+    case ProgramFailed:
+        if (value == 0xF0) { f.op = None; f.failed = 0; f.seq = Idle; }   // only a reset gets out
+        return;
+    case SectorErasing:
+        if (value == 0xB0) {   // on hold; the time left is kept (a byte programmed meanwhile has its own)
+            f.op = None;
+            f.suspended = 1;
+            f.held = f.timer;
+        }
+        return;
+    case EraseTimeout:
+        if (value == 0x30) {            // one more sector; the time-out starts again
+            f.sectors |= sector;
+            f.timer = kEraseTimeoutCycles;
+        } else if (value == 0xB0) {     // on hold before it began
+            f.op = None;
+            f.suspended = 1;
+            f.held = kSectorEraseCycles;
+        } else {                        // anything else calls the erase off
+            f.op = None;
+            f.sectors = 0;
+            f.timer = 0;
+            f.seq = Idle;
+        }
+        return;
+    default: break;
+    }
+    const FlashSeq seq = static_cast<FlashSeq>(f.seq);
+    f.seq = Idle;
+    if (value == 0xF0 && seq != ProgramByte) { f.autoselect = 0; return; }   // reset: back to the contents
+    switch (seq) {
+    case Idle:
+        if (key == 0x555 && value == 0xAA) f.seq = Unlock1;
+        else if (value == 0x30 && f.suspended) {   // resume
+            f.suspended = 0;
+            f.op = SectorErasing;
+            f.timer = f.held;
+        } else f.autoselect = 0;   // not the start of a command: back to the contents
+        break;
+    case Unlock1:
+        if (key == 0x2AA && value == 0x55) f.seq = Unlock2;
+        else f.autoselect = 0;
+        break;
+    case Unlock2:
+        if (key != 0x555) { f.autoselect = 0; break; }
+        if (value == 0x90) f.autoselect = 1;
+        else if (value == 0xA0) f.seq = ProgramByte;
+        else if (value == 0x80 && !f.suspended) f.seq = EraseSetup;
+        else f.autoselect = 0;
+        break;
+    case ProgramByte:
+        // Not into a sector whose erase is on hold. Bits only go from 1 to 0; asking for
+        // a 0 back to 1 fails (DQ5) and leaves the 0.
+        if (f.suspended && (f.sectors & sector)) break;
+        f.data = value;
+        f.failed = (rom[a] & value) != value;
+        rom[a] &= value;
+        f.op = Programming;
+        f.timer = kProgramCycles;
+        break;
+    case EraseSetup:
+        if (key == 0x555 && value == 0xAA) f.seq = EraseUnlock1;
+        break;
+    case EraseUnlock1:
+        if (key == 0x2AA && value == 0x55) f.seq = EraseUnlock2;
+        break;
+    case EraseUnlock2:
+        if (key == 0x555 && value == 0x10) {
+            f.op = ChipErasing;
+            f.timer = kChipEraseCycles;
+        } else if (value == 0x30) {
+            f.op = EraseTimeout;
+            f.sectors = sector;
+            f.timer = kEraseTimeoutCycles;
+        }
+        break;
+    }
+}
+
+void Cartridge::clockFlash(int chip) {
+    Flash& f = s_.flash[chip];
+    if (f.op == None || f.op == ProgramFailed || f.timer == 0 || --f.timer) return;
+    std::vector<uint8_t>& rom = chip ? romH_ : romL_;
+    switch (f.op) {
+    case Programming:
+        f.op = f.failed ? ProgramFailed : None;
+        break;
+    case EraseTimeout:
+        f.op = SectorErasing;
+        f.timer = kSectorEraseCycles;
+        break;
+    case SectorErasing:   // one sector after the other
+        for (unsigned s = 0; s < 8; ++s) {
+            if (!((f.sectors >> s) & 1)) continue;
+            for (size_t i = 0; i < kSectorSize; ++i) rom[s * kSectorSize + i] = 0xFF;
+            f.sectors = static_cast<uint8_t>(f.sectors & ~(1u << s));
+            break;
+        }
+        if (f.sectors) f.timer = kSectorEraseCycles;
+        else f.op = None;
+        break;
+    case ChipErasing:
+        for (uint8_t& b : rom) b = 0xFF;
+        f.op = None;
+        break;
+    default: break;
+    }
+}
+
+void Cartridge::saveContent(uint8_t* out) const {
+    if (type_ != 32) return;
+    for (size_t i = 0; i < romL_.size(); ++i) out[i] = romL_[i];
+    for (size_t i = 0; i < romH_.size(); ++i) out[romL_.size() + i] = romH_[i];
+}
+
+void Cartridge::loadContent(const uint8_t* in) {
+    if (type_ != 32) return;
+    for (size_t i = 0; i < romL_.size(); ++i) romL_[i] = in[i];
+    for (size_t i = 0; i < romH_.size(); ++i) romH_[i] = in[romL_.size() + i];
+}
 
 bool Cartridge::readIo(uint16_t addr, uint8_t& value) {
     const bool io1 = !(addr & 0x0100);
@@ -218,6 +400,11 @@ void Cartridge::writeIo(uint16_t addr, uint8_t value) {
 // T10: 512 cycles without a read of ROML or I/O 1 and the capacitor has charged: the
 // cartridge lets go of the EXROM line. Such a read empties it and pulls the line again.
 void Cartridge::clock() {
+    if (type_ == 32) {
+        clockFlash(0);
+        clockFlash(1);
+        return;
+    }
     if (type_ != 10) return;
     if (s_.capacitor == 0) s_.exrom = 0;
     if (s_.capacitor < 512 && ++s_.capacitor == 512) s_.exrom = 1;

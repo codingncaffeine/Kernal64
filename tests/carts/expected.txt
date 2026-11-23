@@ -10,6 +10,12 @@
 4   1   0
 10  1   0
 18  2   0
+# The flash type's two chips (tests/carts/flash.s): identifier codes, programming, sector
+# and chip erase, an erase called off and one put on hold. The second line adds what the
+# chip's data sheet says and the reference emulator does differently: there the reference
+# stops at check 6 (it programs a byte in no time; the chip is busy for some microseconds).
+32  0   0
+32  1   0  32 1 0  6
 # The same chips in other hardware: the check fails at the step where the two differ.
 # Bank register without an off bit: step 2 (switched off, the RAM shows).
 19  16  2  5

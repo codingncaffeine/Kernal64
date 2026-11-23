@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 12;
+constexpr uint32_t kStateVersion = 13;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
@@ -210,6 +210,9 @@ void C64::cpuWrite(uint16_t a, uint8_t v) {
         }
         return;
     }
+    // In the Ultimax configuration the PLA selects the cartridge's chips for writes too.
+    if (!(out & pla::nROML)) cart_.writeRomL(a, v);
+    if (!(out & pla::nROMH)) cart_.writeRomH(a, v);
     if (!(out & pla::nCASRAM)) ram_[a] = v;
 }
 
@@ -419,7 +422,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
+    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -448,6 +451,7 @@ void C64::saveState(uint8_t* out) const {
     put(colorRam_.data(), colorRam_.size());
     const auto snap = cpu_.snapshot();
     put(&snap, sizeof snap);
+    cart_.saveContent(out);
 }
 
 bool C64::loadState(const uint8_t* in, size_t size) {
@@ -492,6 +496,7 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     Cpu6502<CpuBus>::Snapshot snap;
     get(&snap, sizeof snap);
     cpu_.restore(snap);
+    cart_.loadContent(in);
     return true;
 }
 

@@ -37,8 +37,9 @@ Files are recognized by their contents, not their names.
 ## Content
 
 - Cartridge files (`.crt`): plain 8K, 16K and Ultimax cartridges and the bank-switched
-  hardware types 4, 5, 7, 8, 10, 15, 17, 18, 19 and 32 of the file format (type 32
-  read-only for now). Other types are refused with a message.
+  hardware types 4, 5, 7, 8, 10, 15, 17, 18, 19 and 32 of the file format. What a type
+  32 cartridge writes to its flash chips is kept in save states, not yet from one
+  session to the next. Other types are refused with a message.
 - Program files (`.prg`, `.p00`) and the first program of a `.t64` container: put into
   memory once the machine has booted, and started with `RUN`.
 
@@ -52,6 +53,42 @@ Files are recognized by their contents, not their names.
 | `kernal64_sid_noise_pulse` | `drains it`, `leaves it alone` | 6581 only. Real 6581s differ in what noise combined with pulse does to the noise generator: on most it empties it within a few cycles, on some it does not |
 | `kernal64_border` | `full`, `small`, `none` | How much of the border is shown |
 | `kernal64_joyport` | `2`, `1` | The control port the RetroPad's joystick is in |
+
+## Test cartridges
+
+The repository has its own test cartridges, written for this project. They run on any
+emulator that takes `.crt` files, and should run on the real hardware of each type (we
+have not done that).
+
+- `tests/carts/banks.s` checks a bank-switched cartridge type from inside the cartridge.
+  One source is assembled once per bank and per hardware type (4, 5, 7, 10, 15, 17, 18,
+  19). Every bank holds the same code and its own number at a fixed address, so the code
+  goes on running when the bank under it changes, and it can ask each bank who it is.
+  What would switch the ROM away from under itself runs from RAM. It walks every bank
+  through the type's register, then that type's extras: the second window, the off
+  switch and the RAM that shows behind it, switches made by a read, and for type 10 the
+  512-cycle timer from both sides (still on after 300 cycles, off after 700).
+- `tests/carts/flash.s` checks type 32's two flash chips. It runs from one chip and works
+  on the other: identifier codes, which address bits count in a command, a command at
+  the wrong address, programming a byte, a refused 0-to-1, sector erase, an erase called
+  off in its time-out, an erase put on hold and resumed, chip erase. `-D STRICT=1` adds
+  checks taken from the chip's data sheet: status bits while busy, and reading and
+  programming other sectors while an erase is on hold.
+
+A cartridge reports one byte to `$D7FF`: 0 for a pass, otherwise the number of the check
+that failed. That is the register of VICE's debug cartridge (`x64sc -debugcart` exits
+with the value); `banks.s` also writes `CART PASS` into screen memory.
+
+Why the result can be trusted:
+
+- The same chips are also packed under another type's header, where the check has to
+  fail at a named step (`tests/carts/expected.txt`).
+- VICE reports the same value as this core on every line (`K64_CARTS_REF=1`), except
+  where it departs from the flash chip's data sheet; that line records its value.
+- For each rule of our implementation a deliberately planted fault turns a line red.
+
+`tools/carts.sh` builds and runs them all. It needs only Python 3: `tools/k64asm.py` is
+the assembler, `tools/mkcrt.py` packs the images into `.crt` files (in `scratch/carts/`).
 
 ## License
 
