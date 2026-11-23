@@ -47,7 +47,9 @@ ROMS="$ROOT/gitignore"
 
 step "libretro conformance"
 for model in pal ntsc ntsc-old; do
-    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 300 --check --option kernal64_model=$model \
+    # Typing at the READY prompt through the API: BASIC must answer.
+    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 400 --check --option kernal64_model=$model \
+        --type 'PRINT 6*7\n' --expect-screen ' 42' \
         >"$BUILD/host-$model.log" 2>&1 || { tail -5 "$BUILD/host-$model.log"; bad "conformance ($model)"; }
     grep -q "missing system files" "$BUILD/host-$model.log" && bad "system ROMs not found in $ROMS"
 done
@@ -69,6 +71,13 @@ if [ -x "$ROOT/gitignore/external/vice/build/src/x64sc" ] && command -v podman >
     tools/oracle/refcheck.sh "$BUILD/k64run" "$BUILD/refcheck" >"$BUILD/refcheck.log" 2>&1 \
         || { tail -6 "$BUILD/refcheck.log"; bad "start-up screen differs from the reference"; }
 else bad "reference emulator missing: tools/oracle/build-vice.sh"; fi
+
+step "Lorenz suite and the TOD programs against the reference emulator"
+if [ -f "$ROOT/gitignore/external/testprogs/testbench/c64-testlist.in" ]; then
+    tools/suite.sh 'Lorenz-2.15|^\.\./CIA/tod/' "$BUILD/k64run" >"$BUILD/lorenz.log" 2>&1 \
+        || { grep '^WORSE' "$BUILD/lorenz.log" | head -8; bad "Lorenz suite worse than the reference"; }
+    tail -1 "$BUILD/lorenz.log"
+else bad "test programs missing: tools/oracle/build-vice.sh"; fi
 
 step "VIC-II rules"
 "$BUILD/victest" >"$BUILD/victest.log" 2>&1 || { grep FAIL "$BUILD/victest.log" | head -8; bad "VIC-II rule tests"; }

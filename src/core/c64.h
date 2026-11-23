@@ -9,6 +9,7 @@
 #include "roms.h"
 #include "timing.h"
 #include "vic2.h"
+#include "cia6526.h"
 
 #include <array>
 #include <cstddef>
@@ -17,7 +18,7 @@
 
 namespace k64 {
 
-class C64 final : private VicHost {
+class C64 final : private VicHost, private CiaHost {
 public:
     explicit C64(VicModel model = VicModel::Mos6569);
 
@@ -40,11 +41,28 @@ public:
     // across the frame boundary), timing().visibleWidth x timing().visibleLines.
     void visibleFrame(uint32_t* out) const;
 
+    // Input, applied by the frontend between frames. Keyboard matrix position: column =
+    // CIA 1 port A bit (0-7), row = port B bit (0-7), as in the Programmer's Reference Guide.
+    void setKey(int column, int row, bool down);
+    void releaseAllKeys();
+    // Joystick lines, active high: bit 0 up, 1 down, 2 left, 3 right, 4 fire.
+    void setJoystick(int port, uint8_t lines);   // port 1 or 2
+    void setRestore(bool down);                  // RESTORE goes straight to the NMI line
+
+    // Test harness only: the reference emulator's debug cartridge. A write to $D7FF ends a
+    // test program with that value as its result (0 = passed). Off unless enabled.
+    void enableDebugCart(bool on) { debugCart_ = on; debugExit_ = -1; }
+    int debugCartResult() const { return debugExit_; }
+
+    // Test harness only: memory writes from outside the CPU (program injection).
+    void pokeRam(uint16_t addr, uint8_t v) { ram_[addr] = v; }
+
     uint64_t cycle() const { return s_.cycle; }
     uint64_t frame() const { return s_.frame; }
 
     // Read-only views for tests and tools.
     const uint8_t* ram() const { return ram_.data(); }
+    uint8_t* ramData() { return ram_.data(); }   // the 64 KB of RAM, for the frontend (cheats, achievements)
     const CpuRegs& cpuRegs() const { return cpu_.regs(); }
     uint8_t peekCpu(uint16_t addr) const;  // what the CPU would read, without side effects
 
@@ -67,6 +85,9 @@ private:
     void ioWrite(uint16_t a, uint8_t v);
     uint8_t vicFetch(uint16_t vaddr14) const;  // a VIC-II access in its 16 KB view
     uint8_t vicRead(uint16_t a) override { return vicFetch(a); }
+    uint8_t ciaPortA(int cia, uint8_t driven) override;
+    uint8_t ciaPortB(int cia, uint8_t driven) override;
+    void keyboardLines(uint8_t paDriven, uint8_t pbDriven, uint8_t& pa, uint8_t& pb) const;
     uint8_t colorRead(uint16_t a) override { return colorRam_[a & 0x3FF]; }
 
     uint16_t plaInputsCpu(uint16_t a, bool read) const;
@@ -79,11 +100,15 @@ private:
     struct State {
         uint64_t cycle = 0, frame = 0;
         uint8_t portDdr = 0, portData = 0;
-        uint8_t portFloat = 0;           // bits 6-7 as last driven (they float when inputs)
+        uint8_t portFloat = 0;           // bits 3, 6, 7 as last driven (they float when inputs)
         uint8_t vicLastByte = 0;         // what the VIC-II read in the last first phase (open bus)
         uint8_t cpuData = 0;             // the CPU's data bus in the last second phase
         uint8_t aecLow = 0;              // the VIC-II holds the second phase of this cycle
-        uint8_t cia1[16] = {}, cia2[16] = {};
+        uint8_t keys[8] = {};             // pressed keys: bit = row, per column
+        uint8_t joy[2] = {};              // control ports 1 and 2, active high
+        uint8_t restore = 0;
+        uint8_t cia1IrqSeen = 0, cia2IrqSeen = 0;   // the interrupt lines as the CPU sees them
+        uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
         uint8_t sid[32] = {};
     };
 #pragma pack(pop)
@@ -95,9 +120,12 @@ private:
     std::array<uint8_t, 8192> basic_{}, kernal_{};
     std::array<uint8_t, 4096> chargen_{};
     bool romsOk_ = false;
+    bool debugCart_ = false;
+    int debugExit_ = -1;
     CpuBus bus_{this};
     Cpu6502<CpuBus> cpu_{bus_};
     Vic2 vic_{*this, kTimingPal};
+    Cia6526 cia1_{*this, 0}, cia2_{*this, 1};
 };
 
 } // namespace k64

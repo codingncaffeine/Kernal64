@@ -3,7 +3,11 @@
 //
 //   k64host CORE.so [--content FILE] [--frames N] [--option KEY=VALUE]...
 //                   [--system DIR] [--save DIR] [--dump FILE.ppm] [--check]
+//                   [--type TEXT] [--type-at FRAME] [--expect-screen TEXT]
 //
+// --type presses the keys for TEXT one at a time from frame --type-at (default 200),
+// each held 3 frames and released 3 ("\n" = RETURN). --expect-screen fails the run
+// unless TEXT is in the C64 text screen ($0400), read through RETRO_MEMORY_SYSTEM_RAM.
 // --check runs the conformance checks and exits non-zero on the first failure.
 // Without it the run prints a summary only.
 #include "libretro.h"
@@ -29,7 +33,7 @@ struct Core {
     SYM(retro_set_audio_sample_batch) SYM(retro_set_input_poll) SYM(retro_set_input_state) SYM(retro_init)
     SYM(retro_deinit) SYM(retro_get_system_info) SYM(retro_get_system_av_info) SYM(retro_load_game)
     SYM(retro_unload_game) SYM(retro_run) SYM(retro_reset) SYM(retro_serialize_size) SYM(retro_serialize)
-    SYM(retro_unserialize)
+    SYM(retro_unserialize) SYM(retro_get_memory_data) SYM(retro_get_memory_size)
 #undef SYM
 };
 
@@ -122,8 +126,32 @@ size_t audioBatch(const int16_t*, size_t frames) {
     audioFrames += frames;
     return frames;
 }
+// Scripted typing: the key held during the current frame (or none).
+std::string typeText;
+unsigned typeAt = 200, currentFrame = 0;
+unsigned keyFor(char ch) {
+    if (ch >= 'A' && ch <= 'Z') return RETROK_a + static_cast<unsigned>(ch - 'A');
+    if (ch >= 'a' && ch <= 'z') return RETROK_a + static_cast<unsigned>(ch - 'a');
+    if (ch >= '0' && ch <= '9') return RETROK_0 + static_cast<unsigned>(ch - '0');
+    switch (ch) {
+    case ' ': return RETROK_SPACE;
+    case '\n': return RETROK_RETURN;
+    case '*': return RETROK_RIGHTBRACKET;   // the core's positional map: ] = *
+    case '+': return RETROK_MINUS;          // - = +
+    case '-': return RETROK_EQUALS;         // = = -
+    case '.': return RETROK_PERIOD;
+    case ',': return RETROK_COMMA;
+    case '/': return RETROK_SLASH;
+    default: return RETROK_UNKNOWN;
+    }
+}
 void inputPoll() {}
-int16_t inputState(unsigned, unsigned, unsigned, unsigned) { return 0; }
+int16_t inputState(unsigned port, unsigned device, unsigned, unsigned id) {
+    if (port != 0 || device != RETRO_DEVICE_KEYBOARD || currentFrame < typeAt) return 0;
+    const unsigned step = (currentFrame - typeAt) / 6, phase = (currentFrame - typeAt) % 6;
+    if (step >= typeText.size() || phase >= 3) return 0;
+    return keyFor(typeText[step]) == id ? 1 : 0;
+}
 
 uint64_t fnv1a(const void* p, size_t n) {
     uint64_t h = 1469598103934665603ull;
@@ -160,6 +188,7 @@ int main(int argc, char** argv) {
     std::string content, dump;
     unsigned frames = 60;
     bool check = false;
+    std::vector<std::string> expectScreen;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -172,6 +201,11 @@ int main(int argc, char** argv) {
         else if (a == "--save") saveDir = next();
         else if (a == "--dump") dump = next();
         else if (a == "--check") check = true;
+        else if (a == "--type") {
+            typeText = next();
+            for (size_t p = 0; (p = typeText.find("\\n", p)) != std::string::npos;) typeText.replace(p, 2, "\n");
+        } else if (a == "--type-at") typeAt = static_cast<unsigned>(std::stoul(next()));
+        else if (a == "--expect-screen") expectScreen.push_back(next());
         else if (a == "--option") {
             std::string kv = next();
             auto eq = kv.find('=');
@@ -189,7 +223,7 @@ int main(int argc, char** argv) {
     LOAD(retro_set_audio_sample_batch) LOAD(retro_set_input_poll) LOAD(retro_set_input_state) LOAD(retro_init)
     LOAD(retro_deinit) LOAD(retro_get_system_info) LOAD(retro_get_system_av_info) LOAD(retro_load_game)
     LOAD(retro_unload_game) LOAD(retro_run) LOAD(retro_reset) LOAD(retro_serialize_size) LOAD(retro_serialize)
-    LOAD(retro_unserialize)
+    LOAD(retro_unserialize) LOAD(retro_get_memory_data) LOAD(retro_get_memory_size)
 #undef LOAD
     if (!ok) return 3;
 
@@ -219,6 +253,7 @@ int main(int argc, char** argv) {
     std::vector<uint64_t> hashes;
     const size_t stateSize = c.retro_serialize_size();
     for (unsigned f = 0; f < frames; ++f) {
+        currentFrame = f;
         c.retro_run();
         hashes.push_back(fnv1a(lastFrame.pixels.data(), lastFrame.pixels.size() * 4));
         if (f + 1 == frames / 2) {
@@ -249,6 +284,7 @@ int main(int argc, char** argv) {
         if (!stateAtHalf.empty()) {
             if (!c.retro_unserialize(stateAtHalf.data(), stateAtHalf.size())) fail("retro_unserialize failed");
             for (unsigned f = frames / 2; f < frames; ++f) {
+                currentFrame = f;
                 c.retro_run();
                 const uint64_t h = fnv1a(lastFrame.pixels.data(), lastFrame.pixels.size() * 4);
                 if (h != hashes[f]) { fail("frame %u differs after restoring the state", f); break; }
@@ -265,6 +301,22 @@ int main(int argc, char** argv) {
     }
 
     if (!dump.empty() && !writePpm(dump.c_str())) fail("could not write %s", dump.c_str());
+
+    if (!expectScreen.empty()) {
+        const auto* ram = static_cast<const uint8_t*>(c.retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM));
+        if (!ram || c.retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM) != 65536) {
+            fail("system RAM is not exposed");
+        } else {
+            std::string screen;
+            for (int i = 0; i < 1000; ++i) {
+                const uint8_t sc = ram[0x0400 + i] & 0x7F;
+                screen += sc < 0x20 ? static_cast<char>(sc + 0x40) : sc < 0x40 ? static_cast<char>(sc) : '?';
+                if (i % 40 == 39) screen += '\n';
+            }
+            for (const auto& e : expectScreen)
+                if (screen.find(e) == std::string::npos) fail("text not on the screen: \"%s\"\n%s", e.c_str(), screen.c_str());
+        }
+    }
 
     c.retro_unload_game();
     c.retro_deinit();

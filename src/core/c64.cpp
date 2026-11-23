@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 3;
+constexpr uint32_t kStateVersion = 4;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
@@ -38,6 +38,8 @@ void C64::reset() {
     for (size_t i = 0; i < ram_.size(); ++i) ram_[i] = (i & 0x40) ? 0xFF : 0x00;
     colorRam_.fill(0);
     vic_.reset();
+    cia1_.reset();
+    cia2_.reset();
     cpu_.reset();
 }
 
@@ -46,9 +48,10 @@ void C64::reset() {
 // $00 is the data direction register, $01 the data register (64doc, "Memory
 // Management"). Lines set as inputs read their pin: LORAM/HIRAM/CHAREN (bits 0-2)
 // have pull-ups, so the ROMs are mapped in after reset; bit 4 is the cassette sense
-// (pulled up: no button pressed). Bits 3 and 5 read 0 as inputs, and bits 6-7, which
-// have no pins, keep the last value driven. (Provisional for bits 3, 5, 6, 7: checked
-// in Phase 4 against the CPU-port test program.)
+// (pulled up: no button pressed). Bit 5 (cassette motor) reads 0 as an input. Bits 3
+// (cassette write) and 6-7 (no pins) keep the last value driven while they are inputs
+// (Lorenz's CPUPORT program, measured on a C64; real chips let that charge fade after a
+// while, not modeled yet).
 
 uint8_t C64::portPins() const {
     const uint8_t driven = s_.portData & s_.portDdr;
@@ -58,8 +61,8 @@ uint8_t C64::portPins() const {
 
 uint8_t C64::portRead() const {
     const uint8_t pins = portPins();
-    const uint8_t floating = static_cast<uint8_t>(~s_.portDdr & 0xC0 & s_.portFloat);
-    return static_cast<uint8_t>((pins & 0x3F) | (s_.portDdr & s_.portData & 0xC0) | floating);
+    const uint8_t floating = static_cast<uint8_t>(~s_.portDdr & 0xC8 & s_.portFloat);
+    return static_cast<uint8_t>((pins & 0x37) | (s_.portDdr & s_.portData & 0xC8) | floating);
 }
 
 // ---- the PLA's view ------------------------------------------------------------
@@ -83,9 +86,7 @@ uint16_t C64::plaInputsCpu(uint16_t a, bool read) const {
 
 unsigned C64::vicBank() const {
     // CIA 2 port A bits 0-1, inverted; inputs are pulled up, which selects bank 0.
-    const uint8_t pra = s_.cia2[0], ddra = s_.cia2[2];
-    const uint8_t lines = static_cast<uint8_t>((pra & ddra) | ~ddra);
-    return 3u - (lines & 3u);
+    return 3u - (cia2_.portAOut() & 3u);
 }
 
 uint8_t C64::vicFetch(uint16_t vaddr) const {
@@ -138,7 +139,7 @@ void C64::cpuWrite(uint16_t a, uint8_t v) {
     if (a <= 1) {
         if (a == 0) s_.portDdr = v;
         else s_.portData = v;
-        s_.portFloat = static_cast<uint8_t>((s_.portFloat & ~(s_.portDdr & 0xC0)) | (s_.portData & s_.portDdr & 0xC0));
+        s_.portFloat = static_cast<uint8_t>((s_.portFloat & ~(s_.portDdr & 0xC8)) | (s_.portData & s_.portDdr & 0xC8));
         // The CPU drives no data onto the bus for its own port, but R/W is low: the RAM
         // underneath stores what the VIC-II read in the first phase (article §4).
         ram_[a] = s_.vicLastByte;
@@ -167,13 +168,8 @@ uint8_t C64::ioRead(uint16_t a) {
     case 0x8: case 0x9: case 0xA: case 0xB:
         // Color RAM is 4 bits wide; the upper bits are whatever is left on the bus.
         return static_cast<uint8_t>((s_.vicLastByte & 0xF0) | colorRam_[a & 0x03FF]);
-    case 0xC: {
-        const unsigned r = a & 0x0F;
-        if (r == 0x00 || r == 0x01) return 0xFF; // stub CIA 1: no keys, no joystick
-        return s_.cia1[r];
-    }
-    case 0xD:
-        return s_.cia2[a & 0x0F];
+    case 0xC: return cia1_.read(a);
+    case 0xD: return cia2_.read(a);
     default:
         return s_.vicLastByte; // I/O 1 and I/O 2: nothing attached
     }
@@ -185,12 +181,69 @@ void C64::ioWrite(uint16_t a, uint8_t v) {
         vic_.write(a, v);
         return;
     case 0x4: case 0x5: case 0x6: case 0x7:
+        if (debugCart_ && a == 0xD7FF) debugExit_ = v;
         s_.sid[a & 0x1F] = v;
         return;
-    case 0xC: s_.cia1[a & 0x0F] = v; return;
-    case 0xD: s_.cia2[a & 0x0F] = v; return;
+    case 0xC: cia1_.write(a, v); return;
+    case 0xD: cia2_.write(a, v); return;
     default: return;
     }
+}
+
+// ---- input and the CIA ports (hw/cia.md rules 16-17) -----------------------------
+
+void C64::setKey(int column, int row, bool down) {
+    if (column < 0 || column > 7 || row < 0 || row > 7) return;
+    const uint8_t bit = static_cast<uint8_t>(1 << row);
+    s_.keys[column] = static_cast<uint8_t>(down ? (s_.keys[column] | bit) : (s_.keys[column] & ~bit));
+}
+
+void C64::releaseAllKeys() { for (auto& k : s_.keys) k = 0; }
+
+void C64::setJoystick(int port, uint8_t lines) {
+    if (port == 1 || port == 2) s_.joy[port - 1] = lines & 0x1F;
+}
+
+void C64::setRestore(bool down) { s_.restore = down ? 1 : 0; }
+
+// The keyboard connects port A lines (columns) to port B lines (rows) wherever a key is
+// down; a line pulled low on either side pulls the other low too, through every closed
+// key, so ghost keys appear as on the real matrix. Control port 2 shares port A, port 1
+// port B.
+void C64::keyboardLines(uint8_t paDriven, uint8_t pbDriven, uint8_t& pa, uint8_t& pb) const {
+    pa = static_cast<uint8_t>(paDriven & ~s_.joy[1]);
+    pb = static_cast<uint8_t>(pbDriven & ~s_.joy[0]);
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int c = 0; c < 8; ++c) {
+            const uint8_t k = s_.keys[c];
+            if (!k) continue;
+            if (!(pa & (1 << c)) && (pb & k)) { pb = static_cast<uint8_t>(pb & ~k); changed = true; }
+            if ((pa & (1 << c)) && (~pb & k)) { pa = static_cast<uint8_t>(pa & ~(1 << c)); changed = true; }
+        }
+    }
+}
+
+uint8_t C64::ciaPortA(int cia, uint8_t driven) {
+    if (cia == 0) {
+        uint8_t pa, pb;
+        keyboardLines(driven, cia1_.portBOut(), pa, pb);
+        return pa;
+    }
+    // CIA 2: serial bus. The outputs (bits 3-5) drive the lines through inverters; the
+    // inputs read CLK (bit 6) and DATA (bit 7). No device is attached yet.
+    const bool clk = !(driven & 0x10), data = !(driven & 0x20);
+    return static_cast<uint8_t>((driven & 0x3F) | (clk ? 0x40 : 0) | (data ? 0x80 : 0)) &
+           static_cast<uint8_t>(driven | 0x3F);
+}
+
+uint8_t C64::ciaPortB(int cia, uint8_t driven) {
+    if (cia == 0) {
+        uint8_t pa, pb;
+        keyboardLines(cia1_.portAOut(), driven, pa, pb);
+        return pb;
+    }
+    return driven;   // user port: pulled up, nothing attached
 }
 
 // ---- the cycle ------------------------------------------------------------------
@@ -199,10 +252,24 @@ void C64::tick() {
     vic_.phase1();
     s_.vicLastByte = vic_.lastByte();
     s_.aecLow = vic_.aecLow();
-    cpu_.setIrq(vic_.irq());
-    cpu_.setNmi(false);
+    // The CIAs' interrupt outputs reach the 6510 one cycle after they change (Lorenz's
+    // IMR, IRQ and NMI programs; hw/cia.md rule 19).
+    cpu_.setIrq(vic_.irq() || s_.cia1IrqSeen);
+    cpu_.setNmi(s_.cia2IrqSeen || s_.restore);
     cpu_.setRdy(vic_.ba());
+    s_.cia1IrqSeen = cia1_.irq();
+    s_.cia2IrqSeen = cia2_.irq();
     cpu_.tick();
+    cia1_.clock();
+    cia2_.clock();
+    // The TOD pins see the mains frequency (hw/cia.md rule 18): exactly mainsHz ticks per
+    // second of machine cycles, spread evenly.
+    s_.todCount += static_cast<uint32_t>(timing_->mainsHz);
+    if (s_.todCount >= static_cast<uint32_t>(timing_->clockHz + 0.5)) {
+        s_.todCount -= static_cast<uint32_t>(timing_->clockHz + 0.5);
+        cia1_.todTick();
+        cia2_.todTick();
+    }
     vic_.phase2(s_.cpuData);
     vic_.render();
     vic_.endCycle();
@@ -232,7 +299,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 1 + sizeof(State) + sizeof(Vic2::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
+    return 4 + 4 + 1 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -244,6 +311,9 @@ void C64::saveState(uint8_t* out) const {
     put(&s_, sizeof s_);
     const Vic2::State vs = vic_.state();
     put(&vs, sizeof vs);
+    const Cia6526::State c1 = cia1_.state(), c2 = cia2_.state();
+    put(&c1, sizeof c1);
+    put(&c2, sizeof c2);
     put(ram_.data(), ram_.size());
     put(colorRam_.data(), colorRam_.size());
     const auto snap = cpu_.snapshot();
@@ -263,11 +333,16 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     get(&s, sizeof s);
     Vic2::State vs;
     get(&vs, sizeof vs);
+    Cia6526::State c1, c2;
+    get(&c1, sizeof c1);
+    get(&c2, sizeof c2);
     if (vs.cycle < 1 || vs.cycle > timing_->cyclesPerLine || vs.line < 0 || vs.line >= timing_->linesPerFrame ||
         vs.vmli >= 40 || vs.shPixel < 0 || vs.shPixel > 8)
         return false;
     s_ = s;
     vic_.setState(vs);
+    cia1_.setState(c1);
+    cia2_.setState(c2);
     get(ram_.data(), ram_.size());
     get(colorRam_.data(), colorRam_.size());
     Cpu6502<CpuBus>::Snapshot snap;

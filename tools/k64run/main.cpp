@@ -7,6 +7,11 @@
 // --png FILE writes the visible picture of the last frame.
 // --raster FILE writes the whole raster of the last frame: one palette index per pixel,
 //   rows = raster lines 0.., columns = pixels from the start of cycle 1.
+// --autostart PRG once the KERNAL waits for input: puts the program into memory as LOAD
+//   would and types RUN (the reference emulator's "inject" autostart).
+// --debugcart ends the run when the program writes its result to $D7FF; the exit status is
+//   that result (0 = passed), or 124 when --cycles runs out first.
+// --cycles N runs N cycles from power on instead of --frames.
 // --hash prints an FNV-1a hash of the last frame's visible palette indices.
 #include "c64.h"
 #include "roms.h"
@@ -32,7 +37,9 @@ int main(int argc, char** argv) {
     int frames = 150;
     k64::VicModel model = k64::VicModel::Mos6569;
     std::vector<std::string> expect;
-    std::string png, rasterOut;
+    std::string png, rasterOut, autostart;
+    bool debugCart = false;
+    uint64_t cycleLimit = 0;
     bool hash = false;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -44,6 +51,9 @@ int main(int argc, char** argv) {
         else if (a == "--png" && i + 1 < argc) png = argv[++i];
         else if (a == "--hash") hash = true;
         else if (a == "--raster" && i + 1 < argc) rasterOut = argv[++i];
+        else if (a == "--autostart" && i + 1 < argc) autostart = argv[++i];
+        else if (a == "--debugcart") debugCart = true;
+        else if (a == "--cycles" && i + 1 < argc) cycleLimit = std::strtoull(argv[++i], nullptr, 10);
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     const k64::RomSet roms = k64::findRoms(argv[1]);
@@ -51,7 +61,40 @@ int main(int argc, char** argv) {
     machine.setRoms(roms);
     if (!machine.hasSystemRoms()) { std::fprintf(stderr, "k64run: BASIC, KERNAL or character ROM not found in %s\n", argv[1]); return 3; }
     machine.reset();
-    for (int f = 0; f < frames; ++f) machine.runFrame();
+    machine.enableDebugCart(debugCart);
+    std::vector<uint8_t> prg;
+    if (!autostart.empty()) {
+        FILE* f = std::fopen(autostart.c_str(), "rb");
+        if (!f) { std::fprintf(stderr, "k64run: cannot open %s\n", autostart.c_str()); return 3; }
+        int ch;
+        while ((ch = std::fgetc(f)) != EOF) prg.push_back(static_cast<uint8_t>(ch));
+        std::fclose(f);
+        if (prg.size() < 3) { std::fprintf(stderr, "k64run: %s is not a program file\n", autostart.c_str()); return 3; }
+    }
+    bool injected = prg.empty();
+    auto inject = [&] {
+        // The KERNAL's input loop polls the keyboard buffer at $E5CD; from there on it is ready.
+        const uint16_t load = static_cast<uint16_t>(prg[0] | (prg[1] << 8));
+        const uint16_t end = static_cast<uint16_t>(load + prg.size() - 2);
+        for (size_t i = 2; i < prg.size(); ++i) machine.pokeRam(static_cast<uint16_t>(load + i - 2), prg[i]);
+        for (int p : {0x2D, 0x2F, 0x31, 0xAE}) {   // VARTAB, ARYTAB, STREND, end of load
+            const auto ptr = static_cast<uint16_t>(p);
+            machine.pokeRam(ptr, static_cast<uint8_t>(end));
+            machine.pokeRam(static_cast<uint16_t>(ptr + 1), static_cast<uint8_t>(end >> 8));
+        }
+        const char run[] = {'R', 'U', 'N', 13};
+        for (int i = 0; i < 4; ++i) machine.pokeRam(static_cast<uint16_t>(0x0277 + i), static_cast<uint8_t>(run[i]));
+        machine.pokeRam(0xC6, 4);
+        injected = true;
+    };
+    if (cycleLimit) {
+        while (machine.cycle() < cycleLimit && machine.debugCartResult() < 0) {
+            machine.tick();
+            if (!injected && machine.cpuRegs().pc == 0xE5CD) inject();
+        }
+    } else {
+        for (int f = 0; f < frames; ++f) machine.runFrame();
+    }
 
     std::string screen;
     for (int row = 0; row < 25; ++row) {
@@ -87,6 +130,12 @@ int main(int argc, char** argv) {
             for (int x = 0; x < t.visibleWidth; ++x) { h ^= src[x]; h *= 1099511628211ull; }
         }
         std::printf("k64run: frame hash %016llx\n", static_cast<unsigned long long>(h));
+    }
+    if (debugCart) {
+        const int result = machine.debugCartResult();
+        std::printf("k64run: %s at cycle %llu\n", result < 0 ? "no result" : result == 0 ? "passed" : "failed",
+                    static_cast<unsigned long long>(machine.cycle()));
+        return result < 0 ? 124 : result;
     }
     int fail = 0;
     for (const auto& e : expect)

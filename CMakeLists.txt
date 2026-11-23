@@ -21,6 +21,7 @@ endif()
 add_library(k64core STATIC
   src/core/c64.cpp
   src/core/vic2.cpp
+  src/core/cia6526.cpp
   src/core/roms.cpp
 )
 target_include_directories(k64core PUBLIC src/core)

@@ -41,6 +41,72 @@ void log(retro_log_level level, const char* fmt, ...) {
     else std::fprintf(stderr, "[Kernal64] %s\n", buf);
 }
 
+// ---- input -------------------------------------------------------------------------
+//
+// The host keyboard maps onto the C64 matrix by position (Programmer's Reference Guide
+// matrix: column = CIA 1 port A bit, row = port B bit). Keys the C64 reaches only with
+// SHIFT (cursor left/up, F2/F4/F6/F8) press SHIFT with them. RESTORE is not in the matrix.
+struct KeyMap { unsigned key; int8_t col, row; bool shift; };
+constexpr KeyMap kKeys[] = {
+    {RETROK_BACKSPACE, 0, 0, false}, {RETROK_RETURN, 0, 1, false}, {RETROK_KP_ENTER, 0, 1, false},
+    {RETROK_RIGHT, 0, 2, false}, {RETROK_LEFT, 0, 2, true}, {RETROK_DOWN, 0, 7, false}, {RETROK_UP, 0, 7, true},
+    {RETROK_F7, 0, 3, false}, {RETROK_F8, 0, 3, true}, {RETROK_F1, 0, 4, false}, {RETROK_F2, 0, 4, true},
+    {RETROK_F3, 0, 5, false}, {RETROK_F4, 0, 5, true}, {RETROK_F5, 0, 6, false}, {RETROK_F6, 0, 6, true},
+    {RETROK_3, 1, 0, false}, {RETROK_w, 1, 1, false}, {RETROK_a, 1, 2, false}, {RETROK_4, 1, 3, false},
+    {RETROK_z, 1, 4, false}, {RETROK_s, 1, 5, false}, {RETROK_e, 1, 6, false}, {RETROK_LSHIFT, 1, 7, false},
+    {RETROK_5, 2, 0, false}, {RETROK_r, 2, 1, false}, {RETROK_d, 2, 2, false}, {RETROK_6, 2, 3, false},
+    {RETROK_c, 2, 4, false}, {RETROK_f, 2, 5, false}, {RETROK_t, 2, 6, false}, {RETROK_x, 2, 7, false},
+    {RETROK_7, 3, 0, false}, {RETROK_y, 3, 1, false}, {RETROK_g, 3, 2, false}, {RETROK_8, 3, 3, false},
+    {RETROK_b, 3, 4, false}, {RETROK_h, 3, 5, false}, {RETROK_u, 3, 6, false}, {RETROK_v, 3, 7, false},
+    {RETROK_9, 4, 0, false}, {RETROK_i, 4, 1, false}, {RETROK_j, 4, 2, false}, {RETROK_0, 4, 3, false},
+    {RETROK_m, 4, 4, false}, {RETROK_k, 4, 5, false}, {RETROK_o, 4, 6, false}, {RETROK_n, 4, 7, false},
+    {RETROK_MINUS, 5, 0, false},        // +
+    {RETROK_p, 5, 1, false}, {RETROK_l, 5, 2, false},
+    {RETROK_EQUALS, 5, 3, false},       // -
+    {RETROK_PERIOD, 5, 4, false},
+    {RETROK_SEMICOLON, 5, 5, false},    // :
+    {RETROK_LEFTBRACKET, 5, 6, false},  // @
+    {RETROK_COMMA, 5, 7, false},
+    {RETROK_INSERT, 6, 0, false},       // pound
+    {RETROK_RIGHTBRACKET, 6, 1, false}, // *
+    {RETROK_QUOTE, 6, 2, false},        // ;
+    {RETROK_HOME, 6, 3, false},         // CLR/HOME
+    {RETROK_RSHIFT, 6, 4, false},
+    {RETROK_BACKSLASH, 6, 5, false},    // =
+    {RETROK_DELETE, 6, 6, false},       // up arrow
+    {RETROK_SLASH, 6, 7, false},
+    {RETROK_1, 7, 0, false}, {RETROK_BACKQUOTE, 7, 1, false},  // left arrow
+    {RETROK_TAB, 7, 2, false},          // CTRL
+    {RETROK_2, 7, 3, false}, {RETROK_SPACE, 7, 4, false},
+    {RETROK_LCTRL, 7, 5, false},        // Commodore key
+    {RETROK_q, 7, 6, false},
+    {RETROK_ESCAPE, 7, 7, false},       // RUN/STOP
+};
+
+int joystickPort() {
+    retro_variable var{"kernal64_joyport", nullptr};
+    if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "1")) return 1;
+    return 2;
+}
+
+void applyInput() {
+    if (!inputStateCb) return;
+    machine->releaseAllKeys();
+    for (const auto& k : kKeys) {
+        if (!inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, k.key)) continue;
+        machine->setKey(k.col, k.row, true);
+        if (k.shift) machine->setKey(1, 7, true);
+    }
+    machine->setRestore(inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEUP) != 0);
+    auto pad = [](unsigned id) { return inputStateCb(0, RETRO_DEVICE_JOYPAD, 0, id) != 0; };
+    const uint8_t lines = static_cast<uint8_t>((pad(RETRO_DEVICE_ID_JOYPAD_UP) ? 0x01 : 0) | (pad(RETRO_DEVICE_ID_JOYPAD_DOWN) ? 0x02 : 0) |
+                                               (pad(RETRO_DEVICE_ID_JOYPAD_LEFT) ? 0x04 : 0) | (pad(RETRO_DEVICE_ID_JOYPAD_RIGHT) ? 0x08 : 0) |
+                                               (pad(RETRO_DEVICE_ID_JOYPAD_B) ? 0x10 : 0));
+    const int port = joystickPort();
+    machine->setJoystick(port, lines);
+    machine->setJoystick(3 - port, 0);
+}
+
 k64::VicModel modelFromOptions() {
     retro_variable var{"kernal64_model", nullptr};
     if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
@@ -73,6 +139,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
     cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &noGame);
     static const retro_variable vars[] = {
         {"kernal64_model", "Machine; pal|ntsc|ntsc-old"},
+        {"kernal64_joyport", "RetroPad is the joystick in control port; 2|1"},
         {nullptr, nullptr},
     };
     cb(RETRO_ENVIRONMENT_SET_VARIABLES, const_cast<retro_variable*>(vars));
@@ -166,6 +233,7 @@ RETRO_API void retro_run(void) {
         }
     }
     if (inputPollCb) inputPollCb();
+    applyInput();   // once per frame, at the frame boundary (D9)
 
     if (machine->hasSystemRoms()) machine->runFrame();
 
@@ -203,7 +271,11 @@ RETRO_API bool retro_unserialize(const void* data, size_t size) {
 
 RETRO_API void retro_cheat_reset(void) {}
 RETRO_API void retro_cheat_set(unsigned, bool, const char*) {}
-RETRO_API void* retro_get_memory_data(unsigned) { return nullptr; }
-RETRO_API size_t retro_get_memory_size(unsigned) { return 0; }
+RETRO_API void* retro_get_memory_data(unsigned id) {
+    return machine && id == RETRO_MEMORY_SYSTEM_RAM ? machine->ramData() : nullptr;
+}
+RETRO_API size_t retro_get_memory_size(unsigned id) {
+    return machine && id == RETRO_MEMORY_SYSTEM_RAM ? 65536 : 0;
+}
 
 } // extern "C"
