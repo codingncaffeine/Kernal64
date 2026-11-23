@@ -22,6 +22,12 @@ struct Timing {
     double clockHz;         // system (φ2) clock
     double squarePixelHz;   // sampling rate at which a pixel is square on this TV system
     const char* name;
+    // The VIC-II's X coordinate at the start of cycle 1 (article §3.4 "first X coo. of a line").
+    int firstX;
+    // The visible picture (article §3.4 table): the first line after vertical blanking, the
+    // first vertical blanking line, the visible lines, and in pixels counted from the start
+    // of cycle 1, the first visible pixel and the visible width.
+    int firstVisibleLine, firstVblankLine, visibleLines, firstVisiblePixel, visibleWidth;
 
     constexpr int cyclesPerFrame() const { return cyclesPerLine * linesPerFrame; }
     constexpr double framesPerSecond() const { return clockHz / cyclesPerFrame(); }
@@ -35,9 +41,13 @@ struct Timing {
 // dot clock against half of that gives its pixel aspect.
 // NTSC: 14.31818 MHz crystal / 14 = 1,022,727.1 Hz. Square pixels on 525-line NTSC
 // are sampled at 12.2727 MHz; same reasoning.
-constexpr Timing kTimingPal      { VicModel::Mos6569,     63, 312, 17734475.0 / 18.0, 14750000.0 / 2.0, "6569 (PAL)" };
-constexpr Timing kTimingNtsc     { VicModel::Mos6567R8,   65, 263, 14318181.8 / 14.0, 12272727.3 / 2.0, "6567R8 (NTSC)" };
-constexpr Timing kTimingNtscOld  { VicModel::Mos6567R56A, 64, 262, 14318181.8 / 14.0, 12272727.3 / 2.0, "6567R56A (old NTSC)" };
+// Visible pixel: first visible X ($1E0 / $1E9 / $1E8) minus the first X of a line.
+constexpr Timing kTimingPal      { VicModel::Mos6569,     63, 312, 17734475.0 / 18.0, 14750000.0 / 2.0, "6569 (PAL)",
+                                   0x194, 16, 300, 284, 0x1E0 - 0x194, 403 };
+constexpr Timing kTimingNtsc     { VicModel::Mos6567R8,   65, 263, 14318181.8 / 14.0, 12272727.3 / 2.0, "6567R8 (NTSC)",
+                                   0x19C, 41, 13, 235, 0x1E9 - 0x19C, 418 };
+constexpr Timing kTimingNtscOld  { VicModel::Mos6567R56A, 64, 262, 14318181.8 / 14.0, 12272727.3 / 2.0, "6567R56A (old NTSC)",
+                                   0x19C, 41, 13, 234, 0x1E8 - 0x19C, 411 };
 
 constexpr const Timing& timingFor(VicModel m) {
     return m == VicModel::Mos6569 ? kTimingPal : m == VicModel::Mos6567R8 ? kTimingNtsc : kTimingNtscOld;

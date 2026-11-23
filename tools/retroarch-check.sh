@@ -4,6 +4,8 @@
 #
 #   tools/retroarch-check.sh [FRAMES] [OUT.png] [CONTENT]
 #
+# K64_SYSTEM=DIR copies the system ROMs found in DIR (*.bin) into the run's private system
+# folder; without it the core runs with no ROMs and reports them missing.
 # Sound and input drivers are null; nothing reaches the desktop (see tools/wall.sh).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,11 +40,12 @@ libretro_log_level = "1"
 video_font_enable = "false"
 EOF
   mkdir -p "$K64_TEST_TMP/system" "$K64_TEST_TMP/saves" "$K64_TEST_TMP/states"
+  [ -z "$5" ] || cp "$5"/*.bin "$K64_TEST_TMP/system/"
   retroarch --config "$cfg" -L "$1" --max-frames="$2" --max-frames-ss --max-frames-ss-path="$3" ${4:+"$4"} \
       >"$K64_TEST_TMP/retroarch.log" 2>&1; rc=$?
   grep -E "Kernal64|\[ERROR\]" "$K64_TEST_TMP/retroarch.log" | head -20
   exit $rc
 '
-"$ROOT/tools/wall.sh" bash -c "$inner" inner "$CORE" "$FRAMES" "$OUT" "$CONTENT"
+"$ROOT/tools/wall.sh" bash -c "$inner" inner "$CORE" "$FRAMES" "$OUT" "$CONTENT" "${K64_SYSTEM:+$(realpath "$K64_SYSTEM")}"
 if [ ! -s "$OUT" ]; then echo "retroarch-check: no screenshot was written" >&2; exit 1; fi
 echo "retroarch-check: screenshot $OUT ($(file -b "$OUT" | cut -d, -f2 | xargs))"

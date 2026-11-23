@@ -9,10 +9,11 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 2;
+constexpr uint32_t kStateVersion = 3;
 }
 
-C64::C64(VicModel model) : timing_(&timingFor(model)), raster_(kMaxRasterWidth * kMaxRasterHeight, 0) {
+C64::C64(VicModel model) : timing_(&timingFor(model)) {
+    vic_.setTiming(*timing_);
     reset();
 }
 
@@ -25,6 +26,7 @@ void C64::setRoms(const RomSet& roms) {
 
 void C64::setModel(VicModel model) {
     timing_ = &timingFor(model);
+    vic_.setTiming(*timing_);
     reset();
 }
 
@@ -35,7 +37,7 @@ void C64::reset() {
     // reproducible.)
     for (size_t i = 0; i < ram_.size(); ++i) ram_[i] = (i & 0x40) ? 0xFF : 0x00;
     colorRam_.fill(0);
-    std::fill(raster_.begin(), raster_.end(), 0u);
+    vic_.reset();
     cpu_.reset();
 }
 
@@ -73,7 +75,7 @@ uint16_t C64::plaInputsCpu(uint16_t a, bool read) const {
     if (a & 0x2000) in |= pla::A13;
     if (a & 0x1000) in |= pla::A12;
     if (read) in |= pla::RnW;
-    in |= pla::BA;                     // VIC-II stub never takes the bus yet
+    if (vic_.ba()) in |= pla::BA;      // with BA low, I/O is not selected (memory.md rule 4)
     in |= pla::nEXROM | pla::nGAME;    // no cartridge
     // #AEC low (CPU cycle), #CAS low (access in progress), VA lines irrelevant here.
     return in;
@@ -112,6 +114,14 @@ uint8_t C64::peekCpu(uint16_t a) const {
 }
 
 uint8_t C64::cpuRead(uint16_t a) {
+    const uint8_t v = cpuReadBus(a);
+    s_.cpuData = v;
+    return v;
+}
+
+uint8_t C64::cpuReadBus(uint16_t a) {
+    // A halted read while the VIC-II holds the second phase never reaches the bus.
+    if (s_.aecLow) return s_.vicLastByte;
     if (a == 0) return s_.portDdr;
     if (a == 1) return portRead();
     const uint8_t out = pla::table()[plaInputsCpu(a, true)];
@@ -124,6 +134,7 @@ uint8_t C64::cpuRead(uint16_t a) {
 }
 
 void C64::cpuWrite(uint16_t a, uint8_t v) {
+    s_.cpuData = v;
     if (a <= 1) {
         if (a == 0) s_.portDdr = v;
         else s_.portData = v;
@@ -149,26 +160,8 @@ void C64::cpuWrite(uint16_t a, uint8_t v) {
 // $D000-$DFFF with I/O selected: VIC-II, SID, color RAM, CIA 1, CIA 2, I/O 1, I/O 2.
 uint8_t C64::ioRead(uint16_t a) {
     switch ((a >> 8) & 0x0F) {
-    case 0x0: case 0x1: case 0x2: case 0x3: {
-        const unsigned r = a & 0x3F;
-        // Stub VIC-II: the raster registers and the interrupt registers work; unused bits read 1.
-        switch (r) {
-        case 0x11: return static_cast<uint8_t>((s_.vicReg[0x11] & 0x7F) | ((s_.rasterLine & 0x100) ? 0x80 : 0));
-        case 0x12: return static_cast<uint8_t>(s_.rasterLine & 0xFF);
-        case 0x16: return static_cast<uint8_t>(s_.vicReg[0x16] | 0xC0);
-        case 0x18: return static_cast<uint8_t>(s_.vicReg[0x18] | 0x01);
-        case 0x19: {
-            const bool irq = (s_.vicIrqLatch & s_.vicIrqEnable & 0x0F) != 0;
-            return static_cast<uint8_t>(0x70 | (s_.vicIrqLatch & 0x0F) | (irq ? 0x80 : 0));
-        }
-        case 0x1A: return static_cast<uint8_t>(0xF0 | s_.vicIrqEnable);
-        case 0x1E: case 0x1F: { const uint8_t v = s_.vicReg[r]; s_.vicReg[r] = 0; return v; }
-        default:
-            if (r >= 0x2F) return 0xFF;
-            if (r >= 0x20) return static_cast<uint8_t>(0xF0 | s_.vicReg[r]);
-            return s_.vicReg[r];
-        }
-    }
+    case 0x0: case 0x1: case 0x2: case 0x3:
+        return vic_.read(a);
     case 0x4: case 0x5: case 0x6: case 0x7:
         return 0; // SID stub
     case 0x8: case 0x9: case 0xA: case 0xB:
@@ -188,16 +181,9 @@ uint8_t C64::ioRead(uint16_t a) {
 
 void C64::ioWrite(uint16_t a, uint8_t v) {
     switch ((a >> 8) & 0x0F) {
-    case 0x0: case 0x1: case 0x2: case 0x3: {
-        const unsigned r = a & 0x3F;
-        if (r == 0x11) s_.rasterCompare = static_cast<uint16_t>((s_.rasterCompare & 0xFF) | ((v & 0x80) << 1));
-        if (r == 0x12) s_.rasterCompare = static_cast<uint16_t>((s_.rasterCompare & 0x100) | v);
-        if (r == 0x19) { s_.vicIrqLatch = static_cast<uint8_t>(s_.vicIrqLatch & ~v & 0x0F); return; }
-        if (r == 0x1A) { s_.vicIrqEnable = v & 0x0F; return; }
-        if (r == 0x1E || r == 0x1F) return; // collision registers cannot be written
-        if (r < 0x2F) s_.vicReg[r] = v;
+    case 0x0: case 0x1: case 0x2: case 0x3:
+        vic_.write(a, v);
         return;
-    }
     case 0x4: case 0x5: case 0x6: case 0x7:
         s_.sid[a & 0x1F] = v;
         return;
@@ -209,42 +195,44 @@ void C64::ioWrite(uint16_t a, uint8_t v) {
 
 // ---- the cycle ------------------------------------------------------------------
 
-void C64::vicPhase1() {
-    // Stub VIC-II until Phase 3: the raster position, the raster interrupt (compared at
-    // the start of each line; line 0 one cycle later, article §3.12) and the idle access
-    // ($3FFF) that keeps the open-bus value right.
-    s_.vicLastByte = vicFetch(0x3FFF);
-    const bool compareNow = s_.rasterLine == 0 ? s_.rasterCycle == 1 : s_.rasterCycle == 0;
-    if (compareNow && s_.rasterLine == s_.rasterCompare) s_.vicIrqLatch |= 0x01;
-}
-
 void C64::tick() {
-    vicPhase1();
-    const bool vicIrq = (s_.vicIrqLatch & s_.vicIrqEnable & 0x0F) != 0;
-    cpu_.setIrq(vicIrq);
+    vic_.phase1();
+    s_.vicLastByte = vic_.lastByte();
+    s_.aecLow = vic_.aecLow();
+    cpu_.setIrq(vic_.irq());
     cpu_.setNmi(false);
-    cpu_.setRdy(true);
+    cpu_.setRdy(vic_.ba());
     cpu_.tick();
+    vic_.phase2(s_.cpuData);
+    vic_.render();
+    vic_.endCycle();
 
     ++s_.cycle;
-    if (++s_.rasterCycle == timing_->cyclesPerLine) {
-        s_.rasterCycle = 0;
-        if (++s_.rasterLine == timing_->linesPerFrame) {
-            s_.rasterLine = 0;
-            ++s_.frame;
-        }
-    }
+    if (vic_.line() == 0 && vic_.cycleInLine() == 1) ++s_.frame;
 }
 
 void C64::runFrame() {
-    const uint64_t start = s_.frame;
-    while (s_.frame == start) tick();
+    // Ends where vertical blanking starts, so the visible picture of one call is one frame.
+    const int stop = timing_->firstVblankLine;
+    do tick();
+    while (!(vic_.line() == stop && vic_.cycleInLine() == 1));
+}
+
+void C64::visibleFrame(uint32_t* out) const {
+    const auto& pal = vicPalette();
+    const Timing& t = *timing_;
+    const uint8_t* px = vic_.pixels();
+    for (int r = 0; r < t.visibleLines; ++r) {
+        const int line = (t.firstVisibleLine + r) % t.linesPerFrame;
+        const uint8_t* src = px + static_cast<size_t>(line) * kMaxRasterWidth + t.firstVisiblePixel;
+        for (int x = 0; x < t.visibleWidth; ++x) *out++ = pal[src[x] & 0x0F];
+    }
 }
 
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 1 + sizeof(State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
+    return 4 + 4 + 1 + sizeof(State) + sizeof(Vic2::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -254,6 +242,8 @@ void C64::saveState(uint8_t* out) const {
     const uint8_t model = static_cast<uint8_t>(timing_->model);
     put(&model, 1);
     put(&s_, sizeof s_);
+    const Vic2::State vs = vic_.state();
+    put(&vs, sizeof vs);
     put(ram_.data(), ram_.size());
     put(colorRam_.data(), colorRam_.size());
     const auto snap = cpu_.snapshot();
@@ -271,10 +261,13 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     if (magic != kStateMagic || version != kStateVersion || model != static_cast<uint8_t>(timing_->model)) return false;
     State s;
     get(&s, sizeof s);
-    if (s.rasterCycle < 0 || s.rasterCycle >= timing_->cyclesPerLine || s.rasterLine < 0 ||
-        s.rasterLine >= timing_->linesPerFrame)
+    Vic2::State vs;
+    get(&vs, sizeof vs);
+    if (vs.cycle < 1 || vs.cycle > timing_->cyclesPerLine || vs.line < 0 || vs.line >= timing_->linesPerFrame ||
+        vs.vmli >= 40 || vs.shPixel < 0 || vs.shPixel > 8)
         return false;
     s_ = s;
+    vic_.setState(vs);
     get(ram_.data(), ram_.size());
     get(colorRam_.data(), colorRam_.size());
     Cpu6502<CpuBus>::Snapshot snap;

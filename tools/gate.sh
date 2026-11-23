@@ -7,7 +7,7 @@
 # the libretro conformance checks on every machine model; the PLA against a chip
 # read-out and the KERNAL booting to BASIC on every model; the CPU against the
 # per-opcode bus traces, the functional and undocumented-opcode test programs and
-# the transistor-level chip; the core loading in RetroArch behind the wall.
+# the transistor-level chip; the VIC-II against the article's rules; the core loading in RetroArch behind the wall.
 # The third-party suites come from tools/fetch.sh.
 # Runs on a quarter of the cores at low priority; its build folder is removed at exit.
 set -uo pipefail
@@ -63,6 +63,9 @@ for model in pal ntsc ntsc-old; do
     grep -q "KERNAL detected $want" "$BUILD/boot-$model.log" || bad "KERNAL did not detect $want ($model)"
 done
 
+step "VIC-II rules"
+"$BUILD/victest" >"$BUILD/victest.log" 2>&1 || { grep FAIL "$BUILD/victest.log" | head -8; bad "VIC-II rule tests"; }
+
 step "CPU"
 EXT="$ROOT/gitignore/external"
 if [ -d "$EXT/singlestep/6502/v1" ]; then
@@ -92,9 +95,10 @@ if [ "$QUICK" = 0 ]; then
     install -D -m 755 "$CORE" "$BUILD/bin/kernal64_libretro.so"
     if command -v retroarch >/dev/null; then
         # retroarch-check.sh loads bin/ of the repo; point it at the gate's own build.
-        K64_CORE="$BUILD/bin/kernal64_libretro.so" timeout 120 tools/retroarch-check.sh 120 "$BUILD/ra.png" >"$BUILD/ra.log" 2>&1 \
+        K64_CORE="$BUILD/bin/kernal64_libretro.so" K64_SYSTEM="$ROMS" timeout 120 tools/retroarch-check.sh 120 "$BUILD/ra.png" >"$BUILD/ra.log" 2>&1 \
             || { tail -5 "$BUILD/ra.log"; bad "RetroArch run"; }
         grep -q "\[Kernal64\] version" "$BUILD/ra.log" || bad "RetroArch did not log the core's version line"
+        grep -q "missing system files" "$BUILD/ra.log" && bad "RetroArch run without the system ROMs"
     else
         echo "(RetroArch not installed: skipped)"
     fi

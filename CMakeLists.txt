@@ -20,6 +20,7 @@ endif()
 # The emulator itself, shared by the core and the test tools.
 add_library(k64core STATIC
   src/core/c64.cpp
+  src/core/vic2.cpp
   src/core/roms.cpp
 )
 target_include_directories(k64core PUBLIC src/core)
@@ -75,3 +76,8 @@ target_compile_options(placheck PRIVATE ${K64_WARNINGS})
 add_executable(k64run tools/k64run/main.cpp)
 target_link_libraries(k64run PRIVATE k64core)
 target_compile_options(k64run PRIVATE ${K64_WARNINGS})
+
+# The VIC-II checked rule by rule against the article.
+add_executable(victest tools/victest/main.cpp)
+target_link_libraries(victest PRIVATE k64core)
+target_compile_options(victest PRIVATE ${K64_WARNINGS})

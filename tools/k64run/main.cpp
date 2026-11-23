@@ -4,8 +4,11 @@
 //   k64run ROM_FOLDER [--frames N] [--model pal|ntsc|ntsc-old] [--expect TEXT]...
 //
 // --expect TEXT fails the run unless TEXT appears on the screen.
+// --png FILE writes the visible picture of the last frame.
+// --hash prints an FNV-1a hash of the last frame's visible palette indices.
 #include "c64.h"
 #include "roms.h"
+#include "png.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -23,10 +26,12 @@ char screenCodeToAscii(uint8_t c) {
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::fprintf(stderr, "usage: k64run ROM_FOLDER [--frames N] [--model pal|ntsc|ntsc-old] [--expect TEXT]...\n"); return 2; }
+    if (argc < 2) { std::fprintf(stderr, "usage: k64run ROM_FOLDER [--frames N] [--model pal|ntsc|ntsc-old] [--expect TEXT]... [--png FILE] [--hash]\n"); return 2; }
     int frames = 150;
     k64::VicModel model = k64::VicModel::Mos6569;
     std::vector<std::string> expect;
+    std::string png;
+    bool hash = false;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
@@ -34,6 +39,8 @@ int main(int argc, char** argv) {
             std::string m = argv[++i];
             model = m == "ntsc" ? k64::VicModel::Mos6567R8 : m == "ntsc-old" ? k64::VicModel::Mos6567R56A : k64::VicModel::Mos6569;
         } else if (a == "--expect" && i + 1 < argc) expect.emplace_back(argv[++i]);
+        else if (a == "--png" && i + 1 < argc) png = argv[++i];
+        else if (a == "--hash") hash = true;
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     const k64::RomSet roms = k64::findRoms(argv[1]);
@@ -55,6 +62,21 @@ int main(int argc, char** argv) {
     // $02A6 is where the KERNAL records what it measured at start-up: 1 = PAL, 0 = NTSC.
     std::printf("k64run: %d frames, %llu cycles, pc=%04x, KERNAL detected %s\n", frames,
                 static_cast<unsigned long long>(machine.cycle()), r.pc, machine.ram()[0x02A6] ? "PAL" : "NTSC");
+    const auto& t = machine.timing();
+    if (!png.empty()) {
+        std::vector<uint32_t> frame(static_cast<size_t>(t.visibleWidth) * t.visibleLines);
+        machine.visibleFrame(frame.data());
+        if (!k64png::write(png, frame.data(), t.visibleWidth, t.visibleLines)) { std::fprintf(stderr, "k64run: cannot write %s\n", png.c_str()); return 3; }
+    }
+    if (hash) {
+        uint64_t h = 1469598103934665603ull;
+        for (int row = 0; row < t.visibleLines; ++row) {
+            const int line = (t.firstVisibleLine + row) % t.linesPerFrame;
+            const uint8_t* src = machine.raster() + static_cast<size_t>(line) * k64::kMaxRasterWidth + t.firstVisiblePixel;
+            for (int x = 0; x < t.visibleWidth; ++x) { h ^= src[x]; h *= 1099511628211ull; }
+        }
+        std::printf("k64run: frame hash %016llx\n", static_cast<unsigned long long>(h));
+    }
     int fail = 0;
     for (const auto& e : expect)
         if (screen.find(e) == std::string::npos) { std::printf("k64run: expected text not on screen: \"%s\"\n", e.c_str()); fail = 1; }

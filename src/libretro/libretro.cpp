@@ -3,7 +3,6 @@
 #include "../core/roms.h"
 #include "libretro.h"
 
-#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -32,17 +31,6 @@ double audioCarry = 0.0;
 
 constexpr unsigned kSampleRate = 48000;
 
-// Visible area per model (chip table: visible pixels per line x visible lines).
-struct Visible { int width, height; };
-Visible visibleFor(k64::VicModel m) {
-    switch (m) {
-    case k64::VicModel::Mos6569: return {403, 284};
-    case k64::VicModel::Mos6567R8: return {418, 235};
-    case k64::VicModel::Mos6567R56A: return {411, 234};
-    }
-    return {403, 284};
-}
-
 void log(retro_log_level level, const char* fmt, ...) {
     char buf[512];
     va_list ap;
@@ -64,12 +52,11 @@ k64::VicModel modelFromOptions() {
 
 void fillAvInfo(retro_system_av_info* info) {
     const auto& t = machine ? machine->timing() : k64::kTimingPal;
-    const Visible v = visibleFor(t.model);
-    info->geometry.base_width = static_cast<unsigned>(v.width);
-    info->geometry.base_height = static_cast<unsigned>(v.height);
+    info->geometry.base_width = static_cast<unsigned>(t.visibleWidth);
+    info->geometry.base_height = static_cast<unsigned>(t.visibleLines);
     info->geometry.max_width = k64::kMaxRasterWidth;
     info->geometry.max_height = k64::kMaxRasterHeight;
-    info->geometry.aspect_ratio = static_cast<float>(v.width * t.pixelAspect() / v.height);
+    info->geometry.aspect_ratio = static_cast<float>(t.visibleWidth * t.pixelAspect() / t.visibleLines);
     info->timing.fps = t.framesPerSecond();
     info->timing.sample_rate = kSampleRate;
 }
@@ -182,13 +169,10 @@ RETRO_API void retro_run(void) {
 
     if (machine->hasSystemRoms()) machine->runFrame();
 
-    const Visible v = visibleFor(machine->timing().model);
-    const uint32_t* src = machine->raster();
-    for (int y = 0; y < v.height; ++y)
-        std::memcpy(&frameOut[static_cast<size_t>(y) * v.width], src + static_cast<size_t>(y) * k64::kMaxRasterWidth,
-                    static_cast<size_t>(v.width) * sizeof(uint32_t));
-    videoCb(frameOut.data(), static_cast<unsigned>(v.width), static_cast<unsigned>(v.height),
-            static_cast<size_t>(v.width) * sizeof(uint32_t));
+    const auto& t = machine->timing();
+    machine->visibleFrame(frameOut.data());
+    videoCb(frameOut.data(), static_cast<unsigned>(t.visibleWidth), static_cast<unsigned>(t.visibleLines),
+            static_cast<size_t>(t.visibleWidth) * sizeof(uint32_t));
 
     // One frame of audio; the fraction of a sample left over is carried to the next frame.
     audioCarry += kSampleRate / machine->timing().framesPerSecond();
