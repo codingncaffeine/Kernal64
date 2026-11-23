@@ -5,8 +5,10 @@
 //                   [--system DIR] [--save DIR] [--dump FILE.ppm] [--check]
 //                   [--type TEXT] [--type-at FRAME] [--expect-screen TEXT]
 //                   [--expect-tone HZ DB_MIN DB_MAX] [--expect-level DB_MIN DB_MAX] [--expect-silence]
-//                   [--expect-load-failure]
+//                   [--expect-load-failure] [--freeze-frames N,N,...]
 //
+// --freeze-frames holds the RetroPad button the core uses as a cartridge's freeze button
+// (a click of the right stick) during each frame N and the one after it.
 // --type presses the keys for TEXT one at a time from frame --type-at (default 200),
 // each held 3 frames and released 3 ("\n" = RETURN). --expect-screen fails the run
 // unless TEXT is in the C64 text screen ($0400), read through RETRO_MEMORY_SYSTEM_RAM.
@@ -14,7 +16,9 @@
 // 0.1 %) at a level between DB_MIN and DB_MAX (RMS, dB below full scale); --expect-level
 // checks the level alone; --expect-silence fails unless every sample of the run is zero. The audio is only ever looked at as numbers.
 // --expect-load-failure: the core must refuse the content (the run ends there).
-// --check runs the conformance checks and exits non-zero on the first failure.
+// --check runs the conformance checks and exits non-zero on the first failure. Among them:
+// a state saved half-way must replay to the same frames and the same end state, in the
+// running core and in one that was shut down and started again with the same content.
 // Without it the run prints a summary only.
 #include "libretro.h"
 
@@ -187,8 +191,14 @@ unsigned keyFor(char ch) {
     default: return RETROK_UNKNOWN;
     }
 }
+std::vector<unsigned> freezeFrames;
 void inputPoll() {}
 int16_t inputState(unsigned port, unsigned device, unsigned, unsigned id) {
+    if (port == 0 && device == RETRO_DEVICE_JOYPAD && id == RETRO_DEVICE_ID_JOYPAD_R3) {
+        for (unsigned f : freezeFrames)
+            if (currentFrame == f || currentFrame == f + 1) return 1;
+        return 0;
+    }
     if (port != 0 || device != RETRO_DEVICE_KEYBOARD || currentFrame < typeAt) return 0;
     const unsigned step = (currentFrame - typeAt) / 6, phase = (currentFrame - typeAt) % 6;
     if (step >= typeText.size() || phase >= 3) return 0;
@@ -254,6 +264,14 @@ int main(int argc, char** argv) {
         else if (a == "--expect-tone") { expectHz = std::stod(next()); expectDbMin = std::stod(next()); expectDbMax = std::stod(next()); }
         else if (a == "--expect-silence") expectSilence = true;
         else if (a == "--expect-load-failure") expectLoadFailure = true;
+        else if (a == "--freeze-frames") {
+            const std::string list = next();
+            for (size_t p = 0; p < list.size();) {
+                const size_t comma = list.find(',', p);
+                freezeFrames.push_back(static_cast<unsigned>(std::stoul(list.substr(p, comma - p))));
+                p = comma == std::string::npos ? list.size() : comma + 1;
+            }
+        }
         else if (a == "--expect-level") { expectLevel = true; levelMin = std::stod(next()); levelMax = std::stod(next()); }
         else if (a == "--option") {
             std::string kv = next();
@@ -367,6 +385,29 @@ int main(int argc, char** argv) {
             std::vector<uint8_t> broken = stateAtHalf;
             broken[0] ^= 0xFF;
             if (c.retro_unserialize(broken.data(), broken.size())) fail("a damaged state was accepted");
+
+            // The same replay in a core that was shut down and started again: whatever a
+            // state must bring back (a cartridge's RAM, rewritten chips) is not there
+            // unless the state holds it.
+            c.retro_unload_game();
+            c.retro_deinit();
+            c.retro_init();
+            if (!c.retro_load_game(content.empty() ? nullptr : &gi)) fail("the content did not load a second time");
+            else if (c.retro_serialize_size() != stateSize) fail("state size differs in a restarted core");
+            else if (!c.retro_unserialize(stateAtHalf.data(), stateAtHalf.size())) fail("a restarted core refused the state");
+            else {
+                // What was loaded is all there: saved again at once, it is the same bytes.
+                if (!c.retro_serialize(replayEnd.data(), stateSize) || replayEnd != stateAtHalf)
+                    fail("a state loaded into a restarted core does not save back as the same bytes");
+                for (unsigned f = frames / 2; f < frames; ++f) {
+                    currentFrame = f;
+                    c.retro_run();
+                    const uint64_t h = fnv1a(lastFrame.pixels.data(), lastFrame.pixels.size() * 4);
+                    if (h != hashes[f]) { fail("frame %u differs after restoring the state in a restarted core", f); break; }
+                }
+                if (!c.retro_serialize(replayEnd.data(), stateSize) || replayEnd != stateAtEnd)
+                    fail("machine state after the replay in a restarted core differs from the first run");
+            }
         }
     }
 

@@ -5,6 +5,9 @@
 # record first, and one with two programs: the first is started), a cartridge file; and
 # what must be refused: a cartridge of hardware that is not built, a cartridge file cut
 # short, a file that is nothing.
+# A cartridge with a freeze button: the button through the API (a click of the RetroPad's
+# right stick), and a state saved with a freeze on its way.
+# The checks run side by side.
 # The program is tests/probes/autostart.s (it checks what LOAD leaves and writes
 # "PRG PASS" to the screen); the cartridge is one of tools/carts.sh's (run that first).
 #
@@ -14,8 +17,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$(realpath "${1:-$ROOT/bin}")"
 OUT="$ROOT/scratch/media"
 mkdir -p "$OUT"
-fails=0
-bad() { echo "FAIL $*"; fails=$((fails + 1)); }
 python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/probes/autostart.s" -o "$OUT/a.prg" || { echo "FAIL the program does not assemble"; exit 1; }
 # A second program that reports another value: the container's first program must win.
 printf '\x01\x08\x0b\x08\x0a\x00\x9e2061\x00\x00\x00\xa9\x07\x8d\xff\xd7\x4c\x12\x08' >"$OUT/b.prg"
@@ -36,38 +37,55 @@ head -c $(( $(stat -c %s "$CRT") - 100 )) "$CRT" >"$OUT/cut.crt"
 printf 'C64 CARTRIDGE   ' >"$OUT/header-only.crt"
 : >"$OUT/empty.prg"
 
+. "$ROOT/tools/sidebyside.sh"
+CORE="$BIN/kernal64_libretro.so"
+# machine WANT LABEL K64RUN-ARGUMENTS...: the run's exit status must be WANT.
+machine() {
+    local want="$1" label="$2" got; shift 2
+    "$BIN/k64run" "$ROOT/gitignore" "$@" >/dev/null 2>&1
+    got=$?
+    if [ "$got" = "$want" ]; then echo "ok   machine: $label"; else echo "FAIL machine: $label (exit $got, expected $want)"; fi
+}
+# core WANT LABEL K64HOST-ARGUMENTS...: WANT = 0, the run must pass; 1, it must fail.
+core() {
+    local want="$1" label="$2" log got; shift 2
+    log="$OUT/host-$(printf '%s' "$label" | tr -c 'A-Za-z0-9.-' '_').log"
+    "$BIN/k64host" "$CORE" --system "$ROOT/gitignore" "$@" >"$log" 2>&1
+    got=$?
+    [ "$got" = 0 ] || got=1
+    if [ "$got" = "$want" ]; then echo "ok   core: $label"; else echo "FAIL core: $label"; grep -m3 'FAIL' "$log"; fi
+}
+
 # The machine: each form of the program runs and reports 0; the reversed container 7.
 for f in a.prg a.p00 a.t64 bad-end.t64 free-first.t64 two.t64; do
-    "$BIN/k64run" "$ROOT/gitignore" --autostart "$OUT/$f" --debugcart --cycles 6000000 >"$OUT/run.log" 2>&1
-    got=$?; [ "$got" = 0 ] && echo "ok   machine: $f" || bad "machine: $f reports $got"
+    sbs_start machine 0 "$f" --autostart "$OUT/$f" --debugcart --cycles 6000000
 done
-"$BIN/k64run" "$ROOT/gitignore" --autostart "$OUT/two-reversed.t64" --debugcart --cycles 6000000 >"$OUT/run.log" 2>&1
-got=$?; [ "$got" = 7 ] && echo "ok   machine: two-reversed.t64 starts its first program" || bad "machine: two-reversed.t64 reports $got, expected 7"
-"$BIN/k64run" "$ROOT/gitignore" --cart "$OUT/short-header.crt" --debugcart --cycles 3000000 >"$OUT/run.log" 2>&1
-got=$?; [ "$got" = 0 ] && echo "ok   machine: short-header.crt" || bad "machine: short-header.crt reports $got"
+sbs_start machine 7 "two-reversed.t64 starts its first program" --autostart "$OUT/two-reversed.t64" --debugcart --cycles 6000000
+sbs_start machine 0 "short-header.crt" --cart "$OUT/short-header.crt" --debugcart --cycles 3000000
 for f in unknown-type.crt cut.crt header-only.crt; do
-    "$BIN/k64run" "$ROOT/gitignore" --cart "$OUT/$f" --cycles 1000 >"$OUT/run.log" 2>&1
-    got=$?; [ "$got" = 3 ] && echo "ok   machine: $f refused" || bad "machine: $f not refused (exit $got)"
+    sbs_start machine 3 "$f refused" --cart "$OUT/$f" --cycles 1000
 done
 
 # The core through its API: the same files as content; the conformance checks run with
-# them (a state saved half-way must replay to the same state, cartridge banks included).
-CORE="$BIN/kernal64_libretro.so"
+# them (a state saved half-way must replay to the same state, cartridge banks included,
+# also in a core that was shut down and started again).
 for f in a.prg a.p00 a.t64 bad-end.t64; do
-    "$BIN/k64host" "$CORE" --system "$ROOT/gitignore" --content "$OUT/$f" --frames 300 --check --expect-screen "PRG PASS" >"$OUT/host.log" 2>&1 \
-        && echo "ok   core: $f" || { bad "core: $f"; tail -3 "$OUT/host.log"; }
+    sbs_start core 0 "$f" --content "$OUT/$f" --frames 300 --check --expect-screen "PRG PASS"
 done
-"$BIN/k64host" "$CORE" --system "$ROOT/gitignore" --content "$CRT" --frames 120 --check --expect-screen "CART PASS" >"$OUT/host.log" 2>&1 \
-    && echo "ok   core: cartridge" || { bad "core: cartridge"; tail -3 "$OUT/host.log"; }
+sbs_start core 0 "cartridge" --content "$CRT" --frames 120 --check --expect-screen "CART PASS"
 # A cartridge that writes to its flash chips: a state saved in the middle of its erasing
 # and programming holds the chips' contents, and the replay from it ends in the same state.
-"$BIN/k64host" "$CORE" --system "$ROOT/gitignore" --content "$ROOT/scratch/carts/t32-b0.crt" --frames 100 --check >"$OUT/host.log" 2>&1 \
-    && echo "ok   core: flash cartridge, state in the middle of its writes" || { bad "core: flash cartridge state"; tail -3 "$OUT/host.log"; }
+sbs_start core 0 "flash cartridge, state in the middle of its writes" --content "$ROOT/scratch/carts/t32-b0.crt" --frames 100 --check
+# A cartridge with a freeze button (tests/carts/freezer.s): the button pressed three
+# times, as the program's steps need it; without the presses the program must not pass;
+# a state saved between the second press and the third replays to the same end.
+FRZ="$ROOT/scratch/carts/t1-b4.crt"
+sbs_start core 0 "freeze button" --content "$FRZ" --frames 60 --freeze-frames 3,9,15 --expect-screen "CART PASS"
+sbs_start core 1 "no freeze without the button" --content "$FRZ" --frames 60 --expect-screen "CART PASS"
+sbs_start core 0 "freezer cartridge, state between two freezes" --content "$FRZ" --frames 24 --freeze-frames 3,9,15 --check
 # Without content the same checks must fail: the texts come from the content.
-"$BIN/k64host" "$CORE" --system "$ROOT/gitignore" --frames 300 --expect-screen "PRG PASS" >"$OUT/host.log" 2>&1 \
-    && bad "core: PRG PASS on the screen without a program" || echo "ok   core: no program, no text"
+sbs_start core 1 "no program, no text" --frames 300 --expect-screen "PRG PASS"
 for f in unknown-type.crt cut.crt header-only.crt empty.prg; do
-    "$BIN/k64host" "$CORE" --system "$ROOT/gitignore" --content "$OUT/$f" --frames 10 --expect-load-failure >"$OUT/host.log" 2>&1 \
-        && echo "ok   core: $f refused" || { bad "core: $f not refused"; tail -3 "$OUT/host.log"; }
+    sbs_start core 0 "$f refused" --content "$OUT/$f" --frames 10 --expect-load-failure
 done
-[ "$fails" = 0 ]
+sbs_finish

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace k64 {
 
@@ -260,7 +261,7 @@ void Vic2::phase2(uint8_t cpuData) {
         const bool first = ptrSprite_[c] >= 0;
         uint8_t byte = s_.busPhi2;
         if (s_.spriteDma & (1 << n)) {
-            if (s_.aecLow) byte = host_.vicRead(static_cast<uint16_t>((s_.spritePtr[n] << 6) | s_.mc[n]));
+            if (s_.aecLow) byte = host_.vicRead(static_cast<uint16_t>((s_.spritePtr[n] << 6) | s_.mc[n]), true);
             s_.mc[n] = (s_.mc[n] + 1) & 0x3F;
         }
         if (first) s_.spriteData[n] = (s_.spriteData[n] & 0x00FFFFu) | (static_cast<uint32_t>(byte) << 16);
@@ -272,7 +273,7 @@ void Vic2::phase2(uint8_t cpuData) {
     uint16_t v;
     if (s_.aecLow) {
         const uint16_t a = static_cast<uint16_t>(((s_.reg[0x18] & 0xF0) << 6) | s_.vc);
-        v = static_cast<uint16_t>(((host_.colorRead(s_.vc) & 0x0F) << 8) | host_.vicRead(a));
+        v = static_cast<uint16_t>(((host_.colorRead(s_.vc) & 0x0F) << 8) | host_.vicRead(a, true));
     } else {
         v = static_cast<uint16_t>(((cpuData & 0x0F) << 8) | 0xFF);
     }
@@ -336,38 +337,6 @@ void Vic2::spritePixel(int i, int x, uint8_t* px) {
     }
 }
 
-// One pixel of the graphics data path (hw/vic2.md P4, P6, P7).
-uint8_t Vic2::graphicsPixel(int i) {
-    if (i == s_.xscrollPipe) {
-        s_.shData = s_.gPipe;
-        s_.shC = s_.cPipe1;
-        s_.mcFlop = 1;
-    }
-    // Pixel forming.
-    const bool wide = (s_.mode11 & 0x20) || (s_.shC & 0x0800);   // BMM, or color bit 3
-    if (s_.mode16b) {
-        if (!wide) s_.pixelReg = (s_.shData & 0x80) ? 3 : 0;
-        else if (s_.mcFlop) s_.pixelReg = s_.shData >> 6;
-    } else {
-        s_.pixelReg = (s_.shData & 0x80) ? (wide ? 2 : 3) : 0;
-    }
-    const unsigned v = s_.pixelReg;
-    pri_[i] = v & 2;
-    s_.shData = static_cast<uint8_t>(s_.shData << 1);
-    s_.mcFlop ^= 1;
-    // Color decode.
-    const uint16_t cd = s_.shC;
-    const uint8_t color = (cd >> 8) & 0x0F, hi = (cd >> 4) & 0x0F, lo = cd & 0x0F;
-    switch (((s_.mode11 & 0x60) >> 4) | (s_.mode16 >> 4)) {   // ECM, BMM, MCM
-    case 0: return v >= 2 ? color : kRefBg0;                                              // text
-    case 1: return v == 3 ? static_cast<uint8_t>(color & 7) : static_cast<uint8_t>(kRefBg0 + v);   // multicolor text
-    case 2: return v >= 2 ? hi : lo;                                                      // bitmap
-    case 3: return v == 0 ? kRefBg0 : v == 1 ? hi : v == 2 ? lo : color;                  // multicolor bitmap
-    case 4: return v >= 2 ? color : static_cast<uint8_t>(kRefBg0 + ((cd >> 6) & 3));      // ECM text
-    default: return 0;                                                                    // invalid modes
-    }
-}
-
 void Vic2::render() {
     const int c = s_.cycle;
     const uint8_t r11 = s_.reg[0x11], r16 = s_.reg[0x16];
@@ -383,23 +352,71 @@ void Vic2::render() {
     }
     if (next == (csel ? 57 : 56)) s_.mainBorder = 1;
 
-    // Eight pixels of graphics; the mode bits arrive part-way through (P5).
+    // Eight pixels of the graphics data path (hw/vic2.md P4, P6, P7); the mode bits arrive
+    // part-way through (P5). The path's registers are held in locals for the eight steps:
+    // with them in the state, every store of a pixel would make the compiler read all of
+    // them again.
     uint8_t px[8];
     const uint8_t mode11 = r11 & 0x60, mcm = r16 & 0x10;
     const bool newChip = t_->newChip;
-    for (int i = 0; i < 8; ++i) {
-        if (i == 4) {
-            s_.mode16 = mcm;
-            if (!newChip) s_.mode11 |= mode11;
-        } else if (i == 6) {
-            if (!newChip) s_.mode11 &= mode11;
-        } else if (i == 7) {
-            if (s_.mode16 && !s_.mode16b) s_.mcFlop = 0;
-            s_.mode16b = s_.mode16;
+    {
+        uint8_t shData = s_.shData, mcFlop = s_.mcFlop, pixelReg = s_.pixelReg;
+        uint8_t m11 = s_.mode11, m16 = s_.mode16, m16b = s_.mode16b;
+        uint16_t shC = s_.shC;
+        const int load = s_.xscrollPipe;
+        const uint8_t gPipe = s_.gPipe;
+        const uint16_t cPipe1 = s_.cPipe1;
+        uint8_t pri[8];
+        for (int i = 0; i < 8; ++i) {
+            if (i == 4) {
+                m16 = mcm;
+                if (!newChip) m11 |= mode11;
+            } else if (i == 6) {
+                if (!newChip) m11 &= mode11;
+            } else if (i == 7) {
+                if (m16 && !m16b) mcFlop = 0;
+                m16b = m16;
+            }
+            if (i == load) {
+                shData = gPipe;
+                shC = cPipe1;
+                mcFlop = 1;
+            }
+            // Pixel forming.
+            const bool wide = (m11 & 0x20) || (shC & 0x0800);   // BMM, or color bit 3
+            if (m16b) {
+                if (!wide) pixelReg = (shData & 0x80) ? 3 : 0;
+                else if (mcFlop) pixelReg = static_cast<uint8_t>(shData >> 6);
+            } else {
+                pixelReg = (shData & 0x80) ? (wide ? 2 : 3) : 0;
+            }
+            const unsigned v = pixelReg;
+            pri[i] = v & 2;
+            shData = static_cast<uint8_t>(shData << 1);
+            mcFlop ^= 1;
+            // Color decode.
+            const uint8_t color = (shC >> 8) & 0x0F, hi = (shC >> 4) & 0x0F, lo = shC & 0x0F;
+            uint8_t out;
+            switch (((m11 & 0x60) >> 4) | (m16 >> 4)) {   // ECM, BMM, MCM
+            case 0: out = v >= 2 ? color : kRefBg0; break;                                              // text
+            case 1: out = v == 3 ? static_cast<uint8_t>(color & 7) : static_cast<uint8_t>(kRefBg0 + v); break;   // multicolor text
+            case 2: out = v >= 2 ? hi : lo; break;                                                      // bitmap
+            case 3: out = v == 0 ? kRefBg0 : v == 1 ? hi : v == 2 ? lo : color; break;                  // multicolor bitmap
+            case 4: out = v >= 2 ? color : static_cast<uint8_t>(kRefBg0 + ((shC >> 6) & 3)); break;     // ECM text
+            default: out = 0; break;                                                                    // invalid modes
+            }
+            px[i] = out;
         }
-        px[i] = graphicsPixel(i);
+        if (newChip) m11 = mode11;   // N1: ECM and BMM together, at the step's end
+        s_.shData = shData;
+        s_.mcFlop = mcFlop;
+        s_.pixelReg = pixelReg;
+        s_.mode11 = m11;
+        s_.mode16 = m16;
+        s_.mode16b = m16b;
+        s_.shC = shC;
+        std::memcpy(pri_, pri, sizeof pri);
     }
-    if (newChip) s_.mode11 = mode11;   // N1: ECM and BMM together, at the step's end
 
     // Sprites over the graphics (S3). The pixels' X coordinates are this cycle's first X,
     // low three bits dropped, counting up.
@@ -436,7 +453,7 @@ void Vic2::render() {
                 }
                 s_.sHalt &= static_cast<uint8_t>(~dataCycle);
             }
-            spritePixel(i, x0 + i, px);
+            if (s_.sPending | s_.sActive) spritePixel(i, x0 + i, px);   // (nothing to do without either)
         }
         for (int n = 0; n < 8; ++n)
             s_.sXPipe[n] = static_cast<uint16_t>(s_.reg[2 * n] | ((s_.reg[0x10] & (1 << n)) ? 0x100 : 0));
@@ -465,19 +482,24 @@ void Vic2::render() {
     const int width = 8 * t_->cyclesPerLine;
     uint8_t* row = &pixels_[static_cast<size_t>(s_.line) * kMaxRasterWidth];
     int at = 8 * (c - 1) - 12;
+    uint8_t ring[8], creg[16];   // (locals, for the reason given above)
+    std::memcpy(ring, s_.ring, sizeof ring);
+    std::memcpy(creg, s_.creg, sizeof creg);
+    const uint8_t latched = s_.colorLatchReg;
     for (int i = 0; i < 8; ++i, ++at) {
         if (newChip) {
             // N3: resolved at the pixel itself; the first pixel after a write to the
             // register it shows is light gray instead (the "gray dot").
-            uint8_t& now = s_.ring[i];
-            if (now >= 0x20) now = (i == 0 && (now & 0x0F) == s_.colorLatchReg) ? 0x0F : s_.creg[now & 0x0F];
+            uint8_t& now = ring[i];
+            if (now >= 0x20) now = (i == 0 && (now & 0x0F) == latched) ? 0x0F : creg[now & 0x0F];
         } else {
-            uint8_t& ahead = s_.ring[(i + 1) & 7];
-            if (ahead >= 0x20) ahead = s_.creg[ahead & 0x0F];
+            uint8_t& ahead = ring[(i + 1) & 7];
+            if (ahead >= 0x20) ahead = creg[ahead & 0x0F];
         }
-        row[at < 0 ? at + width : at] = s_.ring[i] & 0x0F;
-        s_.ring[i] = px[i];
+        row[at < 0 ? at + width : at] = ring[i] & 0x0F;
+        ring[i] = px[i];
     }
+    std::memcpy(s_.ring, ring, sizeof ring);
     s_.colorLatchReg = s_.colorPendReg;
     s_.colorLatchVal = s_.colorPendVal;
     s_.colorPendReg = 0xFF;

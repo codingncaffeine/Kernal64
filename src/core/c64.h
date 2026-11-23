@@ -48,6 +48,8 @@ public:
     bool attachCartridge(const CartImage& image, std::string& error) { return cart_.attach(image, error); }
     void detachCartridge() { cart_.detach(); }
     const Cartridge& cartridge() const { return cart_; }
+    // The button on a freezer cartridge; without such a cartridge it does nothing.
+    void setFreezeButton(bool down) { cart_.setFreezeButton(down); }
 
     // A program to put into memory and start with RUN once the KERNAL waits for a key
     // after this and every later reset() (an empty one: none). The wait can be made
@@ -115,10 +117,11 @@ private:
     uint8_t cpuRead(uint16_t a);
     uint8_t cpuReadBus(uint16_t a);
     void cpuWrite(uint16_t a, uint8_t v);
+    void cpuWriteBus(uint16_t a, uint8_t v);
     uint8_t ioRead(uint16_t a);
     void ioWrite(uint16_t a, uint8_t v);
-    uint8_t vicFetch(uint16_t vaddr14) const;  // a VIC-II access in its 16 KB view
-    uint8_t vicRead(uint16_t a) override { return vicFetch(a); }
+    uint8_t vicFetch(uint16_t vaddr14, bool cpuHalf) const;  // a VIC-II access in its 16 KB view
+    uint8_t vicRead(uint16_t a, bool cpuHalf) override { return vicFetch(a, cpuHalf); }
     uint8_t ciaPortA(int cia, uint8_t driven) override;
     uint8_t ciaPortB(int cia, uint8_t driven) override;
     void keyboardLines(uint8_t paDriven, uint8_t pbDriven, uint8_t& pa, uint8_t& pb) const;
@@ -126,7 +129,7 @@ private:
     bool vicIsCharRom(uint16_t vaddr14) const override;
     void updateLightPen();   // CIA 1 port B bit 4 is the VIC-II's light pen input
     void updatePots();       // the control ports' paddle lines through the switch to the SID
-    uint16_t plaInputsVic(uint16_t vaddr14) const;
+    uint16_t plaInputsVic(uint16_t vaddr14, bool cpuHalf = false) const;
     void injectProgram();
 
     uint16_t plaInputsCpu(uint16_t a, bool read) const;

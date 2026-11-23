@@ -31,7 +31,7 @@ struct Host final : VicHost {
         for (int i = 0; i < 0x4000; ++i) mem[i] = static_cast<uint8_t>(i * 7 + (i >> 8));
         for (int i = 0; i < 0x400; ++i) color[i] = static_cast<uint8_t>(i & 0x0F);
     }
-    uint8_t vicRead(uint16_t a) override {
+    uint8_t vicRead(uint16_t a, bool) override {
         log.push_back({line, cycle, phase, a});
         return mem[a & 0x3FFF];
     }

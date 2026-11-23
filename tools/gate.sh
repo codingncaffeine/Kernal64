@@ -15,7 +15,8 @@
 # screen against the reference emulator (tools/oracle/build-vice.sh); the reference
 # suite's CPU, CIA, interrupt, general and VIC-II programs on both CIA types and both VIC-II
 # generations, its cartridge programs with the cartridge plugged in; our own probe,
-# cartridge and raster-effect programs; cartridge and program files as content through the
+# cartridge and raster-effect programs; the freeze of a freezer cartridge against dumps
+# measured on real ones; cartridge and program files as content through the
 # API; the core loading in RetroArch behind the wall.
 # The third-party suites come from tools/fetch.sh.
 # Runs on a quarter of the cores at low priority (independent single-threaded runs go side
@@ -158,14 +159,21 @@ if [ -f "$ROOT/gitignore/external/testprogs/testbench/c64-testlist.in" ]; then
 else bad "test programs missing: tools/oracle/build-vice.sh"; fi
 
 step "own probe, cartridge and raster-effect programs, content files, VIC-II and SID rule tests, CPU tests"
-# Independent of each other: side by side.
 EXT="$ROOT/gitignore/external"
-side "probe programs" "$BUILD/probes.log" tools/probes.sh "$BUILD/k64run"
-# Each banked cartridge type's switching, checked from inside our own test cartridge; then
-# every kind of content file through the machine and through the built core.
-side "own cartridge programs and content files" "$BUILD/carts.log" \
-    bash -c 'tools/carts.sh "$1/k64run" && tools/media.sh "$1"' _ "$BUILD"
-side "raster-effect programs" "$BUILD/effects.log" tools/effects.sh "$BUILD/k64run"
+# These scripts run their own lines side by side, so one after the other here.
+script() {
+    local label="$1" log="$2"; shift 2
+    "$@" >"$log" 2>&1 || { grep -A7 FAIL "$log" | head -8 | grep . || tail -5 "$log"; bad "$label"; }
+}
+script "probe programs" "$BUILD/probes.log" tools/probes.sh "$BUILD/k64run"
+# Each cartridge type's switching and the freeze, checked from inside our own test
+# cartridges; the freeze of type 36 against dumps from real cartridges; then every kind of
+# content file through the machine and through the built core.
+script "own cartridge programs" "$BUILD/carts.log" tools/carts.sh "$BUILD/k64run"
+script "freeze against real cartridges" "$BUILD/freezer.log" tools/freezer.sh "$BUILD/k64run"
+script "content files" "$BUILD/media.log" tools/media.sh "$BUILD"
+script "raster-effect programs" "$BUILD/effects.log" tools/effects.sh "$BUILD/k64run"
+# Independent of each other: side by side.
 side "VIC-II rule tests" "$BUILD/victest.log" "$BUILD/victest"
 side "SID paddle converter rules" "$BUILD/sidtest.log" "$BUILD/sidtest"
 if [ -d "$EXT/singlestep/6502/v1" ]; then

@@ -35,7 +35,7 @@ unsigned scrambledBank(unsigned v) { return ((v >> 3) & 7) | ((v & 1) << 3); }
 
 bool Cartridge::supports(unsigned type) {
     switch (type) {
-    case 0: case 4: case 5: case 7: case 8: case 10: case 15: case 17: case 18: case 19: case 32: return true;
+    case 0: case 1: case 4: case 5: case 7: case 8: case 9: case 10: case 15: case 17: case 18: case 19: case 32: case 36: return true;
     default: return false;
     }
 }
@@ -46,6 +46,8 @@ void Cartridge::detach() {
     romL_.assign(kBank, 0xFF);
     romH_.assign(kBank, 0xFF);
     high_ = &romH_;
+    ram_.clear();
+    laterBoard_ = false;
     exromAtReset_ = gameAtReset_ = 1;
     reset();
 }
@@ -113,6 +115,14 @@ bool Cartridge::attach(const CartImage& image, std::string& error) {
         exromAtReset_ = 0;
         gameAtReset_ = banks > 32 ? 1 : 0;
         break;
+    case 1: case 9: case 36:
+        // One row of ROM banks, seen through ROML and through ROMH; 8K of RAM, type 36 32K.
+        high_ = &romL_;
+        ram_.assign(type == 36 ? 0x8000 : 0x2000, 0);
+        laterBoard_ = type == 36 && image.subtype == 1;
+        exromAtReset_ = 0;
+        gameAtReset_ = 1;
+        break;
     case 4: case 8: case 18: exromAtReset_ = 0; gameAtReset_ = 0; break;   // 16K
     case 32: exromAtReset_ = 1; gameAtReset_ = 0; break;   // Ultimax: it starts from its own reset vector
     default: exromAtReset_ = 0; gameAtReset_ = 1; break;   // 7, 10, 15, 17, 19: 8K
@@ -127,10 +137,12 @@ void Cartridge::reset() {
     s_.type = static_cast<int16_t>(type_);
     s_.exrom = exromAtReset_;
     s_.game = gameAtReset_;
+    // RAM chips at power on: the same pattern as the computer's (c64.cpp).
+    for (size_t i = 0; i < ram_.size(); ++i) ram_[i] = (i & 0x40) ? 0xFF : 0x00;
 }
 
 bool Cartridge::setState(const State& s) {
-    if (s.type != type_ || s.bank >= banks_ || s.bankH >= banks_) return false;
+    if (s.type != type_ || s.bank >= banks_ || s.bankH >= banks_ || s.writes > 2) return false;
     for (const Flash& f : s.flash)
         if (f.seq > EraseUnlock2 || f.op > ChipErasing || (type_ != 32 && (f.op || f.autoselect || f.suspended))) return false;
     s_ = s;
@@ -142,16 +154,141 @@ void Cartridge::setBank(unsigned bank) {
     if (type_ != 18) s_.bankH = s_.bank;
 }
 
-uint8_t Cartridge::readRomL(uint16_t addr) {
+uint8_t Cartridge::readRomL(uint16_t addr, uint8_t open, uint8_t ram) {
     if (type_ == 18) s_.bankH = (addr & 0x1000) ? 1 : 0;   // T18: which half was read picks ROMH's bank
     if (type_ == 10) s_.capacitor = 0;                      // T10
     if (flashBusy(0)) return flashValue(0, addr, s_.flash[0].toggle);   // a read moves the toggle bits
-    return peekRomL(addr);
+    return peekRomL(addr, open, ram);
 }
 
-uint8_t Cartridge::readRomH(uint16_t addr) {
+uint8_t Cartridge::readRomH(uint16_t addr, uint8_t) {
     if (flashBusy(1)) return flashValue(1, addr, s_.flash[1].toggle);
     return peekRomH(addr);
+}
+
+// ---- T1, T9, T36: the freezers ----------------------------------------------------------
+
+// What ROML's window shows.
+uint8_t Cartridge::freezerRomL(uint16_t addr, uint8_t open, uint8_t ram) const {
+    const size_t rom = (size_t{s_.bank} << 13) | (addr & 0x1FFF);
+    if (type_ != 36) {
+        // T1 with its RAM on and both lines let go: the cartridge's RAM and the computer's
+        // answer together.
+        if (s_.contend) return ram | ram_[addr & 0x1FFF];
+        return s_.ramOn ? ram_[addr & 0x1FFF] : romL_[rom];
+    }
+    if (s_.frozen) return open;                       // nothing of the cartridge's is here
+    if (s_.ramOn) return ram_[ramAt(addr, true)];
+    if (laterBoard_ && s_.ramHigh) return romL_[rom];
+    if (!s_.game && !s_.exrom) return open;           // 16K configuration without RAM: nothing
+    return romL_[rom];
+}
+
+// What ROMH's window shows: the same row of ROM banks, or the RAM.
+uint8_t Cartridge::freezerRomH(uint16_t addr) const {
+    const size_t rom = (size_t{s_.bank} << 13) | (addr & 0x1FFF);
+    if (type_ == 1) return romL_[rom];
+    if (type_ == 9) return s_.ramHigh ? ram_[addr & 0x1FFF] : romL_[rom];
+    // T36: with its RAM chosen and banking of the I/O window not allowed, the two low
+    // bank bits do not reach the ROM here.
+    const size_t rom4 = ((size_t{s_.bank} & ~size_t{3}) << 13) | (addr & 0x1FFF);
+    // (The later board's RAM in this window, $A000-$BFFF, never comes this way: claims().)
+    return romL_[(s_.allowBank || !(s_.ramOn || (laterBoard_ && s_.ramHigh))) ? rom : rom4];
+}
+
+// T1 and T9: the one register, anywhere in I/O 1.
+//   bit 0  1 = GAME pulled low        bit 3-4  ROM bank
+//   bit 1  1 = EXROM let go           bit 5    1 = RAM in place of ROM
+//   bit 2  1 = the register is off    bit 6    1 = the freeze is over
+void Cartridge::freezerRegister(uint8_t value) {
+    setBank((value >> 3) & 3);
+    s_.contend = 0;
+    if (type_ == 9 && (value & 0xE7) == 0x22) {
+        // T9's extra mode: ROM in ROML's window, the RAM in ROMH's, 16K configuration.
+        s_.game = 0;
+        s_.exrom = 0;
+        s_.ramHigh = 1;
+        s_.ramOn = 0;
+    } else {
+        s_.game = (value & 1) ? 0 : 1;
+        s_.exrom = (value & 2) ? 1 : 0;
+        s_.ramHigh = 0;
+        s_.ramOn = (value & 0x20) ? 1 : 0;
+        if (value & 0x40) s_.frozen = 0;
+        // T1 with the same value: its RAM answers at $8000 although the computer's does too.
+        if (type_ == 1 && (value & 0x23) == 0x22) {
+            s_.contend = 1;
+            s_.exrom = 0;
+        }
+    }
+    // T1 holds the lines through the whole cycle, T9 in the CPU's half only.
+    s_.vicUltimax = type_ == 1 && ultimax();
+    if (value & 4) s_.active = 0;
+}
+
+// The CPU has saved its return address and flags: the next two cycles read the vector.
+// The cartridge's ROM goes where the vectors are, and the registers answer again.
+void Cartridge::enterFreeze() {
+    s_.pending = 0;
+    s_.writes = 0;
+    s_.frozen = 1;
+    s_.active = 1;
+    s_.game = 0;
+    s_.exrom = 1;
+    s_.vicUltimax = 1;
+    s_.contend = 0;
+    s_.ramOn = type_ == 36 ? 0 : 1;
+    setBank(0);
+}
+
+void Cartridge::setFreezeButton(bool down) {
+    if (!freezer()) return;
+    // Letting go of it starts the freeze, unless one is in progress or type 36's second
+    // register has switched the function off (the button itself can still be read).
+    if (s_.button && !down && !s_.frozen && !s_.noFreeze) {
+        s_.pending = 1;
+        s_.writes = 0;
+    }
+    s_.button = down ? 1 : 0;
+}
+
+void Cartridge::writeRomL(uint16_t addr, uint8_t value) {
+    if (type_ == 32) flashWrite(0, addr, value);
+    else if (freezer() && s_.ramOn) ram_[type_ == 36 ? ramAt(addr, true) : addr & 0x1FFF] = value;
+}
+
+bool Cartridge::writeMem(uint16_t addr, uint8_t value, bool romhForReads) {
+    if (addr < 0xA000) {
+        // The RAM of T1, T9 and the later T36 board takes writes whatever the PLA selects;
+        // the computer's RAM takes them too.
+        if (s_.ramOn && (type_ != 36 || laterBoard_)) ram_[type_ == 36 ? ramAt(addr, true) : addr & 0x1FFF] = value;
+        return false;
+    }
+    if (!s_.ramHigh) return false;
+    // The RAM in ROMH's window takes the write alone.
+    if (type_ == 9 && romhForReads) {
+        ram_[addr & 0x1FFF] = value;
+        return true;
+    }
+    return false;
+}
+
+// T36: the window into the selected bank's page $1E (I/O 1 from $DE02, when the second
+// register says so) or $1F (I/O 2): RAM when it is chosen, else ROM.
+bool Cartridge::ioWindow(uint16_t addr, bool write, uint8_t& value) {
+    if (s_.frozen) return false;
+    const auto offset = static_cast<uint16_t>(0x1E00 | (addr & 0x01FF));
+    if (write) {
+        if (s_.ramOn || (laterBoard_ && s_.ramHigh)) ram_[ramAt(offset, s_.allowBank)] = value;
+        return true;
+    }
+    if (s_.ramOn || s_.ramHigh) {
+        value = ram_[ramAt(offset, s_.allowBank)];
+        return true;
+    }
+    if (!s_.game) return false;   // 16K and Ultimax configuration: only the RAM shows
+    value = romL_[(size_t{s_.bank} << 13) | offset];
+    return true;
 }
 
 // ---- T32: the flash chips ---------------------------------------------------------------
@@ -309,12 +446,14 @@ void Cartridge::clockFlash(int chip) {
 }
 
 void Cartridge::saveContent(uint8_t* out) const {
+    for (size_t i = 0; freezer() && i < ram_.size(); ++i) out[i] = ram_[i];
     if (type_ != 32) return;
     for (size_t i = 0; i < romL_.size(); ++i) out[i] = romL_[i];
     for (size_t i = 0; i < romH_.size(); ++i) out[romL_.size() + i] = romH_[i];
 }
 
 void Cartridge::loadContent(const uint8_t* in) {
+    for (size_t i = 0; freezer() && i < ram_.size(); ++i) ram_[i] = in[i];
     if (type_ != 32) return;
     for (size_t i = 0; i < romL_.size(); ++i) romL_[i] = in[i];
     for (size_t i = 0; i < romH_.size(); ++i) romH_[i] = in[romL_.size() + i];
@@ -323,6 +462,28 @@ void Cartridge::loadContent(const uint8_t* in) {
 bool Cartridge::readIo(uint16_t addr, uint8_t& value) {
     const bool io1 = !(addr & 0x0100);
     switch (type_) {
+    case 1: case 9:
+        if (!s_.active) return false;
+        // The register has no read/write input: a read stores what the bus holds.
+        if (io1) {
+            freezerRegister(value);
+            return false;
+        }
+        // I/O 2: the last page of the RAM or of the selected ROM bank.
+        value = (s_.ramOn || s_.ramHigh) ? ram_[0x1F00 | (addr & 0xFF)] : romL_[(size_t{s_.bank} << 13) | 0x1F00 | (addr & 0xFF)];
+        return true;
+    case 36:
+        if (!s_.active) return false;
+        if (io1 && (addr & 0xFF) < 2) {
+            // The status: bank bits 13, 14, 15 in bits 3, 4, 7; the window's banking
+            // allowed (1); the button held (2); the window in I/O 1 (6).
+            value = static_cast<uint8_t>(((s_.bank & 3) << 3) | ((s_.bank & 4) << 5) | (s_.allowBank ? 0x02 : 0) |
+                                         (s_.button ? 0x04 : 0) | (s_.reuMap ? 0x40 : 0));
+            return true;
+        }
+        if (io1 && s_.clockPort && (addr & 0xFF) < 0x10) return false;   // the accessory connector: nothing on it
+        if (io1 != (s_.reuMap != 0)) return false;
+        return ioWindow(addr, false, value);
     case 4:    // T4: a read in I/O 1 takes the second chip out
         if (io1) s_.game = 1;
         return false;
@@ -352,6 +513,57 @@ bool Cartridge::readIo(uint16_t addr, uint8_t& value) {
 void Cartridge::writeIo(uint16_t addr, uint8_t value) {
     const bool io1 = !(addr & 0x0100);
     switch (type_) {
+    case 1: case 9:
+        if (!s_.active) break;
+        if (io1) freezerRegister(value);
+        else if (s_.ramOn || s_.ramHigh) ram_[0x1F00 | (addr & 0xFF)] = value;
+        break;
+    case 36:
+        if (!s_.active) break;
+        if (io1 && (addr & 0xFF) == 0) {
+            // The first register: bits as T1's, bit 7 a third bank bit.
+            setBank(((value >> 3) & 3) | ((value >> 5) & 4));
+            s_.game = (value & 1) ? 0 : 1;
+            s_.exrom = (value & 2) ? 1 : 0;
+            if (laterBoard_ && (value & 0x67) == 0x22) {
+                // The later board has T9's extra mode: ROM in ROML's window, RAM in ROMH's.
+                s_.game = 0;
+                s_.exrom = 0;
+                s_.ramHigh = 1;
+                s_.ramOn = 0;
+            } else {
+                s_.ramHigh = 0;
+                if (value & 0x40) s_.frozen = 0;
+                s_.ramOn = (value & 0x20) ? 1 : 0;
+                // The first board with the same value: both lines let go, the RAM in the I/O window.
+                if ((value & 0x67) == 0x22) s_.ramHigh = 1;
+            }
+            // Until the freeze is over, bits 0 and 1 do not reach the lines.
+            if (s_.frozen) {
+                s_.game = 0;
+                s_.exrom = 1;
+            }
+            s_.vicUltimax = 0;
+            // Bit 2: the registers take no more writes, and the memory map is the
+            // computer's own, as with nothing plugged in.
+            if (value & 4) {
+                s_.active = 0;
+                if (!s_.frozen) s_.game = s_.exrom = 1;
+            }
+        } else if (io1 && (addr & 0xFF) == 1) {
+            // The second register: bits 1, 2 and 6 take the first write only.
+            if (!s_.written) {
+                s_.allowBank = (value & 0x02) ? 1 : 0;
+                s_.noFreeze = (value & 0x04) ? 1 : 0;
+                s_.reuMap = (value & 0x40) ? 1 : 0;
+                s_.written = 1;
+            }
+            setBank(((value >> 3) & 3) | ((value >> 5) & 4));
+            s_.clockPort = value & 1;
+        } else if (!(io1 && s_.clockPort && (addr & 0xFF) < 0x10) && io1 == (s_.reuMap != 0)) {
+            ioWindow(addr, true, value);
+        }
+        break;
     case 4:    // T4: a write in I/O 1 puts the second chip in
         if (io1) s_.game = 0;
         break;

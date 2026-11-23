@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 13;
+constexpr uint32_t kStateVersion = 14;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
@@ -129,12 +129,13 @@ unsigned C64::vicBank() const {
     return 3u - (cia2_.portAOut() & 3u);
 }
 
-uint16_t C64::plaInputsVic(uint16_t vaddr) const {
+uint16_t C64::plaInputsVic(uint16_t vaddr, bool cpuHalf) const {
     const unsigned bank = vicBank();
     uint16_t in = pla::nAEC | pla::RnW | pla::nLORAM | pla::nHIRAM | pla::nCHAREN |
                   pla::BA | pla::A15 | pla::A14 | pla::A13 | pla::A12; // address bus pulled up in VIC cycles
-    if (cart_.exrom()) in |= pla::nEXROM;
-    if (cart_.game()) in |= pla::nGAME;
+    // (Some cartridges pull the two lines in the CPU's half of the cycle only.)
+    if (cpuHalf ? cart_.exrom() : cart_.exromVic()) in |= pla::nEXROM;
+    if (cpuHalf ? cart_.game() : cart_.gameVic()) in |= pla::nGAME;
     if (!(bank & 1)) in |= pla::nVA14;
     if (vaddr & 0x2000) in |= pla::VA13;
     if (vaddr & 0x1000) in |= pla::VA12;
@@ -143,8 +144,8 @@ uint16_t C64::plaInputsVic(uint16_t vaddr) const {
 
 bool C64::vicIsCharRom(uint16_t vaddr) const { return !(pla::table()[plaInputsVic(vaddr)] & pla::nCHARROM); }
 
-uint8_t C64::vicFetch(uint16_t vaddr) const {
-    const uint8_t out = pla::table()[plaInputsVic(vaddr)];
+uint8_t C64::vicFetch(uint16_t vaddr, bool cpuHalf) const {
+    const uint8_t out = pla::table()[plaInputsVic(vaddr, cpuHalf)];
     if (!(out & pla::nCHARROM)) return chargen_[vaddr & 0x0FFF];
     // With GAME low and EXROM high the VIC-II's upper 4K are the cartridge's ROMH; the
     // cartridge sees the pulled-up address lines, $F000-$FFFF (hw/cart.md P3).
@@ -157,11 +158,12 @@ uint8_t C64::vicFetch(uint16_t vaddr) const {
 uint8_t C64::peekCpu(uint16_t a) const {
     if (a == 0) return s_.portDdr;
     if (a == 1) return portRead();
+    if (cart_.claims(a)) return cart_.readClaimed(a);
     const uint8_t out = pla::table()[plaInputsCpu(a, true)];
     if (!(out & pla::nBASIC)) return basic_[a & 0x1FFF];
     if (!(out & pla::nKERNAL)) return kernal_[a & 0x1FFF];
     if (!(out & pla::nCHARROM)) return chargen_[a & 0x0FFF];
-    if (!(out & pla::nROML)) return cart_.peekRomL(a);
+    if (!(out & pla::nROML)) return cart_.peekRomL(a, s_.vicLastByte, ram_[a]);
     if (!(out & pla::nROMH)) return cart_.peekRomH(a);
     if (!(out & pla::nCASRAM)) return ram_[a];
     return s_.vicLastByte;
@@ -170,6 +172,7 @@ uint8_t C64::peekCpu(uint16_t a) const {
 uint8_t C64::cpuRead(uint16_t a) {
     const uint8_t v = cpuReadBus(a);
     s_.cpuData = v;
+    if (cart_.watchesCycles()) cart_.cpuCycle(false);
     return v;
 }
 
@@ -178,18 +181,25 @@ uint8_t C64::cpuReadBus(uint16_t a) {
     if (s_.aecLow) return s_.vicLastByte;
     if (a == 0) return s_.portDdr;
     if (a == 1) return portRead();
+    if (cart_.claims(a)) return cart_.readClaimed(a);   // a cartridge that decodes the address itself
     const uint8_t out = pla::table()[plaInputsCpu(a, true)];
     if (!(out & pla::nBASIC)) return basic_[a & 0x1FFF];
     if (!(out & pla::nKERNAL)) return kernal_[a & 0x1FFF];
     if (!(out & pla::nCHARROM)) return chargen_[a & 0x0FFF];
     if (!(out & pla::nIO)) return ioRead(a);
-    if (!(out & pla::nROML)) return cart_.readRomL(a);
-    if (!(out & pla::nROMH)) return cart_.readRomH(a);
+    if (!(out & pla::nROML)) return cart_.readRomL(a, s_.vicLastByte, ram_[a]);
+    if (!(out & pla::nROMH)) return cart_.readRomH(a, s_.vicLastByte);
     if (!(out & pla::nCASRAM)) return ram_[a];
     return s_.vicLastByte; // nothing selected: the data bus still holds the VIC-II's byte
 }
 
 void C64::cpuWrite(uint16_t a, uint8_t v) {
+    cpuWriteBus(a, v);
+    // A cartridge waiting for the CPU to take an interrupt counts its write cycles.
+    if (cart_.watchesCycles()) cart_.cpuCycle(true);
+}
+
+void C64::cpuWriteBus(uint16_t a, uint8_t v) {
     s_.cpuData = v;
     if (a <= 1) {
         if (a == 0) s_.portDdr = v;
@@ -198,6 +208,10 @@ void C64::cpuWrite(uint16_t a, uint8_t v) {
         // The CPU drives no data onto the bus for its own port, but R/W is low: the RAM
         // underneath stores what the VIC-II read in the first phase (article §4).
         ram_[a] = s_.vicLastByte;
+        return;
+    }
+    if (cart_.claims(a)) {
+        cart_.writeClaimed(a, v);
         return;
     }
     const uint16_t in = plaInputsCpu(a, false);
@@ -212,7 +226,13 @@ void C64::cpuWrite(uint16_t a, uint8_t v) {
     }
     // In the Ultimax configuration the PLA selects the cartridge's chips for writes too.
     if (!(out & pla::nROML)) cart_.writeRomL(a, v);
-    if (!(out & pla::nROMH)) cart_.writeRomH(a, v);
+    else if (!(out & pla::nROMH)) cart_.writeRomH(a, v);
+    else if ((a & 0xC000) == 0x8000 && cart_.seesBus()) {
+        // A cartridge with RAM of its own decodes $8000-$BFFF itself; RAM where ROMH is
+        // read from keeps the write from the computer's RAM.
+        const bool romhForReads = !(pla::table()[plaInputsCpu(a, true)] & pla::nROMH);
+        if (cart_.writeMem(a, v, romhForReads)) return;
+    }
     if (!(out & pla::nCASRAM)) ram_[a] = v;
 }
 
@@ -230,7 +250,7 @@ uint8_t C64::ioRead(uint16_t a) {
     case 0xD: return cia2_.read(a);
     default: {
         // I/O 1 and I/O 2: the cartridge's; what it does not answer leaves the bus as it is.
-        uint8_t v = 0;
+        uint8_t v = s_.vicLastByte;
         return cart_.readIo(a, v) ? v : s_.vicLastByte;
     }
     }
@@ -362,9 +382,9 @@ void C64::tick() {
     // is seen from cycle 2; an acknowledge written in cycle N still shows low in N+1 (the
     // open-collector line is slow to rise; hw/vic2.md rule 15).
     // (irqEarly: hw/cia.md rule 20.)
-    cpu_.setIrq(s_.vicIrqSeen || s_.cia1IrqSeen || cia1_.irqEarly());
+    cpu_.setIrq(s_.vicIrqSeen || s_.cia1IrqSeen || cia1_.irqEarly() || cart_.irq());
     s_.vicIrqSeen = vic_.irq();
-    cpu_.setNmi(s_.cia2IrqSeen || cia2_.irqEarly() || s_.restore);
+    cpu_.setNmi(s_.cia2IrqSeen || cia2_.irqEarly() || s_.restore || cart_.nmi());
     // RDY is sampled in the second phase: a read in the first cycle of BA low is the one
     // that does not complete, and the cycle after BA rises is the one that does. In the
     // CPU core's terms (a halt is decided before a cycle), that is BA of the last cycle

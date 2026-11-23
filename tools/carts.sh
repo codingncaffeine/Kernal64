@@ -15,19 +15,43 @@
 # reports where it departs from the chip's data sheet.
 # TYPE 32 (flash chips): BANKS is 0 for the checks both agree on, 1 to add the data-sheet-only
 # checks (flash.s STRICT).
+# TYPE 1, 9, 36 (a freeze button; tests/carts/freezer.s): the button is pressed when the
+# program reaches its labels press1.. and held for 2000 cycles. BANKS 4 = the freeze
+# checks, 0 = type 36 with the function switched off. The reference emulator is not asked:
+# its button cannot be pressed at a chosen moment.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 K64RUN="$(realpath "${1:-$ROOT/bin/k64run}")"
 OUT="$ROOT/scratch/carts"
 mkdir -p "$OUT"
 asm() { python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/carts/banks.s" -o "$1" -D "TYPE=$2" -D "BANK=$3" -D "NBANKS=$4" -D "PART=$5"; }
-fails=0
-while read -r type banks want htype exrom game refwant; do
-    case "$type" in ''|'#'*) continue ;; esac
+. "$ROOT/tools/sidebyside.sh"
+one_line() {
+    local type="$1" banks="$2" want="$3" htype="$4" exrom="$5" game="$6" refwant="$7"
+    local tag chips ok cycles extra noref nofreeze strict fbanks b n load at label got line ref
     tag="t$type-b$banks${htype:+-as$htype}"
     chips=()
     ok=1
     cycles=3000000
+    extra=()
+    noref=0
+    if [ "$type" = 1 ] || [ "$type" = 9 ] || [ "$type" = 36 ]; then
+        nofreeze=0; [ "$banks" = 0 ] && nofreeze=1
+        for b in 0 1 2 3; do
+            python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/carts/freezer.s" -o "$OUT/$tag-$b.prg" -D "TYPE=$type" -D "BANK=$b" \
+                -D "NOFREEZE=$nofreeze" --labels "$OUT/$tag.labels" || ok=0
+            chips+=("$OUT/$tag-$b.prg@$b:8000")
+        done
+        for label in press1 press2 press3; do
+            at="$(awk -v l="$label" '$1 == l { print $2 }' "$OUT/$tag.labels" 2>/dev/null)"
+            [ -n "$at" ] && extra+=(--freeze-pc "$at")
+        done
+        extra+=(--freeze-hold 2000)
+        [ "${#extra[@]}" -ge 4 ] || ok=0   # no label: nothing would press the button
+        cycles=6000000
+        noref=1
+        fbanks=$banks; banks=0
+    fi
     if [ "$type" = 32 ]; then
         # The code in the ROMH chip's banks 0 and 8, a marked bank 0 and 8 in the ROML chip.
         fasm() { python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/carts/flash.s" -o "$1" -D "PART=$2" -D "BANK=$3" -D "STRICT=$banks"; }
@@ -51,13 +75,14 @@ while read -r type banks want htype exrom game refwant; do
         4) asm "$OUT/$tag-h0.prg" "$type" 0 1 1 || ok=0; chips+=("$OUT/$tag-h0.prg@0:a000") ;;
         18) for b in 0 1; do asm "$OUT/$tag-h$b.prg" "$type" "$b" 2 1 || ok=0; chips+=("$OUT/$tag-h$b.prg@$b:a000"); done ;;
     esac
-    if [ "$ok" = 0 ]; then echo "FAIL type $type, $banks bank(s): does not assemble"; fails=$((fails + 1)); continue; fi
+    if [ "$ok" = 0 ]; then echo "FAIL type $type, $banks bank(s): does not assemble"; return; fi
     python3 -I "$ROOT/tools/mkcrt.py" -o "$OUT/$tag.crt" --type "${htype:-$type}" --exrom "${exrom:-0}" --game "${game:-1}" "${chips[@]}"
-    "$K64RUN" "$ROOT/gitignore" --cart "$OUT/$tag.crt" --debugcart --cycles "$cycles" >"$OUT/$tag.log" 2>&1
+    "$K64RUN" "$ROOT/gitignore" --cart "$OUT/$tag.crt" --debugcart --cycles "$cycles" "${extra[@]}" >"$OUT/$tag.log" 2>&1
     got=$?
     line="type $type, $banks bank(s)${htype:+ in type $htype hardware}: ours $got, expected $want"
     [ "$type" = 32 ] && line="type 32, flash chips$([ "$strict" = 1 ] && echo ", data sheet checks too"): ours $got, expected $want"
-    if [ "${K64_CARTS_REF:-0}" = 1 ]; then
+    [ "$noref" = 1 ] && line="type $type, freeze button$([ "$fbanks" = 0 ] && echo ", function switched off")${htype:+ in type $htype hardware}: ours $got, expected $want"
+    if [ "${K64_CARTS_REF:-0}" = 1 ] && [ "$noref" = 0 ]; then
         timeout 300 "$ROOT/tools/oracle/vice.sh" -debugcart -jamaction 1 -warp -limitcycles "$cycles" \
             -cartcrt "/k64/${OUT#"$ROOT"/}/$tag.crt" >"$OUT/$tag.ref.log" 2>&1
         # Its exit status 1 is also its cycle limit: the reported value is in its log.
@@ -65,8 +90,12 @@ while read -r type banks want htype exrom game refwant; do
         [ -n "$ref" ] || ref=124
         grep -q 'could not attach' "$OUT/$tag.ref.log" && ref=refuses
         line="$line, reference $ref"
-        [ "$ref" = "${refwant:-$want}" ] || { echo "FAIL $line (the reference does not give the expected value)"; fails=$((fails + 1)); continue; }
+        [ "$ref" = "${refwant:-$want}" ] || { echo "FAIL $line (the reference does not give the expected value)"; return; }
     fi
-    if [ "$got" = "$want" ]; then echo "ok   $line"; else echo "FAIL $line"; fails=$((fails + 1)); fi
+    if [ "$got" = "$want" ]; then echo "ok   $line"; else echo "FAIL $line"; fi
+}
+while read -r type banks want htype exrom game refwant; do
+    case "$type" in ''|'#'*) continue ;; esac
+    sbs_start one_line "$type" "$banks" "$want" "$htype" "$exrom" "$game" "$refwant"
 done <"$ROOT/tests/carts/expected.txt"
-[ "$fails" = 0 ]
+sbs_finish

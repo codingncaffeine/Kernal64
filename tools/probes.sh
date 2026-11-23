@@ -14,14 +14,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 K64RUN="$(realpath "${1:-$ROOT/bin/k64run}")"
 OUT="$ROOT/scratch/probes"
 mkdir -p "$OUT"
-fails=0
-while read -r src defs model cia want extra; do
-    case "$src" in ''|'#'*) continue ;; esac
+. "$ROOT/tools/sidebyside.sh"
+one_line() {
+    local src="$1" defs="$2" model="$3" cia="$4" want="$5" extra="$6"
+    local tag args dv d got line vextra vm ref
     tag="$(echo "$src-$defs-$model-$cia" | tr -c 'A-Za-z0-9.-' '_')"
     args=()
     if [ "$defs" != "-" ]; then IFS=',' read -ra dv <<<"$defs"; for d in "${dv[@]}"; do args+=(-D "$d"); done; fi
     if ! python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/probes/$src" -o "$OUT/$tag.prg" "${args[@]}"; then
-        echo "FAIL $src [$defs]: does not assemble"; fails=$((fails + 1)); continue
+        echo "FAIL $src [$defs]: does not assemble"; return
     fi
     # shellcheck disable=SC2086
     "$K64RUN" "$ROOT/gitignore" --model "$model" --cia "$cia" $extra --autostart "$OUT/$tag.prg" --debugcart --cycles 20000000 >/dev/null 2>&1
@@ -38,8 +39,12 @@ while read -r src defs model cia want extra; do
             -autostart "/k64/${OUT#"$ROOT"/}/$tag.prg" >/dev/null 2>&1
         ref=$?
         line="$line, reference $ref"
-        [ "$ref" = "$want" ] || { echo "FAIL $line (the reference no longer gives the expected value)"; fails=$((fails + 1)); continue; }
+        [ "$ref" = "$want" ] || { echo "FAIL $line (the reference no longer gives the expected value)"; return; }
     fi
-    if [ "$got" = "$want" ]; then echo "ok   $line"; else echo "FAIL $line"; fails=$((fails + 1)); fi
+    if [ "$got" = "$want" ]; then echo "ok   $line"; else echo "FAIL $line"; fi
+}
+while read -r src defs model cia want extra; do
+    case "$src" in ''|'#'*) continue ;; esac
+    sbs_start one_line "$src" "$defs" "$model" "$cia" "$want" "$extra"
 done <"$ROOT/tests/probes/expected.txt"
-[ "$fails" = 0 ]
+sbs_finish

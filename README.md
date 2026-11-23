@@ -36,10 +36,14 @@ Files are recognized by their contents, not their names.
 
 ## Content
 
-- Cartridge files (`.crt`): plain 8K, 16K and Ultimax cartridges and the bank-switched
-  hardware types 4, 5, 7, 8, 10, 15, 17, 18, 19 and 32 of the file format. What a type
-  32 cartridge writes to its flash chips is kept in save states, not yet from one
-  session to the next. Other types are refused with a message.
+- Cartridge files (`.crt`): plain 8K, 16K and Ultimax cartridges, the bank-switched
+  hardware types 4, 5, 7, 8, 10, 15, 17, 18, 19 and 32 of the file format, and the
+  freezer types 1, 9 and 36 (both boards of type 36). What a type 32 cartridge writes to
+  its flash chips is kept in save states, not yet from one session to the next. Other
+  types are refused with a message.
+- A freezer cartridge's button is Page Down on the keyboard and a click of the right
+  stick on the RetroPad (remappable in the frontend). Without such a cartridge it does
+  nothing.
 - Program files (`.prg`, `.p00`) and the first program of a `.t64` container: put into
   memory once the machine has booted, and started with `RUN`.
 
@@ -75,6 +79,16 @@ have not done that).
   checks taken from the chip's data sheet: status bits while busy, and reading and
   programming other sectors while an erase is on hold.
 
+- `tests/carts/freezer.s` checks the freeze of types 1, 9 and 36. The test harness
+  presses the cartridge's button when the program reaches a label. It checks that the
+  freeze comes through the NMI vector with bank 0 where the vectors are; through the IRQ
+  vector when the NMI line is already held low; not at all while both are blocked, also
+  not on the two write cycles of a subroutine call; and late, once the CPU takes an
+  interrupt again. Types 1 and 9: the cartridge's RAM in the freeze. Type 36: the button
+  as a readable bit, the bit that switches the function off, the bit that takes the
+  cartridge out of the memory map. This one needs a harness that can press the button
+  at an address (`k64run --freeze-pc`), so VICE is not asked.
+
 A cartridge reports one byte to `$D7FF`: 0 for a pass, otherwise the number of the check
 that failed. That is the register of VICE's debug cartridge (`x64sc -debugcart` exits
 with the value); `banks.s` also writes `CART PASS` into screen memory.
@@ -86,6 +100,9 @@ Why the result can be trusted:
 - VICE reports the same value as this core on every line (`K64_CARTS_REF=1`), except
   where it departs from the flash chip's data sheet; that line records its value.
 - For each rule of our implementation a deliberately planted fault turns a line red.
+- Type 36's freeze is also compared with real cartridges: `tools/freezer.sh` runs the
+  freeze test program of the VICE test suite and compares what it finds, byte by byte,
+  with the dumps people saved with that program on five cartridges of both boards.
 
 `tools/carts.sh` builds and runs them all. It needs only Python 3: `tools/k64asm.py` is
 the assembler, `tools/mkcrt.py` packs the images into `.crt` files (in `scratch/carts/`).

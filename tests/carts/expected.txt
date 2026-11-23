@@ -16,6 +16,14 @@
 # stops at check 6 (it programs a byte in no time; the chip is busy for some microseconds).
 32  0   0
 32  1   0  32 1 0  6
+# The types with a freeze button (tests/carts/freezer.s): the freeze through the NMI
+# vector, through the IRQ vector when the NMI line is held, not at all with both blocked,
+# and late once the CPU takes an interrupt again. Second line of type 36: its register bit
+# that switches the function off.
+1   4   0
+9   4   0
+36  4   0
+36  0   0
 # The same chips in other hardware: the check fails at the step where the two differ.
 # Bank register without an off bit: step 2 (switched off, the RAM shows).
 19  16  2  5

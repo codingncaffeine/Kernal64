@@ -105,6 +105,9 @@ void applyInput() {
     }
     machine->setRestore(inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEUP) != 0);
     auto pad = [](unsigned id) { return inputStateCb(0, RETRO_DEVICE_JOYPAD, 0, id) != 0; };
+    // The button on a freezer cartridge: Page Down, or a click of the right stick. It is
+    // the cartridge's own button, so without such a cartridge it does nothing.
+    machine->setFreezeButton(inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEDOWN) != 0 || pad(RETRO_DEVICE_ID_JOYPAD_R3));
     const uint8_t lines = static_cast<uint8_t>((pad(RETRO_DEVICE_ID_JOYPAD_UP) ? 0x01 : 0) | (pad(RETRO_DEVICE_ID_JOYPAD_DOWN) ? 0x02 : 0) |
                                                (pad(RETRO_DEVICE_ID_JOYPAD_LEFT) ? 0x04 : 0) | (pad(RETRO_DEVICE_ID_JOYPAD_RIGHT) ? 0x08 : 0) |
                                                (pad(RETRO_DEVICE_ID_JOYPAD_B) ? 0x10 : 0));
@@ -239,6 +242,17 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
         {nullptr, nullptr},
     };
     cb(RETRO_ENVIRONMENT_SET_VARIABLES, const_cast<retro_variable*>(vars));
+    // What the RetroPad's buttons are, for the frontend's remapping screen.
+    static const retro_input_descriptor inputs[] = {
+        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP, "Joystick up"},
+        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN, "Joystick down"},
+        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT, "Joystick left"},
+        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Joystick right"},
+        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "Fire"},
+        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3, "Cartridge freeze button"},
+        {0, 0, 0, 0, nullptr},
+    };
+    cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, const_cast<retro_input_descriptor*>(inputs));
     retro_log_callback logging{};
     logCb = cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging) ? logging.log : nullptr;
 }

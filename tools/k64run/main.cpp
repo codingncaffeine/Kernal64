@@ -28,6 +28,13 @@
 // --where ADDR (hex; with --cycles) prints the raster line and cycle of the opcode fetch each
 //   time the CPU starts the instruction at ADDR (the first 32 times): where on the screen
 //   a piece of a test program runs.
+// --freeze-at CYCLE (with --cycles; may be given several times) presses the freeze button of
+//   a freezer cartridge at that machine cycle; --freeze-pc ADDR (hex; several) the first time
+//   the CPU starts the instruction at ADDR. --freeze-hold N: let go of it N cycles later
+//   (default 1).
+// --type-at CYCLE TEXT (with --cycles; may be given several times) puts TEXT into the
+//   KERNAL's keyboard buffer at that machine cycle, as if typed ("\r" = RETURN; at most
+//   10 characters).
 // --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
 #include "c64.h"
 #include "roms.h"
@@ -66,6 +73,10 @@ int main(int argc, char** argv) {
     int where = -1, whereLeft = 32;
     bool whereSeen = false;
     std::vector<std::pair<unsigned, unsigned>> dumps;
+    std::vector<uint64_t> freezeAt;
+    std::vector<int> freezePc;
+    uint64_t freezeHold = 1, freezeRelease = 0;
+    std::vector<std::pair<uint64_t, std::string>> typeAt;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
@@ -90,6 +101,18 @@ int main(int argc, char** argv) {
         else if (a == "--autostart-delay" && i + 1 < argc) autostartDelay = std::strtoull(argv[++i], nullptr, 10);
         else if (a == "--debugcart") debugCart = true;
         else if (a == "--cycles" && i + 1 < argc) cycleLimit = std::strtoull(argv[++i], nullptr, 10);
+        else if (a == "--freeze-at" && i + 1 < argc) freezeAt.push_back(std::strtoull(argv[++i], nullptr, 10));
+        else if (a == "--freeze-pc" && i + 1 < argc) freezePc.push_back(static_cast<int>(std::strtoul(argv[++i], nullptr, 16)));
+        else if (a == "--freeze-hold" && i + 1 < argc) freezeHold = std::strtoull(argv[++i], nullptr, 10);
+        else if (a == "--type-at" && i + 2 < argc) {
+            const uint64_t at = std::strtoull(argv[++i], nullptr, 10);
+            std::string text;
+            for (const char* p = argv[++i]; *p; ++p) {
+                if (p[0] == '\\' && p[1] == 'r') { text += '\r'; ++p; }
+                else text += *p;
+            }
+            typeAt.emplace_back(at, text.substr(0, 10));
+        }
         else if (a == "--where" && i + 1 < argc) where = static_cast<int>(std::strtoul(argv[++i], nullptr, 16));
         else if (a == "--dump" && i + 1 < argc) {
             char* end = nullptr;
@@ -148,6 +171,22 @@ int main(int argc, char** argv) {
                                 machine.vic().line(), machine.vic().cycleInLine(), static_cast<unsigned long long>(machine.cycle()));
                 }
                 whereSeen = at;
+            }
+            for (const auto& [at, text] : typeAt) {
+                if (machine.cycle() != at) continue;
+                for (size_t n = 0; n < text.size(); ++n) machine.pokeRam(static_cast<uint16_t>(0x0277 + n), static_cast<uint8_t>(text[n]));
+                machine.pokeRam(0x00C6, static_cast<uint8_t>(text.size()));
+            }
+            bool press = false;
+            for (uint64_t at : freezeAt) press = press || machine.cycle() == at;
+            for (int& pc : freezePc)
+                if (pc >= 0 && machine.cpuAtInstructionStart() && machine.cpuRegs().pc == pc) { press = true; pc = -1; }
+            if (press) {
+                machine.setFreezeButton(true);
+                freezeRelease = machine.cycle() + freezeHold;
+            } else if (freezeRelease && machine.cycle() >= freezeRelease) {
+                machine.setFreezeButton(false);
+                freezeRelease = 0;
             }
             machine.tick();
         }

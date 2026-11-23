@@ -26,7 +26,11 @@ namespace k64 {
 // What the VIC-II sees of the machine.
 class VicHost {
 public:
-    virtual uint8_t vicRead(uint16_t addr14) = 0;   // through the PLA, in the selected bank
+    // Through the PLA, in the selected bank. `cpuHalf`: an access in the cycle's second
+    // half, which the VIC-II has taken from the CPU (character pointers, two of a sprite's
+    // three data bytes): a cartridge that pulls its lines for the CPU's half only is seen
+    // there.
+    virtual uint8_t vicRead(uint16_t addr14, bool cpuHalf = false) = 0;
     virtual uint8_t colorRead(uint16_t addr10) = 0; // 4-bit color RAM
     virtual bool vicIsCharRom(uint16_t addr14) const = 0;   // the address selects the character ROM
 protected:
@@ -137,7 +141,6 @@ public:
 
 private:
     uint16_t gAddress(uint8_t r11) const;
-    uint8_t graphicsPixel(int i);
     void spritePixel(int i, int x, uint8_t* px);
     uint8_t spriteBaMask(int cycle) const;
     void buildSlots();
