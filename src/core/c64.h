@@ -176,7 +176,8 @@ private:
         uint8_t cia1IrqSeen = 0, cia2IrqSeen = 0, vicIrqSeen = 0;   // the interrupt lines as the CPU sees them
         uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
         uint32_t drivePhase = 0;
-        uint16_t autotypePos = 0;         // keys of the autotype text already typed          // the drive's clock against ours: += driveNum_ per cycle, a drive cycle per driveDen_
+        uint16_t autotypePos = 0;
+        uint8_t busOut = 0x3F;            // CIA 2's bus outputs before its last access (S5)         // keys of the autotype text already typed          // the drive's clock against ours: += driveNum_ per cycle, a drive cycle per driveDen_
     };
 #pragma pack(pop)
 

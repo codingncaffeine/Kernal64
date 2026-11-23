@@ -132,7 +132,13 @@ void Via6522::write(unsigned reg, uint8_t v) {
         s_.sr = v;
         s_.ifr &= static_cast<uint8_t>(~kSr);
         break;
-    case 11: s_.acr = v; host_.viaOutputs(id_); break;
+    case 11:
+        // Switched from counting PB6 pulses to counting cycles, timer 2 counts from the
+        // cycle after next (V4a: real-chip bytes, the suite's viavarious via1 G, via2 I/K).
+        if ((s_.acr & 0x20) && !(v & 0x20)) s_.t2Loaded = 1;
+        s_.acr = v;
+        host_.viaOutputs(id_);
+        break;
     case 12:
         s_.pcr = v;
         // A line switched to handshake or pulse output starts high.
@@ -203,9 +209,10 @@ void Via6522::clock() {
 
     // Timer 1. A counter written in this cycle shows its value through the next one and
     // counts from there: N, N-1, ... 0, $FFFF. The flag is set in the cycle that shows
-    // $FFFF, a cycle and a half after the one that shows 0 began. Free-running, the
-    // latch then goes in again (a period of N + 2); in the one-shot mode the counter
-    // goes on down from $FFFF and sets no more flags.
+    // $FFFF, a cycle and a half after the one that shows 0 began. The latch then goes in
+    // again (a period of N + 2) in both modes: the one-shot mode only sets no more flags
+    // (hw/drive.md V3, from real-chip bytes: the suite's viavarious via1 A/B read $0000
+    // throughout with latch 0 in one-shot mode).
     if (s_.t1Loaded) {
         s_.t1Loaded = 0;
     } else if (s_.t1Reload) {
@@ -218,8 +225,8 @@ void Via6522::clock() {
             s_.pb7 = freeRun ? !s_.pb7 : 1;
             outputs = outputs || (s_.acr & 0x80);
         }
-        if (freeRun) s_.t1Reload = 1;
-        else s_.t1Armed = 0;
+        s_.t1Reload = 1;
+        if (!freeRun) s_.t1Armed = 0;
     }
 
     // Timer 2: one shot only; with ACR bit 5 it counts falling edges on PB6 instead of

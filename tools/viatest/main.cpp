@@ -37,7 +37,7 @@ struct Board : ViaHost {
 enum Reg { ORB, ORA, DDRB, DDRA, T1CL, T1CH, T1LL, T1LH, T2CL, T2CH, SR, ACR, PCR, IFR, IER, ORAX };
 
 // Timer 1, one shot (Figure 15): counter N, N-1, ..., 0, $FFFF from the cycle after the
-// write; the flag in the cycle that shows $FFFF; no second flag.
+// write; the flag in the cycle that shows $FFFF; the latch goes in again; no second flag.
 void testTimer1OneShot() {
     current = "timer 1, one shot";
     Board b;
@@ -56,8 +56,10 @@ void testTimer1OneShot() {
     equal(v.irq(), 1, "interrupt in the cycle after zero");
     equal(v.peek(IFR), 0xC0, "flag register");
     v.clock();
-    equal(v.peek(T1CL), 0xFE, "the counter goes on down");
-    equal(v.read(T1CL), 0xFE, "reading the low counter");
+    // The latch goes in again, as when free-running (real-chip bytes: the suite's viavarious
+    // via1 A/B read $0000 throughout with latch 0 in this mode; hw/drive.md V3).
+    equal(v.peek(T1CL), 5, "the latch goes in again");
+    equal(v.read(T1CL), 5, "reading the low counter");
     equal(v.irq(), 0, "that read clears the flag");
     for (int i = 0; i < 70000; ++i) v.clock();
     equal(v.irq(), 0, "no second interrupt without a new write");

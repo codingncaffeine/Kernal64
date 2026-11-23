@@ -14,6 +14,11 @@ constexpr uint32_t kStateVersion = 16;
 // The 1541 runs on its own 16 MHz crystal divided by 16 (hw/drive.md D1): 1 MHz. Against the
 // machine's clock that is exactly 18,000,000 / 17,734,475 drive cycles per machine cycle on
 // PAL (17.734475 MHz / 18) and 308 / 315 = 44 / 45 on NTSC (315/22 MHz / 14).
+// hw/drive.md S5: the serial bus's delay from our CIA 2 to the drive's 6522, in hundredths of a
+// drive cycle (1 us): what makes the suite's iec-bus-delay program measure what it measures
+// on a real PAL C64 with a 1541-II (2.84-2.91 us).
+constexpr uint64_t kBusDelayPercent = 93;
+
 void driveRatio(const Timing& t, uint32_t& num, uint32_t& den) {
     if (t.clockHz < 1.0e6) { num = 18'000'000; den = 17'734'475; }
     else { num = 44; den = 45; }
@@ -409,6 +414,26 @@ void C64::tick() {
     s_.baLowSeen = !vic_.ba();
     s_.cia1IrqSeen = cia1_.irq();
     s_.cia2IrqSeen = cia2_.irq();
+    if (driveAttached()) {
+        // The two clocks interleaved by time (hw/drive.md S3): every drive cycle that ends
+        // before this cycle's bus access runs first, seeing the lines as they were; the
+        // access then sees what those cycles drove.
+        // A change of our outputs reaches the drive kBusDelay after the access that made it
+        // (S5: the round trip measured on a real 1541-II). The last access ended this cycle's
+        // start; a drive cycle ending sooner after it still sees the lines as before it.
+        const uint8_t now = cia2_.portAOut(), before = s_.busOut;
+        const uint64_t delay = static_cast<uint64_t>(driveDen_) * kBusDelayPercent / 100;
+        uint64_t end = driveDen_ - s_.drivePhase;   // the next drive cycle's end, from this cycle's start
+        s_.drivePhase += driveNum_;
+        while (s_.drivePhase >= driveDen_) {
+            s_.drivePhase -= driveDen_;
+            const uint8_t pa = end >= delay ? now : before;
+            drive_.setBus((pa & 0x08) != 0, (pa & 0x10) != 0, (pa & 0x20) != 0);
+            drive_.tick();
+            end += driveDen_;
+        }
+        s_.busOut = now;
+    }
     cpu_.tick();
     if (s_.potAny) updatePots();
     sid_.clock();
@@ -416,17 +441,6 @@ void C64::tick() {
     cia1_.clock();
     cia2_.clock();
     if (cart_.clocked()) cart_.clock();
-    if (driveAttached()) {
-        // The drive sees the lines as our CIA 2 pulls them after this cycle's access, and
-        // runs the cycles its own clock has reached.
-        const uint8_t pa = cia2_.portAOut();
-        drive_.setBus((pa & 0x08) != 0, (pa & 0x10) != 0, (pa & 0x20) != 0);
-        s_.drivePhase += driveNum_;
-        while (s_.drivePhase >= driveDen_) {
-            s_.drivePhase -= driveDen_;
-            drive_.tick();
-        }
-    }
     // The TOD pins see the mains frequency (hw/cia.md rule 18): exactly mainsHz ticks per
     // second of machine cycles, spread evenly.
     s_.todCount += static_cast<uint32_t>(timing_->mainsHz);
