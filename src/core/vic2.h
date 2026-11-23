@@ -86,6 +86,8 @@ public:
         uint16_t shC = 0;                // its video matrix data
         int8_t shPixel = 8;              // pixel index within it; 8 = run empty
         uint8_t mainBorder = 1, vertBorder = 1;   // §3.9
+        uint8_t vertPending = 1;         // a bottom match waiting for cycle 1 / the left comparator
+        uint8_t rasterMatched = 0;       // the raster compare matched in the last cycle
     };
 #pragma pack(pop)
     const State& state() const { return s_; }

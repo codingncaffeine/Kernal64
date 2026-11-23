@@ -70,8 +70,14 @@ void Vic2::phase1() {
     if (L == 0x30 && (r11 & 0x10)) s_.denSeen = 1;
     s_.badLine = L >= 0x30 && L <= 0xF7 && (L & 7) == (r11 & 7) && s_.denSeen;
 
-    // Raster interrupt, §3.12: tested at the start of each line, line 0 one cycle later.
-    if ((L == 0 ? c == 2 : c == 1) && L == s_.rasterCompare) s_.irqLatch |= 0x01;
+    // Raster interrupt, §3.12: the compare runs in every cycle and fires on the change from
+    // no match to match, so it fires at the start of the line (line 0 one cycle later, when
+    // RASTER changes) and also when the compare value is written to the current line
+    // (reference emulator; hw/vic2.md rule 12).
+    const int raster = (L == 0 && c == 1) ? t_->linesPerFrame - 1 : L;
+    const bool match = raster == s_.rasterCompare;
+    if (match && !s_.rasterMatched) s_.irqLatch |= 0x01;
+    s_.rasterMatched = match;
 
     if (c == 14) {          // rule 2
         s_.vc = s_.vcBase;
@@ -179,8 +185,8 @@ void Vic2::pixel(int px, int x, uint8_t* out) {
     const int csel = (r16 >> 3) & 1, rsel = (r11 >> 3) & 1;
     if (x == kRight[csel]) s_.mainBorder = 1;                                      // rule 1
     if (x == kLeft[csel]) {
-        if (s_.line == kBottom[rsel]) s_.vertBorder = 1;                          // rule 4
-        if (s_.line == kTop[rsel] && (r11 & 0x10)) s_.vertBorder = 0;            // rule 5
+        if (s_.line == kBottom[rsel]) s_.vertPending = 1;                         // rule 4
+        s_.vertBorder = s_.vertPending;
         if (!s_.vertBorder) s_.mainBorder = 0;                                    // rule 6
     }
     if (s_.vertBorder) color = bg[0] & 0x0F;   // the sequencer's output is off
@@ -189,11 +195,15 @@ void Vic2::pixel(int px, int x, uint8_t* out) {
 
 void Vic2::render() {
     const int c = s_.cycle;
-    if (c == 63) {   // rules 2 and 3 (PROVISIONAL on the NTSC chips: literally cycle 63)
+    // Vertical flip-flop (§3.9 rules 2-5 as the reference emulator applies them): the top
+    // comparator, with DEN, resets it in any cycle of the line; a bottom match in any cycle
+    // is held and takes effect at cycle 1 of the next line or at the left comparator.
+    {
         const uint8_t r11 = s_.reg[0x11];
         const int rsel = (r11 >> 3) & 1;
-        if (s_.line == kBottom[rsel]) s_.vertBorder = 1;
-        if (s_.line == kTop[rsel] && (r11 & 0x10)) s_.vertBorder = 0;
+        if (s_.line == kTop[rsel] && (r11 & 0x10)) s_.vertBorder = s_.vertPending = 0;
+        if (s_.line == kBottom[rsel]) s_.vertPending = 1;
+        if (c == 1) s_.vertBorder = s_.vertPending;
     }
     uint8_t* row = &pixels_[static_cast<size_t>(s_.line) * kMaxRasterWidth];
     const int px0 = 8 * (c - 1);

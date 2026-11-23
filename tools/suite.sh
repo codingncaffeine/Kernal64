@@ -5,7 +5,10 @@
 #
 #   tools/suite.sh PATTERN [K64RUN]       PATTERN: extended regex on the test-list line
 #
-# Only "exitcode" tests run (the program reports through the debug cartridge at $D7FF).
+# "exitcode" tests report through the debug cartridge at $D7FF. "screenshot" tests are
+# judged by the screen: our whole raster after the test's cycle budget must equal the
+# reference's whole-raster screenshot at the same cycle (tools/oracle/framecmp.py);
+# reference screenshots are cached in gitignore/external/suite-ref-shots/.
 # Tests that need hardware we do not have yet (new CIA or VIC-II chips, cartridges, disk
 # images, expansions) are listed as skipped with the reason. Results:
 #   same-pass  both pass            same-fail  both fail (the reference fails too)
@@ -40,10 +43,31 @@ run_one() {
             *) skip="needs $o" ;;
         esac
     done
-    [ "$kind" = exitcode ] || skip="${kind} test"
+    [ "$kind" = exitcode ] || [ "$kind" = screenshot ] || skip="${kind} test"
     if [ -n "$skip" ]; then printf 'skip      %s (%s)\n' "$name" "$skip"; return; fi
     local file="$root/gitignore/external/testprogs/testbench/$dir$prg"
     local tag; tag="$(echo "$name" | tr -c 'A-Za-z0-9.-' '_')"
+    if [ "$kind" = screenshot ]; then
+        local dx dy shots="$root/gitignore/external/suite-ref-shots" key2
+        case "$model" in pal) dx=492; dy=0 ;; ntsc) dx=508; dy=20 ;; *) dx=500; dy=20 ;; esac
+        mkdir -p "$shots"
+        key2="$(sha1sum "$file" | cut -c1-16)-$vmodel-$cycles"
+        nice -n 10 "$k64run" "$root/gitignore" --model "$model" --autostart "$file" --cycles "$cycles" \
+            --raster "$out/$tag.raw" >"$out/$tag.k64.log" 2>&1
+        if [ ! -s "$shots/$key2.png" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
+            K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" -jamaction 1 -warp -VICIIborders 2 \
+                -limitcycles "$cycles" -autostartprgmode 1 -autostart "/k64/${file#"$root"/}" \
+                -exitscreenshot "/k64/${shots#"$root"/}/$key2.png" >"$out/$tag.ref.log" 2>&1
+        fi
+        if [ ! -s "$shots/$key2.png" ]; then printf '%-9s %s (no reference screenshot)\n' WORSE "$name"; return; fi
+        if python3 -I "$root/tools/oracle/framecmp.py" "$out/$tag.raw" "$shots/$key2.png" --dx $dx --dy $dy \
+               --colors "vice-colors-$model.txt" --diff "$out/$tag.diff.png" >"$out/$tag.cmp.log" 2>&1; then
+            printf '%-9s %s (screen identical)\n' same-pass "$name"
+        else
+            printf '%-9s %s (screen: %s)\n' WORSE "$name" "$(grep -o '[0-9]* pixels differ' "$out/$tag.cmp.log" | tail -1)"
+        fi
+        return
+    fi
     nice -n 10 "$k64run" "$root/gitignore" --model "$model" --autostart "$file" --debugcart --cycles "$cycles" \
         >"$out/$tag.k64.log" 2>&1
     local ours=$?
