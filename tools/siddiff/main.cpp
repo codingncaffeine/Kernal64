@@ -33,11 +33,11 @@
 // decrements, zero freezes, write-backs into the noise register, TEST releases, bus fades):
 // a count of 0 means that rule was not compared.
 //
-// One sequence is kept out of the traffic: releasing TEST while changing from a combination
-// with noise to noise alone. The chip does not write the output back into the register
-// then (the suite's write-back programs "..._to_8" show it), except on the 8580 coming from
-// a combination with both triangle and sawtooth; the reference engine always does. The
-// last line counts how often a trace was steered around it.
+// Some sequences are kept out of the traffic: releasing TEST with a combination with noise
+// selected, where what the noise register latches at that moment follows the suite's
+// write-back programs here (hw/sid.md W4b) and a simpler rule in the reference engine
+// (which fails those programs). latchDiffers() states both rules; the last line counts how
+// often a trace was steered around such a release.
 //
 // --filter measures the analog part of both engines with tones and compares the numbers
 // in bands (the two are different models of the same circuit, and real chips differ far
@@ -79,6 +79,30 @@ struct Rng {
     }
     unsigned below(unsigned n) { return next() % n; }
 };
+
+// Whether, when TEST is released while the selection changes from prev to next, the
+// register latches something else here than in the reference engine.
+bool latchDiffers(bool old6581, unsigned prev, unsigned next) {
+    if (prev <= 8) return false;
+    // The reference: the old lines, except from noise + pulse (6581: never; 8580: only to
+    // $9 and $E) and, on the 6581, between triangle alone and sawtooth alone.
+    bool theirs = true;
+    if (prev == 0xC) theirs = !old6581 && (next == 0x9 || next == 0xE);
+    if (old6581 && (((prev & 3) == 1 && (next & 3) == 2) || ((prev & 3) == 2 && (next & 3) == 1))) theirs = false;
+    // Here: 0 = nothing, 1 = the old lines, 2 = something else (always a difference).
+    int ours = 0;
+    const bool held = (prev & 3) != 0;
+    if (old6581) {
+        if (held && (prev & next & 3)) ours = 1;
+        else if (held && (prev & 4) && (next & 4)) ours = 2;
+    } else if (held) {
+        if (next != 8 || (prev & 3) == 3) ours = 1;
+    } else if (prev == 0xC) {
+        if ((next & 3) == 3) ours = 2;
+        else if (next == 0x9 || next == 0xE) ours = 1;
+    }
+    return ours == 2 || (ours == 1) != theirs;
+}
 
 struct Row {
     uint32_t acc, noise;
@@ -366,9 +390,9 @@ int main(int argc, char** argv) {
                 if (reg % 7 == 4) {
                     const auto& v = a.state().voice[reg / 7];
                     if (v.test && !(value & 0x08)) {
-                        const bool both = model == k64::SidModel::Mos8580 && (v.waveform & 3) == 3;
-                        if (v.waveform > 8 && (value >> 4) == 8 && !both) { value &= 0x0F; ++nSteered; }   // see the header
-                        ++nTestOff;
+                        // (Steered by leaving TEST set: no release, nothing latched.)
+                        if (latchDiffers(model == k64::SidModel::Mos6581, v.waveform, value >> 4)) { value |= 0x08; ++nSteered; }
+                        else ++nTestOff;
                     }
                     if ((value & 1) != v.gate && (v.rateMatch || v.expPipeline || v.envPipeline)) ++nGateInStep;
                 }

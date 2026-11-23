@@ -91,6 +91,11 @@ add_executable(audiotest tools/audiotest/main.cpp)
 target_link_libraries(audiotest PRIVATE k64core)
 target_compile_options(audiotest PRIVATE ${K64_WARNINGS})
 
+# The SID's paddle converters checked against their rule.
+add_executable(sidtest tools/sidtest/main.cpp)
+target_link_libraries(sidtest PRIVATE k64core)
+target_compile_options(sidtest PRIVATE ${K64_WARNINGS})
+
 # Runs 6502 test program images (functional test, illegal-opcode tests).
 add_executable(imgtest tools/imgtest/main.cpp)
 target_include_directories(imgtest PRIVATE src/core)

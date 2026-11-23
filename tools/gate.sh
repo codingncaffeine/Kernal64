@@ -9,7 +9,8 @@
 # per-opcode bus traces, the functional and undocumented-opcode test programs and
 # the transistor-level chip; the SID's digital part against the reference engine cycle by
 # cycle, its DACs code by code, its combined waveforms against chip samples and its filter,
-# mixer and volume stage in bands; the audio output path as numbers and tones through the
+# mixer and volume stage in bands, the chip-variant option on the programs of both kinds,
+# its paddle converters cycle by cycle against their rule; the audio output path as numbers and tones through the
 # API; the VIC-II against the article's rules and the start-up
 # screen against the reference emulator (tools/oracle/build-vice.sh); the reference
 # suite's CPU, CIA, interrupt, general and VIC-II programs on both CIA types and both VIC-II
@@ -94,6 +95,17 @@ for run in "31 -18.5 -15.5 low-pass" "79 -80 -60 high-pass"; do
         >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "tone through the $4"; }
 done
 
+# The 6581 noise + pulse option through the API: voice 3 runs noise + pulse for a moment,
+# then noise alone. On the default chip the spell has emptied the noise register and the
+# voice stays silent; on the other kind the noise is there at its level.
+for run in "drains-it -200 -90" "leaves-it-alone -22.5 -18.5"; do
+    # shellcheck disable=SC2086
+    set -- $run
+    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1300 --check --option "kernal64_sid_noise_pulse=${1//-/ }" \
+        --type 'POKE54296,15:POKE54292,240:POKE54287,255:POKE54290,193\nPOKE54290,129\n' --expect-level $2 $3 \
+        >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "noise + pulse option (${1//-/ })"; }
+done
+
 step "memory map and boot"
 if [ -f "$ROOT/gitignore/external/pla/PLA.BIN" ]; then
     "$BUILD/placheck" "$ROOT/gitignore/external/pla/PLA.BIN" >"$BUILD/pla.log" 2>&1 \
@@ -128,6 +140,9 @@ tools/effects.sh "$BUILD/k64run" >"$BUILD/effects.log" 2>&1 || { grep -v '^ok' "
 
 step "VIC-II rules"
 "$BUILD/victest" >"$BUILD/victest.log" 2>&1 || { grep FAIL "$BUILD/victest.log" | head -8; bad "VIC-II rule tests"; }
+
+step "SID paddle converters"
+"$BUILD/sidtest" >"$BUILD/sidtest.log" 2>&1 || { grep FAIL "$BUILD/sidtest.log" | head -8; bad "SID paddle converter rules"; }
 
 step "CPU"
 EXT="$ROOT/gitignore/external"
@@ -178,6 +193,21 @@ if [ -x "$BUILD/siddiff" ]; then
     "$BUILD/siddiff" --filter >"$BUILD/filter-score.txt" 2>&1 || { grep FAIL "$BUILD/filter-score.txt"; bad "filter, mixer and volume stage outside a band"; }
     diff -u tests/filter-score.txt "$BUILD/filter-score.txt" || bad "analog part: the score differs from tests/filter-score.txt"
 else bad "SID comparison not built: tools/oracle/build-vice.sh"; fi
+
+step "SID chip variants"
+# Real 6581s differ in what noise + pulse does to the noise register. The suite has programs
+# from both kinds: its seven "_to_C_old" programs pass only on the kind that leaves the
+# register alone (they are in tests/suite-known.txt for the default), its wf12nsr program
+# only on the kind that drains it.
+WB="$EXT/testprogs/SID"
+if [ -f "$WB/wf12nsr/wf12nsr.prg" ]; then
+    for w in 8 9 A C D E F; do
+        "$BUILD/k64run" "$ROMS" --autostart "$WB/wb_testsuite/noise_writeback_check_${w}_to_C_old.prg" --sid old \
+            --sid-noise-pulse keeps --debugcart --cycles 10000000 >/dev/null 2>&1 || bad "noise + pulse left alone: write-back program $w to C"
+    done
+    "$BUILD/k64run" "$ROMS" --autostart "$WB/wf12nsr/wf12nsr.prg" --sid old --sid-noise-pulse keeps --debugcart --cycles 10000000 >/dev/null 2>&1
+    [ $? = 255 ] || bad "noise + pulse left alone: wf12nsr must fail on that kind of chip"
+else bad "test programs missing: tools/oracle/build-vice.sh"; fi
 
 if [ "$QUICK" = 0 ]; then
     step "RetroArch behind the wall"

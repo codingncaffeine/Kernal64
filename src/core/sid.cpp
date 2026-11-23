@@ -230,6 +230,11 @@ void Sid::setModel(SidModel model) {
     tables_ = &waveTables(model);
 }
 
+void Sid::powerOn() {
+    s_ = State{};
+    reset();
+}
+
 void Sid::reset() {
     for (Voice& v : s_.voice) {
         const Voice before = v;
@@ -243,7 +248,8 @@ void Sid::reset() {
     for (uint8_t& r : s_.reg) r = 0;
     s_.bus = 0;
     s_.busTtl = 0;
-    // (The filter's capacitors keep their charge: RES is a digital pin.)
+    // (The filter's capacitors keep their charge: RES is a digital pin. The paddle
+    // converters run on: nothing in the sources says RES reaches them.)
 }
 
 // ---- envelope (E1-E7) ----------------------------------------------------------------
@@ -336,10 +342,10 @@ void Sid::clockNoise(Voice& v) {
 }
 
 // W10: a combined waveform's output bits pull the register bits behind them low.
-void Sid::noiseWriteBack(Voice& v) {
+void Sid::noiseWriteBack(Voice& v, uint16_t lines) {
     for (int i = 0; i < 8; ++i)
-        if (!(v.out & (0x800 >> i))) v.noise &= ~(1u << kNoiseTap[i]);
-    v.noiseOut = static_cast<uint16_t>(v.noiseOut & v.out);
+        if (!(lines & (0x800 >> i))) v.noise &= ~(1u << kNoiseTap[i]);
+    v.noiseOut = static_cast<uint16_t>(v.noiseOut & lines);
 }
 
 // W4: with TEST held the register's cells drift to one: bit 0, and every cell above a cell
@@ -378,20 +384,29 @@ uint16_t Sid::waveValue(const Voice& v, unsigned index) const {
     }
 }
 
+// The DAC input lines for the selected waveform; wave = its triangle/sawtooth/pulse part.
+uint16_t Sid::lineValue(const Voice& v, const Voice& source, uint16_t* wave) const {
+    // W5: with ring modulation (and no sawtooth) the triangle's fold bit is the MSB
+    // XOR NOT the sync source's MSB.
+    const uint32_t ringMask = (v.ring && !(v.waveform & 2)) ? 0x800000u : 0u;
+    const unsigned index = ((v.acc ^ (~source.acc & ringMask)) >> 12) & 0xFFF;
+    const uint16_t noPulse = (v.waveform & 4) ? 0 : 0xFFF;
+    const uint16_t noiseMask = (v.waveform & 8) ? v.noiseOut : 0xFFF;
+    *wave = waveValue(v, index);
+    uint16_t out = static_cast<uint16_t>(*wave & (noPulse | v.pulseOut) & noiseMask);
+    if ((v.waveform & 0xC) == 0xC) {   // noise + pulse (W10)
+        if (model_ == SidModel::Mos6581) out = out < 0xF00 ? 0 : static_cast<uint16_t>(out & (out << 1) & (out << 2));
+        else out = out < 0xFC0 ? static_cast<uint16_t>(out & (out << 1)) : 0xFC0;
+    }
+    return out;
+}
+
 void Sid::formOutput(Voice& v, const Voice& source) {
     if (v.waveform) {
-        // W5: with ring modulation (and no sawtooth) the triangle's fold bit is the MSB
-        // XOR NOT the sync source's MSB.
-        const uint32_t ringMask = (v.ring && !(v.waveform & 2)) ? 0x800000u : 0u;
-        const unsigned index = ((v.acc ^ (~source.acc & ringMask)) >> 12) & 0xFFF;
         const uint16_t noPulse = (v.waveform & 4) ? 0 : 0xFFF;
         const uint16_t noiseMask = (v.waveform & 8) ? v.noiseOut : 0xFFF;
-        const uint16_t wave = waveValue(v, index);
-        uint16_t out = static_cast<uint16_t>(wave & (noPulse | v.pulseOut) & noiseMask);
-        if ((v.waveform & 0xC) == 0xC) {   // noise + pulse (W10)
-            if (model_ == SidModel::Mos6581) out = out < 0xF00 ? 0 : static_cast<uint16_t>(out & (out << 1) & (out << 2));
-            else out = out < 0xFC0 ? static_cast<uint16_t>(out & (out << 1)) : 0xFC0;
-        }
+        uint16_t wave = 0;
+        const uint16_t out = lineValue(v, source, &wave);
         v.out = out;
         if ((v.waveform & 3) && model_ == SidModel::Mos8580) {   // W9
             v.osc = static_cast<uint16_t>(v.triSawPipeline & (noPulse | v.pulseOut) & noiseMask);
@@ -402,7 +417,10 @@ void Sid::formOutput(Voice& v, const Voice& source) {
         // 6581: a combination with sawtooth pulls accumulator bit 23 low with output bit 11.
         if ((v.waveform & 2) && (v.waveform & 0xD) && model_ == SidModel::Mos6581)
             v.acc &= (static_cast<uint32_t>(out) << 12) | 0x7FFFFF;
-        if (v.waveform > 8 && !v.test && v.shiftPipeline != 1) noiseWriteBack(v);
+        // W10: a combination's lines write into the noise register. W10a: on some 6581s
+        // noise + pulse alone does not while the pulse level is high.
+        const bool spared = !noisePulseDrains_ && model_ == SidModel::Mos6581 && v.waveform == 0xC && v.pulseOut;
+        if (v.waveform > 8 && !v.test && v.shiftPipeline != 1 && !spared) noiseWriteBack(v, out);
     } else if (v.floatingTtl && --v.floatingTtl == 0) {
         // W8: the floating lines lose their charge; a bit goes when the bit above it is gone.
         v.out = v.osc = static_cast<uint16_t>(v.out & (v.out >> 1));
@@ -425,12 +443,36 @@ void Sid::clock() {
     }
     for (int i = 0; i < 3; ++i) formOutput(s_.voice[i], s_.voice[(i + 2) % 3]);
     if (s_.busTtl && --s_.busTtl == 0) s_.bus = 0;
+    clockPots();
+}
+
+// X5: a conversion takes 512 cycles. For the first 256 the chip holds both pins low and
+// the capacitors are empty; then it lets go and counts the cycles, 0 to 255, while each
+// capacitor charges through whatever is connected. The count at which a pin passes the
+// input's threshold is captured into its register; a pin that has not passed by the end
+// of the count captures 255.
+void Sid::clockPots() {
+    const unsigned phase = s_.potPhase;
+    s_.potPhase = static_cast<uint16_t>((phase + 1) & 511);
+    if (phase < 256) {
+        if (phase == 0) s_.potLevel[0] = s_.potLevel[1] = s_.potCaptured[0] = s_.potCaptured[1] = 0;
+        return;
+    }
+    const unsigned count = phase - 256;
+    for (int pin = 0; pin < 2; ++pin) {
+        if (s_.potCaptured[pin]) continue;
+        s_.potLevel[pin] += potCharge_[pin];
+        if (s_.potLevel[pin] >= (1u << 24) || count == 255) {
+            s_.pot[pin] = static_cast<uint8_t>(count);
+            s_.potCaptured[pin] = 1;
+        }
+    }
 }
 
 uint8_t Sid::read(unsigned reg) {
     const uint32_t ttl = kBusTtl[static_cast<int>(model_)];
     switch (reg & 0x1F) {
-    case 0x19: case 0x1A: s_.bus = 0xFF; s_.busTtl = ttl; break;   // X5: nothing connected
+    case 0x19: case 0x1A: s_.bus = s_.pot[reg & 1 ? 0 : 1]; s_.busTtl = ttl; break;   // X5
     case 0x1B: s_.bus = static_cast<uint8_t>(s_.voice[2].osc >> 4); s_.busTtl = ttl; break;
     case 0x1C: s_.bus = s_.voice[2].envRead; s_.busTtl = ttl; break;
     default: break;   // write-only: the bus value (X3)
@@ -451,15 +493,35 @@ void Sid::writeControl(Voice& v, const Voice& source, uint8_t control) {
         v.noiseReset = kNoiseFadeStart[m];
         v.pulseOut = 0xFFF;
     } else if (prevTest && !v.test) {
-        // The shift that TEST held half-way completes; a combination with noise selected
-        // until now may first write its output back (W4). Not when the new selection is
-        // noise alone, except on the 8580 coming from triangle + sawtooth (+ pulse).
-        bool writeBack = prevWave > 8 && (v.waveform != 8 || (model_ == SidModel::Mos8580 && (prevWave & 3) == 3));
-        if (prevWave == 0xC && (model_ == SidModel::Mos6581 || (v.waveform != 0x9 && v.waveform != 0xE))) writeBack = false;
-        if (model_ == SidModel::Mos6581 &&
-            (((prevWave & 3) == 1 && (v.waveform & 3) == 2) || ((prevWave & 3) == 2 && (v.waveform & 3) == 1)))
-            writeBack = false;
-        if (writeBack) noiseWriteBack(v);
+        // The shift that TEST held half-way completes. While TEST was set every cell's
+        // output, shorted to its waveform line at the taps, sat on the next cell's latch;
+        // what the latches hold at this moment depends on which sources let go of the
+        // lines and which arrive with this very write (W4b: the table the suite's
+        // write-back programs give for each chip).
+        const bool held = prevWave > 8 && (prevWave & 3);   // triangle or sawtooth held the lines
+        if (model_ == SidModel::Mos6581) {
+            if (held && (prevWave & v.waveform & 3)) {
+                noiseWriteBack(v, v.out);                    // the same source goes on holding them
+            } else if (held && (prevWave & 4) && (v.waveform & 4)) {
+                // Let go, with the pulse line pulling up from the top bit's end: the upper
+                // lines are back up when the latches close, the lowest three are not.
+                noiseWriteBack(v, static_cast<uint16_t>(v.out | 0xF80));
+            }
+        } else if (held) {
+            // The lines are still down, unless everything but noise is deselected; even
+            // then when triangle and sawtooth both held them (W4a).
+            if (v.waveform != 8 || (prevWave & 3) == 3) noiseWriteBack(v, v.out);
+        } else if (prevWave == 0xC) {
+            // From noise + pulse: triangle and sawtooth arriving together pull the lines
+            // down in time; one of them alone (with noise only, or with noise + pulse)
+            // leaves the old lines to be latched; anything else latches nothing.
+            if ((v.waveform & 3) == 3) {
+                uint16_t wave = 0;
+                noiseWriteBack(v, lineValue(v, source, &wave));
+            } else if (v.waveform == 0x9 || v.waveform == 0xE) {
+                noiseWriteBack(v, v.out);
+            }
+        }
         const uint32_t bit0 = (~v.noise >> 17) & 1;
         v.noise = ((v.noise << 1) | bit0) & 0x7FFFFF;
         setNoiseOut(v);

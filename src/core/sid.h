@@ -20,6 +20,20 @@ public:
     void setModel(SidModel model);
     SidModel model() const { return model_; }
     void reset();   // the RES pin; accumulators and envelope counters keep their value (W4, E7)
+    void powerOn(); // everything as after switching on; the settings (model, clock, below) stay
+
+    // W10a, a way in which 6581s differ: with noise + pulse selected and the pulse level
+    // high, most drain the noise register within a few cycles (the default); some leave
+    // it alone.
+    void setNoisePulseDrains(bool drains) { noisePulseDrains_ = drains; }
+    bool noisePulseDrains() const { return noisePulseDrains_; }
+
+    // X5, the two paddle converters (pin 0 = POTX, 1 = POTY): how fast what is connected
+    // to the pin charges its capacitor, in units of 1/2^24 of the way to the input's
+    // threshold per cycle; 0 = nothing connected. Conductances in parallel add.
+    void setPotCharge(int pin, uint32_t perCycle) { potCharge_[pin & 1] = perCycle; }
+    // The charge rate of a resistance that alone gives the register value 0 .. 255.
+    static constexpr uint32_t potChargeFor(unsigned value) { return ((1u << 24) + value) / (value + 1); }
 
     void clock();
     uint8_t read(unsigned reg);            // reg = address & $1F
@@ -65,6 +79,12 @@ public:
         // Filter: the two integrators' capacitor voltages and the summer's output, the
         // latter relative to its level at rest (all zero = the chip at rest).
         double filterBp = 0.0, filterLp = 0.0, filterHp = 0.0;
+        // X5: the paddle converters. Position in their 512-cycle period, the registers as
+        // last captured, the capacitors' charge and whether this period has captured.
+        uint16_t potPhase = 0;
+        uint8_t pot[2] = {0xFF, 0xFF};
+        uint8_t potCaptured[2] = {};
+        uint32_t potLevel[2] = {};
     };
 #pragma pack(pop)
     const State& state() const { return s_; }
@@ -102,14 +122,18 @@ private:
     void clockOscillator(Voice& v);
     void clockNoise(Voice& v);
     void setNoiseOut(Voice& v);
-    void noiseWriteBack(Voice& v);
+    void noiseWriteBack(Voice& v, uint16_t lines);
+    uint16_t lineValue(const Voice& v, const Voice& source, uint16_t* wave) const;
     void formOutput(Voice& v, const Voice& source);
     uint16_t waveValue(const Voice& v, unsigned index) const;
     void writeControl(Voice& v, const Voice& source, uint8_t control);
+    void clockPots();
 
     SidModel model_;
     const WaveTables* tables_;   // W10: the combined waveforms of this chip model
     double cyclePeriod_ = 1.0 / 985248.0;
+    bool noisePulseDrains_ = true;
+    uint32_t potCharge_[2] = {};   // inputs (the machine sets them): see setPotCharge
     State s_;
 };
 

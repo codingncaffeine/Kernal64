@@ -34,6 +34,17 @@ frontend's system folder:
 
 Files are recognized by their contents, not their names.
 
+## Core options
+
+| Option | Values (default first) | What it selects |
+| --- | --- | --- |
+| `kernal64_model` | `pal`, `pal-new`, `pal-old`, `ntsc`, `ntsc-new`, `ntsc-old` | The video chip: 6569R3, 8565, 6569R1, 6567R8, 8562, 6567R56A |
+| `kernal64_cia` | `6526`, `8521` | The CIA generation |
+| `kernal64_sid` | `6581`, `8580` | The SID chip |
+| `kernal64_sid_noise_pulse` | `drains it`, `leaves it alone` | 6581 only. Real 6581s differ in what noise combined with pulse does to the noise generator: on most it empties it within a few cycles, on some it does not |
+| `kernal64_border` | `full`, `small`, `none` | How much of the border is shown |
+| `kernal64_joyport` | `2`, `1` | The control port the RetroPad's joystick is in |
+
 ## License
 
 GPL-3.0-or-later; see `LICENSE`.

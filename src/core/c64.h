@@ -36,6 +36,7 @@ public:
     // The SID as the 6581 or the 8580. Takes effect at once (no reset).
     void setSidModel(SidModel m) { sid_.setModel(m); }
     SidModel sidModel() const { return sid_.model(); }
+    void setSidNoisePulseDrains(bool drains) { sid_.setNoisePulseDrains(drains); }
     const Sid& sid() const { return sid_; }
     const Timing& timing() const { return *timing_; }
 
@@ -63,6 +64,9 @@ public:
     // Joystick lines, active high: bit 0 up, 1 down, 2 left, 3 right, 4 fire.
     void setJoystick(int port, uint8_t lines);   // port 1 or 2
     void setRestore(bool down);                  // RESTORE goes straight to the NMI line
+    // What sits on a control port's two paddle lines, as the value (0-255) the SID's
+    // register shows when that port alone is switched through; -1 = nothing on the line.
+    void setPaddles(int port, int x, int y);     // port 1 or 2
 
     // Test harness only: the reference emulator's debug cartridge. A write to $D7FF ends a
     // test program with that value as its result (0 = passed). Off unless enabled.
@@ -107,6 +111,7 @@ private:
     uint8_t colorRead(uint16_t a) override { return colorRam_[a & 0x3FF]; }
     bool vicIsCharRom(uint16_t vaddr14) const override;
     void updateLightPen();   // CIA 1 port B bit 4 is the VIC-II's light pen input
+    void updatePots();       // the control ports' paddle lines through the switch to the SID
 
     uint16_t plaInputsCpu(uint16_t a, bool read) const;
     uint8_t portPins() const;    // the 6510 port lines as the PLA sees them
@@ -126,6 +131,8 @@ private:
         uint8_t keys[8] = {};             // pressed keys: bit = row, per column
         uint8_t joy[2] = {};              // control ports 1 and 2, active high
         uint8_t restore = 0;
+        int16_t pot[2][2] = {{-1, -1}, {-1, -1}};   // paddle lines [port][x, y]; -1 = open
+        uint8_t potAny = 0;               // something is on a paddle line
         uint8_t cia1IrqSeen = 0, cia2IrqSeen = 0, vicIrqSeen = 0;   // the interrupt lines as the CPU sees them
         uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
     };

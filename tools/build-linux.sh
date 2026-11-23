@@ -24,6 +24,7 @@ install -m 755 "$BUILD/placheck" "$ROOT/bin/placheck"
 install -m 755 "$BUILD/k64run" "$ROOT/bin/k64run"
 install -m 755 "$BUILD/victest" "$ROOT/bin/victest"
 install -m 755 "$BUILD/audiotest" "$ROOT/bin/audiotest"
+install -m 755 "$BUILD/sidtest" "$ROOT/bin/sidtest"
 [ -f "$BUILD/cpudiff" ] && install -m 755 "$BUILD/cpudiff" "$ROOT/bin/cpudiff"
 [ -f "$BUILD/siddiff" ] && install -m 755 "$BUILD/siddiff" "$ROOT/bin/siddiff"
 cat > "$ROOT/bin/kernal64" <<'EOF'

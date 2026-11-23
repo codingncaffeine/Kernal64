@@ -3,6 +3,12 @@
 //
 //   k64run ROM_FOLDER [--frames N] [--model pal|pal-new|pal-old|ntsc|ntsc-new|ntsc-old] [--cia old|new] [--sid old|new] [--expect TEXT]...
 //
+// --sid-noise-pulse keeps: the 6581 variant on which noise + pulse leaves the noise register
+//   alone (the core option kernal64_sid_noise_pulse).
+//
+// --paddles PORT X Y puts a pair of paddles in control port 1 or 2, set so that the SID's
+//   registers read X and Y (0-255) with that port alone switched through.
+//
 // --expect TEXT fails the run unless TEXT appears on the screen.
 // --png FILE writes the visible picture of the last frame.
 // --raster FILE writes the whole raster of the last frame: one palette index per pixel,
@@ -46,6 +52,8 @@ int main(int argc, char** argv) {
     k64::VicModel model = k64::VicModel::Mos6569;
     k64::CiaModel cia = k64::CiaModel::Mos6526;
     k64::SidModel sid = k64::SidModel::Mos6581;
+    bool noisePulseDrains = true;
+    int paddles[2][2] = {{-1, -1}, {-1, -1}};
     std::vector<std::string> expect;
     std::string png, rasterOut, autostart;
     bool debugCart = false;
@@ -63,6 +71,13 @@ int main(int argc, char** argv) {
             if (!k64::vicModelFromName(argv[++i], model)) { std::fprintf(stderr, "k64run: unknown model %s (%s)\n", argv[i], k64::kVicModelNames); return 2; }
         } else if (a == "--cia" && i + 1 < argc) cia = std::string(argv[++i]) == "new" ? k64::CiaModel::Mos8521 : k64::CiaModel::Mos6526;
         else if (a == "--sid" && i + 1 < argc) sid = std::string(argv[++i]) == "new" ? k64::SidModel::Mos8580 : k64::SidModel::Mos6581;
+        else if (a == "--sid-noise-pulse" && i + 1 < argc) noisePulseDrains = std::string(argv[++i]) != "keeps";
+        else if (a == "--paddles" && i + 3 < argc) {
+            const int port = std::atoi(argv[++i]);
+            if (port != 1 && port != 2) { std::fprintf(stderr, "k64run: --paddles takes control port 1 or 2\n"); return 2; }
+            paddles[port - 1][0] = std::atoi(argv[++i]);
+            paddles[port - 1][1] = std::atoi(argv[++i]);
+        }
         else if (a == "--expect" && i + 1 < argc) expect.emplace_back(argv[++i]);
         else if (a == "--png" && i + 1 < argc) png = argv[++i];
         else if (a == "--hash") hash = true;
@@ -86,8 +101,10 @@ int main(int argc, char** argv) {
     machine.setRoms(roms);
     machine.setCiaModel(cia);
     machine.setSidModel(sid);
+    machine.setSidNoisePulseDrains(noisePulseDrains);
     if (!machine.hasSystemRoms()) { std::fprintf(stderr, "k64run: BASIC, KERNAL or character ROM not found in %s\n", argv[1]); return 3; }
     machine.reset();
+    for (int port = 0; port < 2; ++port) machine.setPaddles(port + 1, paddles[port][0], paddles[port][1]);
     machine.enableDebugCart(debugCart);
     std::vector<uint8_t> prg;
     if (!autostart.empty()) {

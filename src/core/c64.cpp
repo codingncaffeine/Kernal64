@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 10;
+constexpr uint32_t kStateVersion = 11;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
@@ -46,12 +46,13 @@ void C64::reset() {
     for (size_t i = 0; i < ram_.size(); ++i) ram_[i] = (i & 0x40) ? 0xFF : 0x00;
     colorRam_.fill(0);
     vic_.reset();
-    sid_ = Sid(sid_.model());   // power on: the oscillators start from their power-on value
+    sid_.powerOn();   // the oscillators start from their power-on value
     sid_.setClockHz(timing_->clockHz);
     boardFilter_.reset();
     cia1_.reset();
     cia2_.reset();
     cpu_.reset();
+    updatePots();
 }
 
 // ---- the 6510 port -----------------------------------------------------------
@@ -234,6 +235,34 @@ void C64::setJoystick(int port, uint8_t lines) {
 
 void C64::setRestore(bool down) { s_.restore = down ? 1 : 0; }
 
+void C64::setPaddles(int port, int x, int y) {
+    if (port != 1 && port != 2) return;
+    s_.pot[port - 1][0] = static_cast<int16_t>(x < 0 ? -1 : x > 255 ? 255 : x);
+    s_.pot[port - 1][1] = static_cast<int16_t>(y < 0 ? -1 : y > 255 ? 255 : y);
+    s_.potAny = 0;
+    for (const auto& p : s_.pot)
+        if (p[0] >= 0 || p[1] >= 0) s_.potAny = 1;
+    updatePots();
+}
+
+// The SID's two paddle inputs reach the control ports through an analog switch: CIA 1
+// port A line 6 high connects port 1's pair, line 7 high port 2's (the levels of the
+// pins, so a line that is an input, or pulled low through the keyboard, counts as it
+// stands). With both on, the two ports' resistances are in parallel.
+void C64::updatePots() {
+    uint32_t charge[2] = {0, 0};
+    if (s_.potAny) {
+        const uint8_t pa = ciaPortA(0, cia1_.portAOut());
+        for (int port = 0; port < 2; ++port) {
+            if (!(pa & (0x40 << port))) continue;
+            for (int axis = 0; axis < 2; ++axis)
+                if (s_.pot[port][axis] >= 0) charge[axis] += Sid::potChargeFor(static_cast<unsigned>(s_.pot[port][axis]));
+        }
+    }
+    sid_.setPotCharge(0, charge[0]);
+    sid_.setPotCharge(1, charge[1]);
+}
+
 // The keyboard connects port A lines (columns) to port B lines (rows) wherever a key is
 // down; a line pulled low on either side pulls the other low too, through every closed
 // key, so ghost keys appear as on the real matrix. Control port 2 shares port A, port 1
@@ -299,6 +328,7 @@ void C64::tick() {
     s_.cia1IrqSeen = cia1_.irq();
     s_.cia2IrqSeen = cia2_.irq();
     cpu_.tick();
+    if (s_.potAny) updatePots();
     sid_.clock();
     if (audioRate_ > 0.0) resampler_.push(static_cast<float>(boardFilter_.clock(sid_.clockAudio())));
     cia1_.clock();
@@ -401,6 +431,7 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     cia1_.setState(c1);
     cia2_.setState(c2);
     sid_.setState(ss);
+    updatePots();
     boardFilter_.setState(bs);
     get(ram_.data(), ram_.size());
     get(colorRam_.data(), colorRam_.size());

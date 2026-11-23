@@ -6,14 +6,16 @@
 #
 #   tools/probes.sh [K64RUN]
 #
-# expected.txt: SOURCE  DEFINES(comma separated, or -)  MODEL  CIA  EXPECTED
+# expected.txt: SOURCE  DEFINES(comma separated, or -)  MODEL  CIA  EXPECTED  [K64RUN OPTIONS]
+# A line with options for our machine (something plugged into a port) has no counterpart
+# in the reference run and is not asked there.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 K64RUN="$(realpath "${1:-$ROOT/bin/k64run}")"
 OUT="$ROOT/scratch/probes"
 mkdir -p "$OUT"
 fails=0
-while read -r src defs model cia want; do
+while read -r src defs model cia want extra; do
     case "$src" in ''|'#'*) continue ;; esac
     tag="$(echo "$src-$defs-$model-$cia" | tr -c 'A-Za-z0-9.-' '_')"
     args=()
@@ -21,10 +23,11 @@ while read -r src defs model cia want; do
     if ! python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/probes/$src" -o "$OUT/$tag.prg" "${args[@]}"; then
         echo "FAIL $src [$defs]: does not assemble"; fails=$((fails + 1)); continue
     fi
-    "$K64RUN" "$ROOT/gitignore" --model "$model" --cia "$cia" --autostart "$OUT/$tag.prg" --debugcart --cycles 20000000 >/dev/null 2>&1
+    # shellcheck disable=SC2086
+    "$K64RUN" "$ROOT/gitignore" --model "$model" --cia "$cia" $extra --autostart "$OUT/$tag.prg" --debugcart --cycles 20000000 >/dev/null 2>&1
     got=$?
-    line="$src [$defs] $model cia-$cia: ours $got, expected $want"
-    if [ "${K64_PROBES_REF:-0}" = 1 ]; then
+    line="$src [$defs] $model cia-$cia${extra:+ $extra}: ours $got, expected $want"
+    if [ "${K64_PROBES_REF:-0}" = 1 ] && [ -z "$extra" ]; then
         vextra=()
         case "$model" in
             pal) vm=c64 ;; pal-new) vm=c64; vextra=(-VICIImodel 8565) ;; pal-old) vm=c64; vextra=(-VICIImodel 6569r1) ;;

@@ -127,6 +127,12 @@ k64::CiaModel ciaFromOptions() {
     return k64::CiaModel::Mos6526;
 }
 
+// A way in which 6581s differ; the default is what most do (hw/sid.md W10a).
+bool sidNoisePulseDrainsFromOptions() {
+    retro_variable var{"kernal64_sid_noise_pulse", nullptr};
+    return !(envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "leaves it alone"));
+}
+
 k64::SidModel sidFromOptions() {
     retro_variable var{"kernal64_sid", nullptr};
     if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "8580"))
@@ -180,6 +186,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
         {"kernal64_model", "Video chip; pal|pal-new|pal-old|ntsc|ntsc-new|ntsc-old"},
         {"kernal64_cia", "CIA chips; 6526|8521"},
         {"kernal64_sid", "SID chip; 6581|8580"},
+        {"kernal64_sid_noise_pulse", "6581: noise + pulse on the noise register; drains it|leaves it alone"},
         {"kernal64_border", "Border; full|small|none"},
         {"kernal64_joyport", "RetroPad is the joystick in control port; 2|1"},
         {nullptr, nullptr},
@@ -231,6 +238,7 @@ RETRO_API bool retro_load_game(const retro_game_info*) {
     machine = std::make_unique<k64::C64>(modelFromOptions());
     machine->setCiaModel(ciaFromOptions());
     machine->setSidModel(sidFromOptions());
+    machine->setSidNoisePulseDrains(sidNoisePulseDrainsFromOptions());
     machine->setAudioRate(kSampleRate);
     crop = cropFromOptions();
     log(RETRO_LOG_INFO, "version %s, machine %s, CIA %s", KERNAL64_VERSION, machine->timing().name,
@@ -271,6 +279,7 @@ RETRO_API void retro_run(void) {
     if (envCb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
         machine->setCiaModel(ciaFromOptions());
         machine->setSidModel(sidFromOptions());
+        machine->setSidNoisePulseDrains(sidNoisePulseDrainsFromOptions());
         const k64::VicModel m = modelFromOptions();
         const bool newModel = m != machine->timing().model;
         if (newModel) machine->setModel(m);

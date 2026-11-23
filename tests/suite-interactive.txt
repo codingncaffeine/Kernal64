@@ -20,3 +20,6 @@ VICII/dmadelay/test3.prg
 VICII/spritecrunch/spritecrunch2.prg
 VICII/spritecrunch/spritecrunch.prg
 VICII/spritefetchbug/test.prg
+VICII/lpcoordinates/lpcoords.prg
+SID/paddles/paddle.prg
+SID/paddles/fc3detect.prg

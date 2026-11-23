@@ -11,3 +11,12 @@ lpirq.s  -  ntsc  old  3
 lpirq.s  -  ntsc-new  old  3
 lpirq.s  -  pal-old  old  2
 lpirq.s  -  ntsc-old  old  2
+# Paddle registers and the switch to the control ports (our own rule: the reference has no
+# paddles to set from its command line). Paddles in both ports: every step reads its value.
+# Without them, or with one pair, the first step that expects a paddle fails.
+pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=47,YB=10  pal  old  0  --paddles 1 63 10 --paddles 2 191 200
+pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=47,YB=10  ntsc  new  0  --paddles 1 63 10 --paddles 2 191 200
+pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=47,YB=10  pal  old  2
+pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=47,YB=10  pal  old  3  --paddles 1 63 10
+pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=47,YB=10  pal  old  2  --paddles 2 191 200
+pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=48,YB=10  pal  old  4  --paddles 1 63 10 --paddles 2 191 200
