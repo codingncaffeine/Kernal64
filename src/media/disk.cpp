@@ -178,8 +178,58 @@ std::vector<uint8_t> writeG64(const GcrDisk& disk) {
     return out;
 }
 
+// G9: one revolution out of a raw read. The read is byte-framed by the drive (a SYNC realigns
+// the framing), so what follows a SYNC comes back byte for byte one revolution later. The
+// revolution is the distance, near the zone's nominal length, at which the 16 bytes after the
+// first SYNC that is followed by a sector header ($52 = GCR of $08's first five bits) recur;
+// failing that, after any SYNC; failing that, the nominal length from the start.
+static std::vector<uint8_t> oneRevolution(const uint8_t* raw, size_t len, int zone) {
+    const size_t nominal = static_cast<size_t>(kTrackBytes[zone & 3]);
+    const size_t lo = nominal * 95 / 100, hi = std::min(len - 16, nominal * 105 / 100);
+    auto syncEnd = [&](size_t from, bool header) -> size_t {
+        for (size_t i = from; i + 1 < len; ++i)
+            if (raw[i] == 0xFF && raw[i + 1] != 0xFF && i > 0 && raw[i - 1] == 0xFF && (!header || raw[i + 1] == 0x52)) return i + 1;
+        return len;
+    };
+    for (bool header : {true, false}) {
+        for (size_t s = syncEnd(0, header); s < len && s + lo + 16 < len; s = syncEnd(s + 1, header)) {
+            size_t best = 0, bestDist = SIZE_MAX;
+            for (size_t p = lo; p <= hi && s + p + 16 <= len; ++p) {
+                if (std::memcmp(raw + s, raw + s + p, 16) != 0) continue;
+                const size_t dist = p > nominal ? p - nominal : nominal - p;
+                if (dist < bestDist) { best = p; bestDist = dist; }
+            }
+            if (best) {
+                // Start the revolution at the SYNC before s, so the track begins with a whole SYNC.
+                size_t start = s;
+                while (start > 0 && raw[start - 1] == 0xFF) --start;
+                if (start + best > len) start = s;
+                return std::vector<uint8_t>(raw + start, raw + start + best);
+            }
+        }
+    }
+    return std::vector<uint8_t>(raw, raw + std::min(len, nominal));
+}
+
+bool parseNib(const uint8_t* data, size_t size, GcrDisk& out, std::string& error) {
+    if (size < 0x100 || std::memcmp(data, "MNIB-1541-RAW", 13) != 0) { error = "not a NIB image"; return false; }
+    out = blankDisk();
+    size_t at = 0x100;
+    for (size_t e = 0x10; e + 1 < 0x100 && data[e]; e += 2, at += 8192) {
+        const int halfTrack = data[e];
+        const int zone = data[e + 1] & 3;
+        if (at + 8192 > size) { error = "NIB track data outside the file"; return false; }
+        if (halfTrack < 2 || halfTrack >= 2 + GcrDisk::kHalfTracks) continue;
+        const size_t i = static_cast<size_t>(GcrDisk::index(halfTrack));
+        out.tracks[i] = oneRevolution(data + at, 8192, zone);
+        out.zone[i] = static_cast<uint8_t>(zone);
+    }
+    return true;
+}
+
 bool parseDisk(const uint8_t* data, size_t size, GcrDisk& out, std::string& error) {
     if (size >= 8 && std::memcmp(data, "GCR-1541", 8) == 0) return parseG64(data, size, out, error);
+    if (size >= 13 && std::memcmp(data, "MNIB-1541-RAW", 13) == 0) return parseNib(data, size, out, error);
     return parseD64(data, size, out, error);
 }
 

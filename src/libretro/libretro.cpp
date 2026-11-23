@@ -282,7 +282,7 @@ bool hasExtension(const char* path, const char* ext) {
 
 bool isDiskImage(const std::vector<uint8_t>& b) {
     const size_t n = b.size();
-    return (n >= 8 && !std::memcmp(b.data(), "GCR-1541", 8)) || n == 174848 || n == 175531 || n == 196608 ||
+    return (n >= 8 && !std::memcmp(b.data(), "GCR-1541", 8)) || (n >= 13 && !std::memcmp(b.data(), "MNIB-1541-RAW", 13)) || n == 174848 || n == 175531 || n == 196608 ||
            n == 197376 || n == 205312 || n == 206114;
 }
 
@@ -473,7 +473,7 @@ RETRO_API void retro_get_system_info(retro_system_info* info) {
     std::memset(info, 0, sizeof *info);
     info->library_name = "Kernal64";
     info->library_version = KERNAL64_VERSION;
-    info->valid_extensions = "crt|prg|p00|t64|d64|g64|m3u";
+    info->valid_extensions = "crt|prg|p00|t64|d64|g64|nib|m3u";
     info->need_fullpath = false;
     info->block_extract = false;
 }

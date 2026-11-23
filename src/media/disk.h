@@ -35,7 +35,10 @@ int sectorsOnTrack(int track);
 bool parseD64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
 // G64 ("GCR-1541" header, half-track table, speed table).
 bool parseG64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
-// By content: G64 by its signature, D64 by its size.
+// NIB ("MNIB-1541-RAW", G8): per half-track a raw read of more than one revolution; each
+// track's revolution is found where its sector headers repeat (G9).
+bool parseNib(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
+// By content: G64 and NIB by their signatures, D64 by its size.
 bool parseDisk(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
 
 // G64 of the disk as it is (G6's layout; each track slot as long as the longest track, at

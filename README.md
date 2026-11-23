@@ -47,7 +47,8 @@ Files are recognized by their contents, not their names.
   nothing.
 - Program files (`.prg`, `.p00`) and the first program of a `.t64` container: put into
   memory once the machine has booted, and started with `RUN`.
-- Disk images (`.d64` with or without error bytes, `.g64`) in drive 8, a 1541 emulated
+- Disk images (`.d64` with or without error bytes and with 35, 40 or 42 tracks, `.g64`,
+  and `.nib` raw reads mounted directly, without converting them first) in drive 8, a 1541 emulated
   down to its read circuit and running its own DOS ROM: started with `LOAD"*",8,1` and
   `RUN`, as on the real machine. What the drive writes (SAVE, formatting, a game's saves)
   goes into a copy in the frontend's save folder (`<name>.g64`), which is loaded in place of
