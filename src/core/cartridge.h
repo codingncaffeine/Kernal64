@@ -33,7 +33,7 @@ public:
     void reset();   // the port's RESET line: the switching logic as at power on
 
     // The lines' levels: true = high (not pulled). No cartridge: both high.
-    bool game() const { return s_.game != 0; }
+    bool game() const { return s_.game != 0 && !s_.forceGame; }
     bool exrom() const { return s_.exrom != 0; }
     // The same two lines in the VIC-II's half of the cycle: the freezer types pull them
     // for the CPU's half only, except right after a freeze.
@@ -68,7 +68,7 @@ public:
     }
 
     // What a cartridge with RAM of its own decodes from the address bus itself.
-    bool seesBus() const { return freezer(); }
+    bool seesBus() const { return freezer() || type_ == 53; }
     // A write to $8000-$BFFF the PLA did not select the cartridge for. `romhForReads`: a
     // read of the address would get ROMH. True when the computer's RAM must not take it.
     bool writeMem(uint16_t addr, uint8_t value, bool romhForReads);
@@ -83,20 +83,21 @@ public:
     // pulls NMI and IRQ, waits for three write cycles in a row (the CPU saving its return
     // address and flags), then puts its ROM where the interrupt vectors are read from.
     void setFreezeButton(bool down);
-    bool nmi() const { return s_.pending != 0; }
-    bool irq() const { return s_.pending != 0; }
-    bool watchesCycles() const { return s_.pending != 0; }
+    // (Type 3 pulls NMI alone: while its button is held, or through its register.)
+    bool nmi() const { return s_.pending != 0 || (type_ == 3 && s_.button); }
+    bool irq() const { return s_.pending != 0 && type_ != 3; }
+    bool watchesCycles() const { return s_.pending != 0 && type_ != 3; }
     void cpuCycle(bool write) {
         if (!write) s_.writes = 0;
         else if (++s_.writes == 3) enterFreeze();
     }
 
     // True while something runs on the clock; then clock() once per cycle.
-    bool clocked() const { return type_ == 10 || s_.flash[0].op || s_.flash[1].op; }
+    bool clocked() const { return type_ == 10 || s_.flash[0].op || s_.flash[1].op || (type_ == 3 && s_.button && !s_.forceGame); }
     void clock();
 
     // Chips that can be written are part of a save state beyond State: their contents.
-    size_t contentSize() const { return type_ == 32 ? romL_.size() + romH_.size() : freezer() ? ram_.size() : 0; }
+    size_t contentSize() const { return type_ == 32 ? romL_.size() + romH_.size() : ram_.size(); }
     void saveContent(uint8_t* out) const;
     void loadContent(const uint8_t* in);
 
@@ -140,6 +141,9 @@ public:
         uint8_t noFreeze = 0;      // the button does nothing
         uint8_t reuMap = 0;        // the window is in I/O 1 ($DE02-$DEFF), I/O 2 stays free
         uint8_t clockPort = 0;     // $DE02-$DE0F belong to the accessory connector
+        // Type 3: GAME pulled by the button's counter. Type 53: the register's chip and half.
+        uint8_t forceGame = 0;
+        uint8_t select = 0;
     };
 #pragma pack(pop)
     const State& state() const { return s_; }
@@ -157,6 +161,7 @@ private:
     // Type 36: where in its RAM an address is, by the bank bits or always in the first 8K.
     size_t ramAt(uint16_t offset, bool banked) const { return (banked ? size_t{s_.bank} & 3 : 0) << 13 | (offset & 0x1FFF); }
     bool ioWindow(uint16_t addr, bool write, uint8_t& value);
+    uint8_t selectedRam(uint16_t addr, uint8_t open) const;
     bool flashBusy(int chip) const { const Flash& f = s_.flash[chip]; return f.op || f.autoselect || f.suspended; }
     uint8_t flashValue(int chip, uint16_t addr, uint8_t& toggle) const;
     void flashWrite(int chip, uint16_t addr, uint8_t value);
@@ -168,7 +173,7 @@ private:
     std::vector<uint8_t> romL_ = std::vector<uint8_t>(0x2000, 0xFF);   // banks of 8K
     std::vector<uint8_t> romH_ = std::vector<uint8_t>(0x2000, 0xFF);
     const std::vector<uint8_t>* high_ = &romH_;   // what ROMH shows: its own chips, or ROML's
-    std::vector<uint8_t> ram_;   // the freezer types' RAM: 8K, type 36 32K
+    std::vector<uint8_t> ram_;   // a cartridge's RAM: 8K (types 1, 9), 32K (types 36, 53)
     bool laterBoard_ = false;        // type 36, subtype 1: the board with the "$22" RAM mode
     State s_;
 };

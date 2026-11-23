@@ -18,13 +18,14 @@
 # TYPE 1, 9, 36 (a freeze button; tests/carts/freezer.s): the button is pressed when the
 # program reaches its labels press1.. and held for 2000 cycles. BANKS 4 = the freeze
 # checks, 0 = type 36 with the function switched off. The reference emulator is not asked:
-# its button cannot be pressed at a chosen moment.
+# its button cannot be pressed at a chosen moment. (Type 3's line in banks.s ends with its
+# button too: there the reference is asked, and stops at that step.)
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 K64RUN="$(realpath "${1:-$ROOT/bin/k64run}")"
 OUT="$ROOT/scratch/carts"
 mkdir -p "$OUT"
-asm() { python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/carts/banks.s" -o "$1" -D "TYPE=$2" -D "BANK=$3" -D "NBANKS=$4" -D "PART=$5"; }
+asm() { python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/carts/banks.s" -o "$1" -D "TYPE=$2" -D "BANK=$3" -D "NBANKS=$4" -D "PART=$5" --labels "$1.labels"; }
 . "$ROOT/tools/sidebyside.sh"
 one_line() {
     local type="$1" banks="$2" want="$3" htype="$4" exrom="$5" game="$6" refwant="$7"
@@ -66,6 +67,13 @@ one_line() {
             4|18) [ "$b" = 0 ] || break ;;   # one chip at $8000
         esac
         asm "$OUT/$tag-$b.prg" "$type" "$b" "$banks" 0 || ok=0
+        case "$type" in
+            3|21|53|70)   # banks of 16K: one chip of both halves
+                asm "$OUT/$tag-h$b.prg" "$type" "$b" "$banks" 1 || ok=0
+                { tail -c +3 "$OUT/$tag-$b.prg"; tail -c +3 "$OUT/$tag-h$b.prg"; } >"$OUT/$tag-$b.bin"
+                chips+=("$OUT/$tag-$b.bin@$b:8000")
+                continue ;;
+        esac
         n=$b; load=8000
         [ "$type" = 7 ] && n=$(( ((b & 7) << 3) | (b >> 3) ))   # the file names the register value
         [ "$type" = 5 ] && [ "$banks" = 32 ] && [ "$b" -ge 16 ] && load=a000
@@ -75,6 +83,9 @@ one_line() {
         4) asm "$OUT/$tag-h0.prg" "$type" 0 1 1 || ok=0; chips+=("$OUT/$tag-h0.prg@0:a000") ;;
         18) for b in 0 1; do asm "$OUT/$tag-h$b.prg" "$type" "$b" 2 1 || ok=0; chips+=("$OUT/$tag-h$b.prg@$b:a000"); done ;;
     esac
+    # A program with a label press1 waits there for its cartridge's button.
+    at="$(awk '$1 == "press1" { print $2 }' "$OUT/$tag-0.prg.labels" 2>/dev/null)"
+    [ -n "$at" ] && extra+=(--freeze-pc "$at" --freeze-hold 2000)
     if [ "$ok" = 0 ]; then echo "FAIL type $type, $banks bank(s): does not assemble"; return; fi
     python3 -I "$ROOT/tools/mkcrt.py" -o "$OUT/$tag.crt" --type "${htype:-$type}" --exrom "${exrom:-0}" --game "${game:-1}" "${chips[@]}"
     "$K64RUN" "$ROOT/gitignore" --cart "$OUT/$tag.crt" --debugcart --cycles "$cycles" "${extra[@]}" >"$OUT/$tag.log" 2>&1

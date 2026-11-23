@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 14;
+constexpr uint32_t kStateVersion = 15;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {

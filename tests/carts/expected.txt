@@ -16,6 +16,15 @@
 # stops at check 6 (it programs a byte in no time; the chip is busy for some microseconds).
 32  0   0
 32  1   0  32 1 0  6
+# Banks of 16K: type 21 (and its 8K and off settings), type 53 (its register's place, its
+# RAM in two halves, off), type 70 (Ultimax; the register is the address, and its lock).
+21  4   0
+53  4   0
+70  64  0
+# Type 3: its banks, the I/O areas' view of the ROM, its line bits, off, the hidden
+# register, and as step 6 the button: the reference emulator's cannot be pressed from
+# outside, so it stops there.
+3   4   0  3 0 0  6
 # The types with a freeze button (tests/carts/freezer.s): the freeze through the NMI
 # vector, through the IRQ vector when the NMI line is held, not at all with both blocked,
 # and late once the CPU takes an interrupt again. Second line of type 36: its register bit
@@ -31,6 +40,10 @@
 # second bank is not there. (The other way round passes: a write with an index makes a
 # read of the same address first, and that selects the bank.)
 17  16  1  15
+# The register only in the upper half of the I/O area, in hardware that has it all over
+# it, and the other way round: the second bank is not there.
+53  4   1  21
+21  4   1  53
 # Plain ROM: it never leaves (step 3); the second chip never comes in (step 2); the chip
 # at $A000 never changes (step 2).
 10  1   3  0 0 1

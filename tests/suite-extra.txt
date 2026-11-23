@@ -5,5 +5,11 @@
 # VIC-II reading the cartridge's ROM as its upper 4K.
 ../C64/carts/ultimax/,,screenshot,10000000,mountcrt:ultimax.crt,vicii-pal
 ../C64/carts/ultimax/,,screenshot,10000000,mountcrt:ultimax-vic.crt,vicii-pal
+# The same two pictures for the Ultimax types with 2K of RAM of their own (61) and with
+# 64 banks (70).
+../C64/carts/ultimax/,,screenshot,10000000,mountcrt:ultimax-maxbasic.crt,vicii-pal
+../C64/carts/ultimax/,,screenshot,10000000,mountcrt:ultimax-vic-maxbasic.crt,vicii-pal
+../C64/carts/ultimax/,,screenshot,10000000,mountcrt:ultimax-multimax.crt,vicii-pal
+../C64/carts/ultimax/,,screenshot,10000000,mountcrt:ultimax-vic-multimax.crt,vicii-pal
 # 8K banks with the bank register in the first I/O area: the area is not readable.
 ../C64/carts/ocean/,,screenshot,10000000,mountcrt:ocean.crt

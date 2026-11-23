@@ -35,7 +35,9 @@ unsigned scrambledBank(unsigned v) { return ((v >> 3) & 7) | ((v & 1) << 3); }
 
 bool Cartridge::supports(unsigned type) {
     switch (type) {
-    case 0: case 1: case 4: case 5: case 7: case 8: case 9: case 10: case 15: case 17: case 18: case 19: case 32: case 36: return true;
+    case 0: case 1: case 3: case 4: case 5: case 7: case 8: case 9: case 10: case 15: case 17: case 18: case 19: case 21:
+    case 32: case 36: case 53: case 61: case 70:
+        return true;
     default: return false;
     }
 }
@@ -61,7 +63,8 @@ bool Cartridge::attach(const CartImage& image, std::string& error) {
     const unsigned type = image.type;
     // The banks the chips name. Type 7's files carry the register value as bank number.
     auto bankOf = [type](const CartImage::Chip& c) { return type == 7 ? scrambledBank(c.bank) : unsigned{c.bank}; };
-    unsigned banks = type == 32 ? 64 : 1;   // T32: two chips of 512K whatever the file fills
+    // T32: two chips of 512K whatever the file fills. T21: a second socket, empty.
+    unsigned banks = type == 32 ? 64 : type == 21 ? 8 : 1;
     for (const auto& c : image.chips) {
         if (c.data.empty()) continue;
         const unsigned b = bankOf(c);
@@ -123,7 +126,9 @@ bool Cartridge::attach(const CartImage& image, std::string& error) {
         exromAtReset_ = 0;
         gameAtReset_ = 1;
         break;
-    case 4: case 8: case 18: exromAtReset_ = 0; gameAtReset_ = 0; break;   // 16K
+    case 53: ram_.assign(0x8000, 0); exromAtReset_ = 0; gameAtReset_ = 0; break;
+    case 61: case 70: exromAtReset_ = 1; gameAtReset_ = 0; break;   // Ultimax: its own reset vector
+    case 3: case 4: case 8: case 18: case 21: exromAtReset_ = 0; gameAtReset_ = 0; break;   // 16K
     case 32: exromAtReset_ = 1; gameAtReset_ = 0; break;   // Ultimax: it starts from its own reset vector
     default: exromAtReset_ = 0; gameAtReset_ = 1; break;   // 7, 10, 15, 17, 19: 8K
     }
@@ -142,7 +147,7 @@ void Cartridge::reset() {
 }
 
 bool Cartridge::setState(const State& s) {
-    if (s.type != type_ || s.bank >= banks_ || s.bankH >= banks_ || s.writes > 2) return false;
+    if (s.type != type_ || s.bank >= banks_ || s.bankH >= banks_ || s.writes > 7 || s.select > 7) return false;
     for (const Flash& f : s.flash)
         if (f.seq > EraseUnlock2 || f.op > ChipErasing || (type_ != 32 && (f.op || f.autoselect || f.suspended))) return false;
     s_ = s;
@@ -158,11 +163,20 @@ uint8_t Cartridge::readRomL(uint16_t addr, uint8_t open, uint8_t ram) {
     if (type_ == 18) s_.bankH = (addr & 0x1000) ? 1 : 0;   // T18: which half was read picks ROMH's bank
     if (type_ == 10) s_.capacitor = 0;                      // T10
     if (flashBusy(0)) return flashValue(0, addr, s_.flash[0].toggle);   // a read moves the toggle bits
+    if (type_ == 53 && s_.select >= 4) return selectedRam(addr, open);
     return peekRomL(addr, open, ram);
 }
 
-uint8_t Cartridge::readRomH(uint16_t addr, uint8_t) {
+// T53 with its RAM or nothing chosen: the half of the 32K the register names, in both
+// windows; or the bus's last byte.
+uint8_t Cartridge::selectedRam(uint16_t addr, uint8_t open) const {
+    if (s_.select >= 6) return open;
+    return ram_[(size_t{s_.select} & 1) << 14 | (addr & 0x3FFF)];
+}
+
+uint8_t Cartridge::readRomH(uint16_t addr, uint8_t open) {
     if (flashBusy(1)) return flashValue(1, addr, s_.flash[1].toggle);
+    if (type_ == 53 && s_.select >= 4) return selectedRam(addr, open);
     return peekRomH(addr);
 }
 
@@ -242,6 +256,14 @@ void Cartridge::enterFreeze() {
 }
 
 void Cartridge::setFreezeButton(bool down) {
+    if (type_ == 3) {
+        // T3: NMI for as long as the button is held; GAME seven cycles after it went
+        // down (clock()), until it is let go.
+        if (!down) s_.forceGame = 0;
+        if (down && !s_.button) s_.writes = 0;
+        s_.button = down ? 1 : 0;
+        return;
+    }
     if (!freezer()) return;
     // Letting go of it starts the freeze, unless one is in progress or type 36's second
     // register has switched the function off (the button itself can still be read).
@@ -258,6 +280,11 @@ void Cartridge::writeRomL(uint16_t addr, uint8_t value) {
 }
 
 bool Cartridge::writeMem(uint16_t addr, uint8_t value, bool romhForReads) {
+    if (type_ == 53) {
+        // With the RAM chosen it takes every write to its 16K, and the computer's RAM too.
+        if ((s_.select & 6) == 4) ram_[(size_t{s_.select} & 1) << 14 | (addr & 0x3FFF)] = value;
+        return false;
+    }
     if (addr < 0xA000) {
         // The RAM of T1, T9 and the later T36 board takes writes whatever the PLA selects;
         // the computer's RAM takes them too.
@@ -446,14 +473,14 @@ void Cartridge::clockFlash(int chip) {
 }
 
 void Cartridge::saveContent(uint8_t* out) const {
-    for (size_t i = 0; freezer() && i < ram_.size(); ++i) out[i] = ram_[i];
+    for (size_t i = 0; i < ram_.size(); ++i) out[i] = ram_[i];
     if (type_ != 32) return;
     for (size_t i = 0; i < romL_.size(); ++i) out[i] = romL_[i];
     for (size_t i = 0; i < romH_.size(); ++i) out[romL_.size() + i] = romH_[i];
 }
 
 void Cartridge::loadContent(const uint8_t* in) {
-    for (size_t i = 0; freezer() && i < ram_.size(); ++i) ram_[i] = in[i];
+    for (size_t i = 0; i < ram_.size(); ++i) ram_[i] = in[i];
     if (type_ != 32) return;
     for (size_t i = 0; i < romL_.size(); ++i) romL_[i] = in[i];
     for (size_t i = 0; i < romH_.size(); ++i) romH_[i] = in[romL_.size() + i];
@@ -484,6 +511,9 @@ bool Cartridge::readIo(uint16_t addr, uint8_t& value) {
         if (io1 && s_.clockPort && (addr & 0xFF) < 0x10) return false;   // the accessory connector: nothing on it
         if (io1 != (s_.reuMap != 0)) return false;
         return ioWindow(addr, false, value);
+    case 3:    // T3: the last two pages of the bank's first half
+        value = romL_[(size_t{s_.bank} << 13) | 0x1E00 | (addr & 0x01FF)];
+        return true;
     case 4:    // T4: a read in I/O 1 takes the second chip out
         if (io1) s_.game = 1;
         return false;
@@ -564,6 +594,36 @@ void Cartridge::writeIo(uint16_t addr, uint8_t value) {
             ioWindow(addr, true, value);
         }
         break;
+    case 3:    // T3: the register at $DFFF
+        if (addr == 0xDFFF && !s_.locked) {
+            setBank(value & 3);
+            s_.exrom = (value & 0x10) ? 1 : 0;
+            s_.game = (value & 0x20) ? 1 : 0;
+            s_.pending = (value & 0x40) ? 0 : 1;   // bit 6 clear: the NMI line pulled
+            s_.locked = (value & 0x80) ? 1 : 0;
+        }
+        break;
+    case 21:   // T21: bank, and the configuration in the top three bits
+        if (io1) {
+            setBank(value & 7);
+            const unsigned top = value & 0xE0;
+            s_.exrom = top == 0xE0 ? 1 : 0;
+            s_.game = (top == 0xE0 || top == 0x40) ? 1 : 0;
+        }
+        break;
+    case 53:   // T53: in the upper half of I/O 1: half, chip, off
+        if (io1 && (addr & 0x80)) {
+            s_.select = (value >> 1) & 7;
+            setBank(s_.select & 3);
+            s_.exrom = s_.game = (value & 0x10) ? 1 : 0;
+        }
+        break;
+    case 70:   // T70: the address written in I/O 1: bank, and bit 7 no more changes
+        if (io1 && !s_.locked) {
+            setBank(addr & 0x3F);
+            s_.locked = (addr & 0x80) ? 1 : 0;
+        }
+        break;
     case 4:    // T4: a write in I/O 1 puts the second chip in
         if (io1) s_.game = 0;
         break;
@@ -612,6 +672,15 @@ void Cartridge::writeIo(uint16_t addr, uint8_t value) {
 // T10: 512 cycles without a read of ROML or I/O 1 and the capacitor has charged: the
 // cartridge lets go of the EXROM line. Such a read empties it and pulls the line again.
 void Cartridge::clock() {
+    if (type_ == 3) {
+        // The button's counter: after seven cycles GAME is pulled, and a hidden register
+        // takes writes again.
+        if (s_.button && !s_.forceGame && ++s_.writes == 7) {
+            s_.forceGame = 1;
+            s_.locked = 0;
+        }
+        return;
+    }
     if (type_ == 32) {
         clockFlash(0);
         clockFlash(1);

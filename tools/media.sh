@@ -83,6 +83,8 @@ FRZ="$ROOT/scratch/carts/t1-b4.crt"
 sbs_start core 0 "freeze button" --content "$FRZ" --frames 60 --freeze-frames 3,9,15 --expect-screen "CART PASS"
 sbs_start core 1 "no freeze without the button" --content "$FRZ" --frames 60 --expect-screen "CART PASS"
 sbs_start core 0 "freezer cartridge, state between two freezes" --content "$FRZ" --frames 24 --freeze-frames 3,9,15 --check
+# A cartridge with 32K of RAM (type 53) that has written to it: the state holds the RAM.
+sbs_start core 0 "cartridge with RAM, state" --content "$ROOT/scratch/carts/t53-b4.crt" --frames 20 --check --expect-screen "CART PASS"
 # Without content the same checks must fail: the texts come from the content.
 sbs_start core 1 "no program, no text" --frames 300 --expect-screen "PRG PASS"
 for f in unknown-type.crt cut.crt header-only.crt empty.prg; do

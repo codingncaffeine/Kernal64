@@ -37,8 +37,8 @@ Files are recognized by their contents, not their names.
 ## Content
 
 - Cartridge files (`.crt`): plain 8K, 16K and Ultimax cartridges, the bank-switched
-  hardware types 4, 5, 7, 8, 10, 15, 17, 18, 19 and 32 of the file format, and the
-  freezer types 1, 9 and 36 (both boards of type 36). What a type 32 cartridge writes to
+  hardware types 4, 5, 7, 8, 10, 15, 17, 18, 19, 21, 32, 53, 61 and 70 of the file
+  format, and the freezer types 1, 3, 9 and 36 (both boards of type 36). What a type 32 cartridge writes to
   its flash chips is kept in save states, not yet from one session to the next. Other
   types are refused with a message.
 - A freezer cartridge's button is Page Down on the keyboard and a click of the right
@@ -65,13 +65,15 @@ emulator that takes `.crt` files, and should run on the real hardware of each ty
 have not done that).
 
 - `tests/carts/banks.s` checks a bank-switched cartridge type from inside the cartridge.
-  One source is assembled once per bank and per hardware type (4, 5, 7, 10, 15, 17, 18,
-  19). Every bank holds the same code and its own number at a fixed address, so the code
+  One source is assembled once per bank and per hardware type (3, 4, 5, 7, 10, 15, 17,
+  18, 19, 21, 53, 70). Every bank holds the same code and its own number at a fixed address, so the code
   goes on running when the bank under it changes, and it can ask each bank who it is.
   What would switch the ROM away from under itself runs from RAM. It walks every bank
   through the type's register, then that type's extras: the second window, the off
-  switch and the RAM that shows behind it, switches made by a read, and for type 10 the
-  512-cycle timer from both sides (still on after 300 cycles, off after 700).
+  switch and the RAM that shows behind it, switches made by a read, a cartridge's own
+  RAM in its halves, a register that locks or hides itself, and for type 10 the
+  512-cycle timer from both sides (still on after 300 cycles, off after 700). Type 3's
+  last step is its freeze button (NMI at once, the GAME line seven cycles later).
 - `tests/carts/flash.s` checks type 32's two flash chips. It runs from one chip and works
   on the other: identifier codes, which address bits count in a command, a command at
   the wrong address, programming a byte, a refused 0-to-1, sector erase, an erase called
@@ -98,7 +100,8 @@ Why the result can be trusted:
 - The same chips are also packed under another type's header, where the check has to
   fail at a named step (`tests/carts/expected.txt`).
 - VICE reports the same value as this core on every line (`K64_CARTS_REF=1`), except
-  where it departs from the flash chip's data sheet; that line records its value.
+  where it departs from the flash chip's data sheet and where a step needs the button
+  pressed at a chosen moment; those lines record its value.
 - For each rule of our implementation a deliberately planted fault turns a line red.
 - Type 36's freeze is also compared with real cartridges: `tools/freezer.sh` runs the
   freeze test program of the VICE test suite and compares what it finds, byte by byte,
