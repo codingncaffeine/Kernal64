@@ -208,6 +208,9 @@ if [ -x "$BUILD/cpudiff" ]; then
         # shellcheck disable=SC2086
         side "chip comparison (${lines:-no lines})" "$BUILD/cpudiff-$n.log" "$BUILD/cpudiff" --seeds 8 --cycles 20000 $lines
     done
+    # The SO pin (hw/cpu.md rule 19), pulsed every few cycles, alone and with IRQ.
+    side "chip comparison (SO, dense)" "$BUILD/cpudiff-so.log" "$BUILD/cpudiff" --seeds 8 --cycles 20000 --so --dense
+    side "chip comparison (SO and IRQ, dense)" "$BUILD/cpudiff-so-irq.log" "$BUILD/cpudiff" --seeds 8 --first 100 --cycles 20000 --so --irq --dense
     # Flag and stack instructions alone, with the lines changing every few cycles.
     side "chip comparison (flag and stack instructions, dense)" "$BUILD/cpudiff-dense.log" \
         "$BUILD/cpudiff" --seeds 40 --cycles 20000 --irq --rdy --volatile --dense --only 08,28,58,78,ea,48,68,a9,40,e8

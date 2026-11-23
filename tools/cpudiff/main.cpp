@@ -2,7 +2,7 @@
 // (perfect6502) side by side on the same random programs, with IRQ, NMI and RDY
 // changing at random cycles, and compares every bus cycle.
 //
-//   cpudiff [--seeds N] [--first S] [--cycles N] [--irq] [--nmi] [--rdy] [--all-opcodes]
+//   cpudiff [--seeds N] [--first S] [--cycles N] [--irq] [--nmi] [--rdy] [--so] [--all-opcodes]
 //           [--exclude HEX,HEX,...] [--only HEX,HEX,...] [--dense] [--probe OPCODE_HEX]
 //
 // --only builds the programs from the listed opcodes alone, and --dense changes the lines
@@ -13,7 +13,7 @@
 // (LDA #p, PHA, PLP, LDA #a, LDX #x, OP #i, then A, X and P are stored) and
 // prints the inputs of the first case where the two CPUs disagree.
 //
-// --scan HEX,HEX,... [--scan-len N] [--scan-line rdy|irq|nmi] prints the chip's
+// --scan HEX,HEX,... [--scan-len N] [--scan-line rdy|irq|nmi|so] prints the chip's
 // own bus trace for that instruction with the line active for N cycles from each
 // cycle in turn.
 //
@@ -52,6 +52,7 @@ extern unsigned char memory[65536];
 void p6502_set_irq(void*, int);
 void p6502_set_nmi(void*, int);
 void p6502_set_rdy(void*, int);
+void p6502_set_so(void*, int);
 }
 
 namespace {
@@ -65,7 +66,7 @@ struct OurBus {
     void write(uint16_t a, uint8_t v) { mem[a] = v; last = {a, v, true}; }
 };
 
-struct Lines { bool irq = false, nmi = false, rdy = true; };
+struct Lines { bool irq = false, nmi = false, rdy = true, so = false; };
 
 std::string show(const Cycle& c) {
     char b[32];
@@ -78,7 +79,7 @@ std::string show(const Cycle& c) {
 int main(int argc, char** argv) {
     int seeds = 4, first = 1;
     long cycles = 20000;
-    bool useIrq = false, useNmi = false, useRdy = false, allOps = false, volatileMem = false;
+    bool useIrq = false, useNmi = false, useRdy = false, useSo = false, allOps = false, volatileMem = false;
     std::vector<int> excluded, only;
     bool dense = false;
     int probe = -1;
@@ -93,6 +94,7 @@ int main(int argc, char** argv) {
         else if (a == "--irq") useIrq = true;
         else if (a == "--nmi") useNmi = true;
         else if (a == "--rdy") useRdy = true;
+        else if (a == "--so") useSo = true;
         else if (a == "--volatile") volatileMem = true;
         else if (a == "--all-opcodes") allOps = true;
         else if (a == "--scan" && i + 1 < argc) {
@@ -148,6 +150,7 @@ int main(int argc, char** argv) {
             memory[0xFFFC] = 0x00; memory[0xFFFD] = 0x02;
             memory[0xFFFE] = 0x00; memory[0xFFFF] = 0x03; memory[0x300] = 0x40;
             void* chip = initAndResetChip();
+            if (scanLine == "so") p6502_set_so(chip, false);
             int fetches = 0;
             for (int c = 0; c < 200 && fetches < 2; ++c) {
                 step(chip); step(chip);
@@ -157,6 +160,7 @@ int main(int argc, char** argv) {
             for (int c = 1; c <= 14; ++c) {
                 const bool active = c >= k + 1 && c < k + 1 + scanLen;
                 if (scanLine == "rdy") p6502_set_rdy(chip, !active);
+                else if (scanLine == "so") p6502_set_so(chip, active);
                 else if (scanLine == "nmi") p6502_set_nmi(chip, active);
                 else p6502_set_irq(chip, active);
                 step(chip); step(chip);
@@ -183,6 +187,7 @@ int main(int argc, char** argv) {
         std::memcpy(bus.mem, memory, sizeof bus.mem);
 
         void* chip = initAndResetChip();
+        p6502_set_so(chip, false);   // the netlist starts with SO held low: released, as ours is
         const uint16_t resetTarget = static_cast<uint16_t>(memory[0xFFFC] | (memory[0xFFFD] << 8));
         // Run the real chip until it fetches at the reset target; then align ours to it.
         int guard = 0;
@@ -203,9 +208,10 @@ int main(int argc, char** argv) {
 
         Lines ln;
         uint8_t probeIn[4] = {};
-        int irqHold = 0, nmiHold = 0, rdyHold = 0;
+        int irqHold = 0, nmiHold = 0, rdyHold = 0, soHold = 0;
         std::vector<std::pair<Cycle, Cycle>> recent;
         std::vector<Lines> recentLines;
+        std::vector<uint8_t> recentP;   // our P after each cycle
         struct Step { k64::CpuRegs r; uint8_t op; uint8_t chipA; };
         std::vector<Step> history;
         long n = 1;
@@ -216,14 +222,16 @@ int main(int argc, char** argv) {
             if (useIrq && --irqHold <= 0) { ln.irq = !ln.irq && pick(3) == 0; irqHold = 1 + static_cast<int>(pick(ln.irq ? 40 : dense ? 12 : 400)); }
             if (useNmi && --nmiHold <= 0) { ln.nmi = !ln.nmi && pick(4) == 0; nmiHold = 1 + static_cast<int>(pick(ln.nmi ? 20 : dense ? 60 : 900)); }
             if (useRdy && --rdyHold <= 0) { ln.rdy = !(ln.rdy && pick(3) == 0); rdyHold = 1 + static_cast<int>(pick(ln.rdy ? (dense ? 10 : 200) : 14)); }
+            if (useSo && --soHold <= 0) { ln.so = !ln.so && pick(2) == 0; soHold = 1 + static_cast<int>(pick(ln.so ? 3 : dense ? 8 : 40)); }
             p6502_set_irq(chip, ln.irq); p6502_set_nmi(chip, ln.nmi); p6502_set_rdy(chip, ln.rdy);
+            if (useSo) p6502_set_so(chip, ln.so);
             if (volatileMem && !ln.rdy && !recent.empty() && !recent.back().first.write) {
                 const uint16_t at = recent.back().first.addr;
                 const uint8_t v = allowed[pick(static_cast<unsigned>(allowed.size()))];
                 memory[at] = v;
                 bus.mem[at] = v;
             }
-            cpu.setIrq(ln.irq); cpu.setNmi(ln.nmi); cpu.setRdy(ln.rdy);
+            cpu.setIrq(ln.irq); cpu.setNmi(ln.nmi); cpu.setRdy(ln.rdy); cpu.setSo(ln.so);
 
             step(chip); step(chip);
             const Cycle real{readAddressBus(chip), readDataBus(chip), readRW(chip) == 0};
@@ -250,7 +258,8 @@ int main(int argc, char** argv) {
             }
             recent.emplace_back(real, ours);
             recentLines.push_back(ln);
-            if (recent.size() > 24) { recent.erase(recent.begin()); recentLines.erase(recentLines.begin()); }
+            recentP.push_back(cpu.regs().p);
+            if (recent.size() > 120) { recent.erase(recent.begin()); recentLines.erase(recentLines.begin()); recentP.erase(recentP.begin()); }
             if (real.addr != ours.addr || real.write != ours.write || real.data != ours.data) { ok = false; break; }
         }
         if (ok && excludedStop) {
@@ -260,12 +269,12 @@ int main(int argc, char** argv) {
         } else {
             ++failures;
             std::printf("seed %d: DIFFERS at cycle %ld (lines irq=%d nmi=%d rdy=%d)\n", seed, n, ln.irq, ln.nmi, ln.rdy);
-            std::printf("   chip         ours         lines\n");
+            std::printf("   chip         ours         lines        our P after\n");
             for (size_t k = 0; k < recent.size(); ++k) {
                 const auto& [r, o] = recent[k];
                 const Lines& l = recentLines[k];
-                std::printf("   %s    %s    %s%s%s%s\n", show(r).c_str(), show(o).c_str(), l.irq ? "IRQ " : "    ",
-                            l.nmi ? "NMI " : "    ", l.rdy ? "   " : "RDY",
+                std::printf("   %s    %s    %s%s%s  %02x%s\n", show(r).c_str(), show(o).c_str(), l.irq ? "IRQ " : "    ",
+                            l.nmi ? "NMI " : "    ", l.rdy ? (l.so ? "SO " : "   ") : "RDY", recentP[k],
                             (r.addr != o.addr || r.write != o.write || r.data != o.data) ? "   <--" : "");
             }
             std::printf("   chip regs pc=%04x a=%02x x=%02x y=%02x s=%02x p=%02x | ours pc=%04x a=%02x x=%02x y=%02x s=%02x p=%02x t=%d op=%02x\n",

@@ -158,11 +158,42 @@ public:
     void setIrq(bool asserted) { irq_ = asserted; }
     void setNmi(bool asserted) { nmiLine_ = asserted; }
     void setRdy(bool high) { rdy_ = high; }
+    // The SO pin ("set overflow", active low): its falling edge sets V (hw/cpu.md rule 19).
+    void setSo(bool asserted) { soLine_ = asserted; }
     // ANE's magic constant varies between chips. $EF is what C64 software is known to need;
     // the per-opcode suite was generated with $EE.
     void setAneMagic(uint8_t m) { aneMagic_ = m; }
 
     void tick() {
+        const bool soEdge = soLine_ && !soSeen_;
+        soSeen_ = soLine_;
+        // (BIT loads V from the data bus as its last cycle ends, not through that late write.)
+        const bool fetchAfterWriter = st_.t == 0 && writesV(st_.op) && st_.op != 0x24 && st_.op != 0x2C;
+        // RTI and PLP load P in the cycle that pulls it, and the pulled value wins over an
+        // edge in that cycle.
+        const bool pullsP = (st_.op == 0x40 && st_.t == 3) || (st_.op == 0x28 && st_.t >= 3);
+        tickInner();
+        // The chip sets V in the cycle of the edge. An instruction that computes V (none of
+        // them reads it) writes its result during the next opcode fetch, so an edge in any of
+        // its cycles or in that fetch is overwritten. Ours computes V earlier (by its last
+        // cycle), so such an edge is dropped here (hw/cpu.md rule 19).
+        if (soEdge && !fetchAfterWriter && !writesV(st_.op) && !pullsP) st_.r.p |= flag::V;
+    }
+
+    static constexpr bool writesV(uint8_t op) {
+        switch (op) {
+        case 0x61: case 0x65: case 0x69: case 0x6D: case 0x71: case 0x75: case 0x79: case 0x7D:   // ADC
+        case 0xE1: case 0xE5: case 0xE9: case 0xEB: case 0xED: case 0xF1: case 0xF5: case 0xF9: case 0xFD:   // SBC
+        case 0x24: case 0x2C: case 0xB8: case 0x6B:   // BIT, CLV, ARR
+        case 0x63: case 0x67: case 0x6F: case 0x73: case 0x77: case 0x7B: case 0x7F:   // RRA
+        case 0xE3: case 0xE7: case 0xEF: case 0xF3: case 0xF7: case 0xFB: case 0xFF:   // ISC
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    void tickInner() {
         // NMI edge detector. During the two vector fetches of an interrupt sequence the latch is
         // held clear and the detector does not sample, so a pulse that starts and ends within them
         // is lost, while a line still low afterwards counts as a new edge.
@@ -222,17 +253,18 @@ public:
         uint8_t jamStep;
         uint8_t lastData;
         Before pre;
+        bool soLine, soSeen;
     };
 #pragma pack(pop)
     Snapshot snapshot() const {
         return {st_, irq_, nmiLine_, nmiSeen_, nmiPending_, rdy_, poll_, pollPrev_, lastWasRead_, afterSequence_,
-                afterQuickBranch_, lastAddr_, jamStep_, lastData_, pre_};
+                afterQuickBranch_, lastAddr_, jamStep_, lastData_, pre_, soLine_, soSeen_};
     }
     void restore(const Snapshot& s) {
         st_ = s.st; irq_ = s.irq; nmiLine_ = s.nmiLine; nmiSeen_ = s.nmiSeen; nmiPending_ = s.nmiPending;
         rdy_ = s.rdy; poll_ = s.poll; pollPrev_ = s.pollPrev; lastWasRead_ = s.lastWasRead;
         afterSequence_ = s.afterSequence; afterQuickBranch_ = s.afterQuickBranch; lastAddr_ = s.lastAddr;
-        jamStep_ = s.jamStep; lastData_ = s.lastData; pre_ = s.pre;
+        jamStep_ = s.jamStep; lastData_ = s.lastData; pre_ = s.pre; soLine_ = s.soLine; soSeen_ = s.soSeen;
     }
 
     CpuRegs& regs() { return st_.r; }
@@ -802,6 +834,7 @@ private:
     uint8_t aneMagic_ = 0xEF;
     bool irq_ = false, nmiLine_ = false, nmiSeen_ = false, nmiPending_ = false, rdy_ = true;
     bool poll_ = false, pollPrev_ = false, lastWasRead_ = true;
+    bool soLine_ = false, soSeen_ = false;
     bool afterSequence_ = false;    // the last cycle ended an interrupt sequence
     bool afterQuickBranch_ = false; // the last cycle ended a taken branch within its page
     uint16_t lastAddr_ = 0;
