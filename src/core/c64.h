@@ -28,6 +28,9 @@ public:
 
     void reset();       // power on
     void setModel(VicModel model);
+    // Both CIAs as the original 6526 or the later 8521. Takes effect at once (no reset).
+    void setCiaModel(CiaModel m) { cia1_.setModel(m); cia2_.setModel(m); }
+    CiaModel ciaModel() const { return cia1_.model(); }
     const Timing& timing() const { return *timing_; }
 
     void runFrame();    // one video frame of cycles, ending where vertical blanking starts
@@ -104,10 +107,11 @@ private:
         uint8_t vicLastByte = 0;         // what the VIC-II read in the last first phase (open bus)
         uint8_t cpuData = 0;             // the CPU's data bus in the last second phase
         uint8_t aecLow = 0;              // the VIC-II holds the second phase of this cycle
+        uint8_t baLowSeen = 0;           // BA in the last cycle: what RDY tells the CPU now
         uint8_t keys[8] = {};             // pressed keys: bit = row, per column
         uint8_t joy[2] = {};              // control ports 1 and 2, active high
         uint8_t restore = 0;
-        uint8_t cia1IrqSeen = 0, cia2IrqSeen = 0;   // the interrupt lines as the CPU sees them
+        uint8_t cia1IrqSeen = 0, cia2IrqSeen = 0, vicIrqSeen = 0;   // the interrupt lines as the CPU sees them
         uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
         uint8_t sid[32] = {};
     };

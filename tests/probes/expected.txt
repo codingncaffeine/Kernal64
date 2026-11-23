@@ -1,0 +1,6 @@
+# SOURCE  DEFINES  MODEL  CIA  EXPECTED (the reference emulator's value)
+# Serial-port interrupt: timer B's low byte at the handler, two alignments, both chips.
+sdrirq.s  SHIFT=0,MASK=$88  pal  old  169
+sdrirq.s  SHIFT=1,MASK=$88  pal  old  170
+sdrirq.s  SHIFT=0,MASK=$88  pal  new  171
+sdrirq.s  SHIFT=1,MASK=$88  pal  new  170

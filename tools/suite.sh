@@ -9,11 +9,13 @@
 # judged by the screen: our whole raster after the test's cycle budget must equal the
 # reference's whole-raster screenshot at the same cycle (tools/oracle/framecmp.py);
 # reference screenshots are cached in gitignore/external/suite-ref-shots/.
-# Tests that need hardware we do not have yet (new CIA or VIC-II chips, cartridges, disk
+# Tests that need hardware we do not have yet (new VIC-II chips, cartridges, disk
 # images, expansions) are listed as skipped with the reason. Results:
 #   same-pass  both pass            same-fail  both fail (the reference fails too)
 #   WORSE      reference passes, we do not       better  we pass, the reference does not
-# Exit status 0 when no test is WORSE. Four tests run at a time, at low priority.
+#   known      WORSE, and listed with its reason in tests/suite-known.txt (hardware of a
+#              later phase); FIXED = listed there but no longer worse: remove the line
+# Exit status 0 when no test is WORSE or FIXED. Four tests run at a time, at low priority.
 # The reference's result for a test is cached in gitignore/external/suite-ref.cache (it only
 # changes with the pinned reference build); K64_SUITE_REFRESH=1 runs the reference again.
 set -uo pipefail
@@ -29,15 +31,16 @@ mkdir -p "$OUT"
 run_one() {
     local line="$1" root="$2" k64run="$3" out="$4"
     IFS=',' read -r dir prg kind cycles opts <<<"$line"
+    dir="${dir%/}/"   # some list entries omit the directory's trailing slash
     local name="${dir#../}$prg${opts:+ [$opts]}"
-    local model=pal vmodel=c64 skip="" o
+    local model=pal vmodel=c64 cia=old ciaref=0 ckey="" skip="" o
     IFS=',' read -ra optv <<<"$opts"
     for o in "${optv[@]}"; do
         case "$o" in
             vicii-pal|cia-old|vicii-old|"") ;;
             vicii-ntsc) model=ntsc; vmodel=ntsc ;;
             vicii-ntscold) model=ntsc-old; vmodel=oldntsc ;;
-            cia-new) skip="new CIA not emulated yet" ;;
+            cia-new) cia=new; ciaref=1; ckey="+cianew" ;;
             vicii-new) skip="new VIC-II not emulated yet" ;;
             comment:*|expect:*) ;;
             *) skip="needs $o" ;;
@@ -51,11 +54,11 @@ run_one() {
         local dx dy shots="$root/gitignore/external/suite-ref-shots" key2
         case "$model" in pal) dx=492; dy=0 ;; ntsc) dx=508; dy=20 ;; *) dx=500; dy=20 ;; esac
         mkdir -p "$shots"
-        key2="$(sha1sum "$file" | cut -c1-16)-$vmodel-$cycles"
-        nice -n 10 "$k64run" "$root/gitignore" --model "$model" --autostart "$file" --cycles "$cycles" \
+        key2="$(sha1sum "$file" | cut -c1-16)-$vmodel$ckey-$cycles"
+        nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --autostart "$file" --cycles "$cycles" \
             --raster "$out/$tag.raw" >"$out/$tag.k64.log" 2>&1
         if [ ! -s "$shots/$key2.png" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
-            K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" -jamaction 1 -warp -VICIIborders 2 \
+            K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" -ciamodel $ciaref -jamaction 1 -warp -VICIIborders 2 \
                 -limitcycles "$cycles" -autostartprgmode 1 -autostart "/k64/${file#"$root"/}" \
                 -exitscreenshot "/k64/${shots#"$root"/}/$key2.png" >"$out/$tag.ref.log" 2>&1
         fi
@@ -68,15 +71,15 @@ run_one() {
         fi
         return
     fi
-    nice -n 10 "$k64run" "$root/gitignore" --model "$model" --autostart "$file" --debugcart --cycles "$cycles" \
+    nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --autostart "$file" --debugcart --cycles "$cycles" \
         >"$out/$tag.k64.log" 2>&1
     local ours=$?
     local rel="${file#"$root"/}"
     local cache="$root/gitignore/external/suite-ref.cache" key ref
-    key="$(sha1sum "$file" | cut -c1-16) $vmodel $cycles"
+    key="$(sha1sum "$file" | cut -c1-16) $vmodel$ckey $cycles"
     ref="$(grep -F -- "$key " "$cache" 2>/dev/null | tail -1 | awk '{print $NF}')"
     if [ -z "$ref" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
-        K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" -debugcart -jamaction 1 -warp \
+        K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" -ciamodel $ciaref -debugcart -jamaction 1 -warp \
             -limitcycles "$cycles" -autostartprgmode 1 -autostart "/k64/$rel" >"$out/$tag.ref.log" 2>&1
         ref=$?
         flock "$cache.lock" sh -c "echo '$key $ref' >> '$cache'"
@@ -92,6 +95,32 @@ export -f run_one
 
 grep -v '^#' "$LIST" | grep -E -- "$PATTERN" | grep -v '^\s*$' |
     xargs -d '\n' -P 4 -I{} bash -c 'run_one "$1" "$2" "$3" "$4"' _ {} "$ROOT" "$K64RUN" "$OUT" |
-    sort -k2 | tee "$OUT/scoreboard.txt"
-echo "suite: $(grep -c '^same-pass' "$OUT/scoreboard.txt") same-pass, $(grep -c '^same-fail' "$OUT/scoreboard.txt") same-fail, $(grep -c '^WORSE' "$OUT/scoreboard.txt") WORSE, $(grep -c '^better' "$OUT/scoreboard.txt") better, $(grep -c '^skip' "$OUT/scoreboard.txt") skipped"
-! grep -q '^WORSE' "$OUT/scoreboard.txt"
+    sort -k2 >"$OUT/scoreboard.raw"
+# Known carry-overs: a line of tests/suite-known.txt is "NAME-PREFIX<TAB>REASON"; it covers
+# every test whose name (directory/program, as printed) starts with the prefix.
+python3 -I - "$OUT/scoreboard.raw" "$ROOT/tests/suite-known.txt" >"$OUT/scoreboard.txt" <<'PY'
+import sys
+known = []
+try:
+    for line in open(sys.argv[2], encoding="utf-8"):
+        line = line.rstrip("\n")
+        if line and not line.startswith("#"):
+            prefix, _, reason = line.partition("\t")
+            known.append((prefix, reason.strip()))
+except FileNotFoundError:
+    pass
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.rstrip("\n")
+    status, _, rest = line.partition(" ")
+    name = rest.strip()
+    hit = next((k for k in known if name.startswith(k[0])), None)
+    if hit and status == "WORSE":
+        line = "known     " + name + " {" + hit[1] + "}"
+    elif hit and status in ("same-pass", "better"):
+        line = "FIXED     " + name + " {listed in tests/suite-known.txt: remove it}"
+    print(line)
+PY
+cat "$OUT/scoreboard.txt"
+count() { grep -c "^$1" "$OUT/scoreboard.txt"; }
+echo "suite: $(count same-pass) same-pass, $(count same-fail) same-fail, $(count WORSE) WORSE, $(count known) known, $(count FIXED) FIXED, $(count better) better, $(count skip) skipped"
+! grep -qE '^(WORSE|FIXED)' "$OUT/scoreboard.txt"

@@ -11,15 +11,17 @@ namespace {
 //   pulse end: PB6 (12-13) / PB7 (14-15) pulse output drops at stage 1
 //   interrupt: 16-17; the interrupt line goes low at stage 1
 //   one-shot:  18 (A) / 19 (B): one-shot mode was set in the previous clock
+//   acknowledge (8521): 21-22; the flags an ICR read returned are cleared at stage 1
 constexpr uint32_t count(int t, int stage) { return 1u << (4 * t + stage); }
 constexpr uint32_t load(int t, int stage) { return 1u << (8 + 2 * t + stage); }
 constexpr uint32_t pulseEnd(int t, int stage) { return 1u << (12 + 2 * t + stage); }
 constexpr uint32_t kInt0 = 1u << 16, kInt1 = 1u << 17;
 constexpr uint32_t oneShot(int t) { return 1u << (18 + t); }
 // Stages that only ever come from `feed` (or from a register write), never from the shift.
+constexpr uint32_t kAck0 = 1u << 21, kAck1 = 1u << 22;
 constexpr uint32_t kStage0 = count(0, 0) | count(1, 0) | load(0, 0) | load(1, 0) | pulseEnd(0, 0) |
-                             pulseEnd(1, 0) | kInt0 | oneShot(0) | oneShot(1);
-constexpr uint32_t kShiftMask = ~(kStage0 | (1u << 20));
+                             pulseEnd(1, 0) | kInt0 | oneShot(0) | oneShot(1) | kAck0;
+constexpr uint32_t kShiftMask = ~(kStage0 | (1u << 20) | (1u << 23));
 
 // Serial port pipeline (hw/cia.md rule 7a): events a few clocks ahead, one bit per stage,
 // moving one stage per clock; stage 0 is when it happens.
@@ -27,12 +29,12 @@ constexpr uint32_t kShiftMask = ~(kStage0 | (1u << 20));
 //   CNT output history (0..3), shifter load from SDR (3..0).
 constexpr uint32_t kTog2 = 1u << 0, kTog1 = 1u << 1, kTog0 = 1u << 2;
 constexpr uint32_t kTogAll = 0xFu;
-constexpr uint32_t kNog1 = 1u << 5, kNog0 = 1u << 6;
+constexpr uint32_t kNog2 = 1u << 4, kNog1 = 1u << 5;
 constexpr uint32_t kNogAll = 0xF0u;
 constexpr uint32_t kIrq2 = 1u << 9, kIrq0 = 1u << 11;
 constexpr uint32_t kCnt0 = 1u << 12, kCnt1 = 1u << 13, kCnt2 = 1u << 14;
 constexpr uint32_t kCntAll = 0xF000u;
-constexpr uint32_t kSet1 = 1u << 18, kSet0 = 1u << 19;
+constexpr uint32_t kSet0 = 1u << 19;
 // Bits that would receive the previous group's last stage when shifting.
 constexpr uint32_t kSerialClear = (1u << 4) | (1u << 8) | kCnt0 | (1u << 16) | (1u << 20);
 } // namespace
@@ -55,17 +57,35 @@ uint8_t Cia6526::portBOut() const {
     return v;
 }
 
+// A flag set by the timers, in the first part of clock(). The 6526 pulls its interrupt
+// output low one clock later (rule 13); the 8521 in the same clock, unless ICR was read in
+// this cycle (rule 20).
 void Cia6526::setIcr(uint8_t bits) {
     s_.icr |= bits;
-    if (s_.imr & bits) s_.delay |= kInt0;
+    s_.ack &= static_cast<uint8_t>(~bits);   // a flag set again is not acknowledged
+    if (s_.imr & bits) s_.delay |= (new_ && s_.readAge != 0) ? kInt1 : kInt0;
+}
+
+// A flag set by the serial port, the alarm or the FLAG pin: late in the cycle, after the
+// timers' part of the clock. It is readable a cycle later than a timer flag of the same
+// clock, but the interrupt output is no later: it goes low at once on the 6526, and on the
+// 8521 it reaches the CPU a cycle sooner still, unless ICR was read in the cycle before
+// (rule 20).
+void Cia6526::setIcrLate(uint8_t bits) {
+    s_.icr |= bits;
+    s_.ack &= static_cast<uint8_t>(~bits);
+    if (!(s_.imr & bits)) return;
+    if (new_ && !s_.irqLow && s_.readAge != 2) s_.irqEarly = 1;
+    s_.irqLow = 1;
+    s_.ir = 1;
 }
 
 void Cia6526::underflow(int t) {
     const uint8_t bit = static_cast<uint8_t>(1 << t);
     setIcr(bit);
-    // Old 6526: a timer B underflow in the clock right after an ICR read is dropped from the
-    // next read (rule 13b).
-    if (t == 1) s_.tbBug = s_.readAge == 1 ? 1 : 0;
+    // Old 6526: a timer B underflow in the clock of an ICR read (just after the read) is
+    // dropped from the next read (rule 13b).
+    if (t == 1) s_.tbBug = (!new_ && s_.readAge == 0) ? 1 : 0;
     s_.pbToggle ^= static_cast<uint8_t>(0x40 << t);
     if ((s_.cr[t] & 0x06) == 0x02) {   // pulse mode on PB: high for one clock
         s_.pbTimerOut |= static_cast<uint8_t>(0x40 << t);
@@ -81,10 +101,10 @@ void Cia6526::underflow(int t) {
         // Timer B counting timer A underflows (CNT is always high on the C64, rule 15).
         const uint8_t src = s_.cr[1] & 0x61;
         if (src == 0x41 || src == 0x61) s_.delay |= count(1, 1);
-        // Serial output: each underflow toggles CNT about a clock and a half later; two
-        // underflows in a row too close together are not seen (rule 7a).
+        // Serial output: each underflow toggles CNT two clocks later; an underflow right
+        // after the one before is not seen (rule 7a).
         if ((s_.cr[0] & 0x40) && (s_.srBits || s_.sdrValid))
-            s_.serial |= (s_.serial & (kTog0 | kNog0)) ? kNog1 : kTog1;
+            s_.serial |= (s_.serial & (kTog1 | kNog1)) ? kNog2 : kTog2;
     }
     s_.delay |= load(t, 1);
 }
@@ -106,9 +126,15 @@ void Cia6526::clock() {
     }
     for (int t = 0; t < 2; ++t)
         if (s_.delay & pulseEnd(t, 1)) s_.pbTimerOut &= static_cast<uint8_t>(~(0x40 << t));
-    if (s_.delay & kInt1) s_.irqLow = 1;
+    if (s_.delay & kAck1) {   // 8521: the acknowledge of the ICR read a clock ago
+        s_.icr &= static_cast<uint8_t>(~s_.ack);
+        if (s_.ack & 0x80) s_.ir = 0;
+        s_.ack = 0;
+    }
+    s_.irqEarly = 0;
+    if (s_.delay & kInt1) s_.irqLow = s_.ir = 1;
     if (s_.irHold) --s_.irHold;
-    if (s_.readAge < 2) ++s_.readAge;
+    if (s_.readAge < 3) ++s_.readAge;
     s_.delay = ((s_.delay << 1) & kShiftMask) | s_.feed;
     serialClock();
 }
@@ -117,7 +143,7 @@ void Cia6526::clock() {
 // srBits counts CNT edges (16 per byte, 17 when a waiting byte was appended).
 void Cia6526::serialClock() {
     uint32_t feed = 0;
-    if (s_.serial & kSet0) {   // SDR written two clocks ago
+    if (s_.serial & kSet0) {   // SDR written in this clock
         if (s_.srBits == 0) {
             s_.srBits = 16;
             s_.shifter = static_cast<uint16_t>(s_.sdr << 1);
@@ -144,7 +170,7 @@ void Cia6526::serialClock() {
             s_.cntOut = 1;
         }
     }
-    if (s_.serial & kIrq0) setIcr(0x08);
+    if (s_.serial & kIrq0) setIcrLate(0x08);
     s_.serial = ((s_.serial | feed) << 1) & ~kSerialClear;
     if (s_.cntOut) s_.serial |= kCnt0;
 }
@@ -152,7 +178,7 @@ void Cia6526::serialClock() {
 // Changing the serial direction in CRA (rule 7a): a byte half sent may still finish.
 void Cia6526::serialDirection(uint8_t newCra) {
     if (!(newCra & 0x40)) {   // output -> input
-        constexpr uint32_t wanted = kCnt0 | kCnt1 | kCnt2;   // the 6526 (old chip)
+        const uint32_t wanted = new_ ? (kCnt1 | kCnt2) : (kCnt0 | kCnt1 | kCnt2);
         bool finish = (s_.serial & wanted) != wanted;
         if (!finish && s_.srBits != 2 && !(s_.serial & kTog2) && !(s_.serial & kTog1) && (s_.serial & kTog0))
             finish = true;
@@ -171,7 +197,7 @@ void Cia6526::serialDirection(uint8_t newCra) {
 }
 
 void Cia6526::setFlag(bool level) {
-    if (s_.flag && !level) setIcr(0x10);
+    if (s_.flag && !level) setIcrLate(0x10);
     s_.flag = level ? 1 : 0;
 }
 
@@ -234,7 +260,7 @@ void Cia6526::todIncrement() {
 
 void Cia6526::checkAlarm() {
     if (s_.tod[0] == s_.alarm[0] && s_.tod[1] == s_.alarm[1] && s_.tod[2] == s_.alarm[2] && s_.tod[3] == s_.alarm[3])
-        setIcr(0x04);
+        setIcrLate(0x04);
 }
 
 // ---- registers --------------------------------------------------------------------------
@@ -255,6 +281,11 @@ uint8_t Cia6526::peek(unsigned r) const {
     }
     case 0xC: return s_.sdr;
     case 0xD: {
+        if (new_) {
+            // An interrupt about to be raised already shows its IR bit (rule 20).
+            const bool ir = s_.ir || ((s_.delay & kInt1) && (s_.icr & 0x1F));
+            return static_cast<uint8_t>((s_.icr & 0x1F) | (ir ? 0x80 : 0));
+        }
         const uint8_t flags = s_.tbBug ? static_cast<uint8_t>(s_.icr & ~0x02) : s_.icr;
         return static_cast<uint8_t>((flags & 0x1F) | ((s_.irqLow || s_.irHold) ? 0x80 : 0));
     }
@@ -271,10 +302,20 @@ uint8_t Cia6526::read(unsigned r) {
         s_.todLatched = 1;
     } else if (r == 0x8) {              // ... until 10ths is read
         s_.todLatched = 0;
+    } else if (r == 0xD && new_) {
+        // 8521 (rule 20): the interrupt line is released at once, but the flags and the IR
+        // bit are cleared a clock later, so a read in the next cycle returns them again.
+        if (v & 0x9F) s_.ack |= static_cast<uint8_t>((v & 0x9F) | 0x80);
+        if (v & 0x80) s_.ir = 1;
+        s_.irqLow = 0;
+        s_.irqEarly = 0;
+        s_.readAge = 0;
+        s_.delay = (s_.delay & ~kInt1) | kAck0;
     } else if (r == 0xD) {
         // The flags and the interrupt line clear at once; the IR bit only one clock later,
-        // so a read in the next cycle still sees it (rule 13a).
-        if (v & 0x80) s_.irHold = 2;
+        // so a read in the next cycle still sees it (rule 13a). An interrupt about to be
+        // raised is cancelled, but its IR bit still shows to a read in the next cycle (rule 13c).
+        if ((v & 0x80) || (s_.delay & kInt1)) s_.irHold = 2;
         s_.icr = 0;
         s_.irqLow = 0;
         s_.tbBug = 0;
@@ -325,12 +366,22 @@ void Cia6526::write(unsigned r, uint8_t v) {
     }
     case 0xC:
         s_.sdr = v;
-        if (s_.cr[0] & 0x40) s_.serial |= kSet1;   // taken into the shifter two clocks later
+        if (s_.cr[0] & 0x40) s_.serial |= kSet0;   // taken into the shifter at this clock
         return;
     case 0xD:
         if (v & 0x80) s_.imr |= v & 0x1F;
         else s_.imr &= static_cast<uint8_t>(~(v & 0x1F));
-        if ((s_.imr & s_.icr & 0x1F) && !s_.irqLow) s_.delay |= kInt0;
+        if (s_.imr & s_.icr & 0x1F) {
+            // 6526: the interrupt follows a clock later. 8521: in this clock, and not at all
+            // in the cycle after an ICR read, whose flags are still being cleared (rule 20).
+            if (s_.irqLow) return;
+            if (!new_) s_.delay |= kInt0;
+            else if (s_.readAge != 1) s_.delay |= kInt1;
+        } else if (!new_ && s_.readAge == 2) {
+            // Old 6526: a write that leaves no enabled flag, two clocks after an ICR read,
+            // cancels the interrupt about to be raised in this clock (rule 13d).
+            s_.delay &= ~kInt1;
+        }
         return;
     default: {   // CRA / CRB
         const int t = r - 0xE;

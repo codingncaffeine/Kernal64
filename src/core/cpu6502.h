@@ -5,7 +5,8 @@
 //
 // Bus cycles follow "Documentation for the NMOS 65xx/85xx Instruction Set"
 // (64doc). Undocumented opcodes follow 64doc and the per-opcode bus traces; the
-// two unstable ones (ANE $8B, LXA $AB) use the magic constant $EE.
+// two unstable ones use a magic constant: LXA $AB $EE; ANE $8B $EF, or $EE when the CPU
+// was halted right after the opcode fetch (setAneMagic; hw/cpu.md rule 18).
 //
 // Interrupts: the IRQ line is a level, NMI is edge-detected. An instruction is
 // followed by the interrupt sequence if, at the start of its last cycle, an NMI
@@ -138,6 +139,7 @@ public:
         bool takeInterrupt = false; // decided at the end of the last instruction
         bool jammed = false;
         bool haltedBeforeWrite = false; // RDY held the CPU between an indexed probe and its write
+        bool haltedAfterFetch = false;  // RDY held the CPU in the cycle after the opcode fetch
     };
 #pragma pack(pop)
 
@@ -156,6 +158,9 @@ public:
     void setIrq(bool asserted) { irq_ = asserted; }
     void setNmi(bool asserted) { nmiLine_ = asserted; }
     void setRdy(bool high) { rdy_ = high; }
+    // ANE's magic constant varies between chips. $EF is what C64 software is known to need;
+    // the per-opcode suite was generated with $EE.
+    void setAneMagic(uint8_t m) { aneMagic_ = m; }
 
     void tick() {
         // NMI edge detector. During the two vector fetches of an interrupt sequence the latch is
@@ -176,8 +181,13 @@ public:
         }
         // Interrupts are sampled as the cycle starts; finish() uses the sample of the last cycle.
         if (!rdy_ && lastWasRead_) {
-            bus_.read(lastAddr_); // halted
+            // Halted: the last cycle's read is made again, and the CPU goes on from the byte
+            // the last repeat returns (hw/cpu.md rule 14a).
+            const uint8_t v = bus_.read(lastAddr_);
+            if (v != lastData_ && !pre_.st.reset) again(v);
+            lastData_ = v;
             if (st_.t == kAccess) st_.haltedBeforeWrite = true;
+            if (st_.t == 1) st_.haltedAfterFetch = true;
             // Halted at the start of an instruction, the chip keeps sampling interrupts: one that
             // becomes pending during the halt is taken when it ends; one already decided stays
             // decided even if its line goes away.
@@ -192,27 +202,34 @@ public:
         afterQuickBranch_ = false;
         pollPrev_ = poll_;
         poll_ = nmiPending_ || (irq_ && !(st_.r.p & flag::I));
+        pre_ = {st_, jamStep_};
         step();
     }
 
     // Everything the CPU holds, for save states (a plain struct of constant size).
 #pragma pack(push, 1)
+    struct Before {
+        State st;
+        uint8_t jamStep;
+    };
     struct Snapshot {
         State st;
         bool irq, nmiLine, nmiSeen, nmiPending, rdy, poll, pollPrev, lastWasRead, afterSequence, afterQuickBranch;
         uint16_t lastAddr;
         uint8_t jamStep;
+        uint8_t lastData;
+        Before pre;
     };
 #pragma pack(pop)
     Snapshot snapshot() const {
         return {st_, irq_, nmiLine_, nmiSeen_, nmiPending_, rdy_, poll_, pollPrev_, lastWasRead_, afterSequence_,
-                afterQuickBranch_, lastAddr_, jamStep_};
+                afterQuickBranch_, lastAddr_, jamStep_, lastData_, pre_};
     }
     void restore(const Snapshot& s) {
         st_ = s.st; irq_ = s.irq; nmiLine_ = s.nmiLine; nmiSeen_ = s.nmiSeen; nmiPending_ = s.nmiPending;
         rdy_ = s.rdy; poll_ = s.poll; pollPrev_ = s.pollPrev; lastWasRead_ = s.lastWasRead;
         afterSequence_ = s.afterSequence; afterQuickBranch_ = s.afterQuickBranch; lastAddr_ = s.lastAddr;
-        jamStep_ = s.jamStep;
+        jamStep_ = s.jamStep; lastData_ = s.lastData; pre_ = s.pre;
     }
 
     CpuRegs& regs() { return st_.r; }
@@ -231,7 +248,22 @@ private:
     uint8_t rd(uint16_t a) {
         lastAddr_ = a;
         lastWasRead_ = true;
-        return bus_.read(a);
+        if (!again_) lastData_ = bus_.read(a);
+        return lastData_;
+    }
+    // Makes the last cycle again with the byte a halted repeat of its read returned. The
+    // interrupt decisions taken since stay as they are.
+    void again(uint8_t v) {
+        const bool take = st_.takeInterrupt;
+        st_ = pre_.st;
+        jamStep_ = pre_.jamStep;
+        afterSequence_ = false;
+        afterQuickBranch_ = false;
+        lastData_ = v;
+        again_ = true;
+        step();
+        again_ = false;
+        if (st_.t == 0) st_.takeInterrupt = take;
     }
     void wr(uint16_t a, uint8_t v) {
         lastAddr_ = a;
@@ -350,7 +382,12 @@ private:
         case Op::ANC: r.a &= v; setNZ(r.a); setFlag(flag::C, (r.a & 0x80) != 0); break;
         case Op::ALR: r.a &= v; setFlag(flag::C, r.a & 1); r.a >>= 1; setNZ(r.a); break;
         case Op::ARR: arr(v); break;
-        case Op::ANE: r.a = static_cast<uint8_t>((r.a | 0xEE) & r.x & v); setNZ(r.a); break;
+        case Op::ANE: {
+            const uint8_t magic = st_.haltedAfterFetch ? static_cast<uint8_t>(aneMagic_ & 0xEE) : aneMagic_;
+            r.a = static_cast<uint8_t>((r.a | magic) & r.x & v);
+            setNZ(r.a);
+            break;
+        }
         case Op::LXA: r.a = r.x = static_cast<uint8_t>((r.a | 0xEE) & v); setNZ(r.a); break;
         case Op::SBX: {
             const unsigned ax = r.a & r.x;
@@ -507,6 +544,7 @@ private:
             }
             st_.t = 1;
             st_.haltedBeforeWrite = false;
+            st_.haltedAfterFetch = false;
             return;
         }
 
@@ -758,12 +796,16 @@ private:
 
     Bus& bus_;
     State st_;
+    uint8_t aneMagic_ = 0xEF;
     bool irq_ = false, nmiLine_ = false, nmiSeen_ = false, nmiPending_ = false, rdy_ = true;
     bool poll_ = false, pollPrev_ = false, lastWasRead_ = true;
     bool afterSequence_ = false;    // the last cycle ended an interrupt sequence
     bool afterQuickBranch_ = false; // the last cycle ended a taken branch within its page
     uint16_t lastAddr_ = 0;
     uint8_t jamStep_ = 0;
+    uint8_t lastData_ = 0;          // the byte the last read cycle returned
+    Before pre_{};                  // the instruction state before the last cycle
+    bool again_ = false;            // step() is repeating a cycle: its read takes lastData_
 };
 
 } // namespace k64

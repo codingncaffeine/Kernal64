@@ -132,6 +132,7 @@ int main(int argc, char** argv) {
 
     static TestBus bus;
     k64::Cpu6502<TestBus> cpu(bus);
+    cpu.setAneMagic(0xEE);   // the suite was generated with this constant
     long total = 0, failed = 0;
     int opsFailed = 0;
     for (int op : ops) {

@@ -1,7 +1,7 @@
 // k64run: boots the machine headless with the ROMs from a folder, runs a number of
 // frames and prints the text screen (screen memory at $0400, as the KERNAL sets it).
 //
-//   k64run ROM_FOLDER [--frames N] [--model pal|ntsc|ntsc-old] [--expect TEXT]...
+//   k64run ROM_FOLDER [--frames N] [--model pal|ntsc|ntsc-old] [--cia old|new] [--expect TEXT]...
 //
 // --expect TEXT fails the run unless TEXT appears on the screen.
 // --png FILE writes the visible picture of the last frame.
@@ -13,6 +13,7 @@
 //   that result (0 = passed), or 124 when --cycles runs out first.
 // --cycles N runs N cycles from power on instead of --frames.
 // --hash prints an FNV-1a hash of the last frame's visible palette indices.
+// --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
 #include "c64.h"
 #include "roms.h"
 #include "png.h"
@@ -36,29 +37,39 @@ int main(int argc, char** argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: k64run ROM_FOLDER [--frames N] [--model pal|ntsc|ntsc-old] [--expect TEXT]... [--png FILE] [--hash]\n"); return 2; }
     int frames = 150;
     k64::VicModel model = k64::VicModel::Mos6569;
+    k64::CiaModel cia = k64::CiaModel::Mos6526;
     std::vector<std::string> expect;
     std::string png, rasterOut, autostart;
     bool debugCart = false;
     uint64_t cycleLimit = 0;
     bool hash = false;
+    std::vector<std::pair<unsigned, unsigned>> dumps;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (a == "--model" && i + 1 < argc) {
             std::string m = argv[++i];
             model = m == "ntsc" ? k64::VicModel::Mos6567R8 : m == "ntsc-old" ? k64::VicModel::Mos6567R56A : k64::VicModel::Mos6569;
-        } else if (a == "--expect" && i + 1 < argc) expect.emplace_back(argv[++i]);
+        } else if (a == "--cia" && i + 1 < argc) cia = std::string(argv[++i]) == "new" ? k64::CiaModel::Mos8521 : k64::CiaModel::Mos6526;
+        else if (a == "--expect" && i + 1 < argc) expect.emplace_back(argv[++i]);
         else if (a == "--png" && i + 1 < argc) png = argv[++i];
         else if (a == "--hash") hash = true;
         else if (a == "--raster" && i + 1 < argc) rasterOut = argv[++i];
         else if (a == "--autostart" && i + 1 < argc) autostart = argv[++i];
         else if (a == "--debugcart") debugCart = true;
         else if (a == "--cycles" && i + 1 < argc) cycleLimit = std::strtoull(argv[++i], nullptr, 10);
+        else if (a == "--dump" && i + 1 < argc) {
+            char* end = nullptr;
+            const unsigned start = static_cast<unsigned>(std::strtoul(argv[++i], &end, 16));
+            const unsigned len = (end && *end == ':') ? static_cast<unsigned>(std::strtoul(end + 1, nullptr, 16)) : 0x100;
+            dumps.emplace_back(start, len);
+        }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     const k64::RomSet roms = k64::findRoms(argv[1]);
     static k64::C64 machine(model);
     machine.setRoms(roms);
+    machine.setCiaModel(cia);
     if (!machine.hasSystemRoms()) { std::fprintf(stderr, "k64run: BASIC, KERNAL or character ROM not found in %s\n", argv[1]); return 3; }
     machine.reset();
     machine.enableDebugCart(debugCart);
@@ -131,6 +142,12 @@ int main(int argc, char** argv) {
         }
         std::printf("k64run: frame hash %016llx\n", static_cast<unsigned long long>(h));
     }
+    for (const auto& [start, len] : dumps)
+        for (unsigned a = start; a < start + len; a += 16) {
+            std::printf("%04x:", a & 0xFFFF);
+            for (unsigned b = a; b < a + 16 && b < start + len; ++b) std::printf(" %02x", machine.ram()[b & 0xFFFF]);
+            std::printf("\n");
+        }
     if (debugCart) {
         const int result = machine.debugCartResult();
         std::printf("k64run: %s at cycle %llu\n", result < 0 ? "no result" : result == 0 ? "passed" : "failed",

@@ -13,6 +13,10 @@
 // own bus trace for that instruction with the line active for N cycles from each
 // cycle in turn.
 //
+// --volatile (with --rdy): while RDY is low, the byte at the address of the last cycle
+// changes every cycle (the same on both), as when a C64's VIC-II owns the bus during a
+// halt; shows which of the halted reads the CPU keeps.
+//
 // Without --irq/--nmi/--rdy no line is touched. Memory is filled with opcodes only
 // (so wherever execution lands it finds an instruction); the halt opcodes are
 // always left out, and ANE, LXA, LAS, TAS, ANC, ALR and ARR unless --all-opcodes
@@ -70,7 +74,7 @@ std::string show(const Cycle& c) {
 int main(int argc, char** argv) {
     int seeds = 4, first = 1;
     long cycles = 20000;
-    bool useIrq = false, useNmi = false, useRdy = false, allOps = false;
+    bool useIrq = false, useNmi = false, useRdy = false, allOps = false, volatileMem = false;
     std::vector<int> excluded;
     int probe = -1;
     std::vector<uint8_t> scan;
@@ -84,6 +88,7 @@ int main(int argc, char** argv) {
         else if (a == "--irq") useIrq = true;
         else if (a == "--nmi") useNmi = true;
         else if (a == "--rdy") useRdy = true;
+        else if (a == "--volatile") volatileMem = true;
         else if (a == "--all-opcodes") allOps = true;
         else if (a == "--scan" && i + 1 < argc) {
             for (char* tok = std::strtok(argv[++i], ","); tok; tok = std::strtok(nullptr, ","))
@@ -197,6 +202,12 @@ int main(int argc, char** argv) {
             if (useNmi && --nmiHold <= 0) { ln.nmi = !ln.nmi && pick(4) == 0; nmiHold = 1 + static_cast<int>(pick(ln.nmi ? 20 : 900)); }
             if (useRdy && --rdyHold <= 0) { ln.rdy = !(ln.rdy && pick(3) == 0); rdyHold = 1 + static_cast<int>(pick(ln.rdy ? 200 : 14)); }
             p6502_set_irq(chip, ln.irq); p6502_set_nmi(chip, ln.nmi); p6502_set_rdy(chip, ln.rdy);
+            if (volatileMem && !ln.rdy && !recent.empty() && !recent.back().first.write) {
+                const uint16_t at = recent.back().first.addr;
+                const uint8_t v = allowed[pick(static_cast<unsigned>(allowed.size()))];
+                memory[at] = v;
+                bus.mem[at] = v;
+            }
             cpu.setIrq(ln.irq); cpu.setNmi(ln.nmi); cpu.setRdy(ln.rdy);
 
             step(chip); step(chip);

@@ -8,7 +8,9 @@
 # read-out and the KERNAL booting to BASIC on every model; the CPU against the
 # per-opcode bus traces, the functional and undocumented-opcode test programs and
 # the transistor-level chip; the VIC-II against the article's rules and the start-up
-# screen against the reference emulator (tools/oracle/build-vice.sh); the core loading in RetroArch behind the wall.
+# screen against the reference emulator (tools/oracle/build-vice.sh); the reference
+# suite's CPU, CIA, interrupt and general programs on both CIA types; our own probe
+# programs; the core loading in RetroArch behind the wall.
 # The third-party suites come from tools/fetch.sh.
 # Runs on a quarter of the cores at low priority; its build folder is removed at exit.
 set -uo pipefail
@@ -72,12 +74,16 @@ if [ -x "$ROOT/gitignore/external/vice/build/src/x64sc" ] && command -v podman >
         || { tail -6 "$BUILD/refcheck.log"; bad "start-up screen differs from the reference"; }
 else bad "reference emulator missing: tools/oracle/build-vice.sh"; fi
 
-step "Lorenz suite and the TOD programs against the reference emulator"
+step "CPU, CIA, interrupt and general test programs against the reference emulator"
+# (Lorenz's suite is in "general". Programs waiting for later hardware: tests/suite-known.txt.)
 if [ -f "$ROOT/gitignore/external/testprogs/testbench/c64-testlist.in" ]; then
-    tools/suite.sh 'Lorenz-2.15|^\.\./CIA/tod/' "$BUILD/k64run" >"$BUILD/lorenz.log" 2>&1 \
-        || { grep '^WORSE' "$BUILD/lorenz.log" | head -8; bad "Lorenz suite worse than the reference"; }
-    tail -1 "$BUILD/lorenz.log"
+    tools/suite.sh '^\.\./(CIA|interrupts|general|CPU)/' "$BUILD/k64run" >"$BUILD/suite.log" 2>&1 \
+        || { grep -E '^(WORSE|FIXED)' "$BUILD/suite.log" | head -8; bad "test programs worse than the reference"; }
+    tail -1 "$BUILD/suite.log"
 else bad "test programs missing: tools/oracle/build-vice.sh"; fi
+
+step "own probe programs"
+tools/probes.sh "$BUILD/k64run" >"$BUILD/probes.log" 2>&1 || { grep -v '^ok' "$BUILD/probes.log" | head -8; bad "probe programs"; }
 
 step "VIC-II rules"
 "$BUILD/victest" >"$BUILD/victest.log" 2>&1 || { grep FAIL "$BUILD/victest.log" | head -8; bad "VIC-II rule tests"; }
@@ -98,7 +104,7 @@ if [ -n "$SEDDON" ]; then
         >"$BUILD/seddon.log" 2>&1 || { grep -v " - ok" "$BUILD/seddon.log" | tail -5; bad "undocumented-opcode tests"; }
 else bad "undocumented-opcode tests missing: tools/fetch.sh seddon"; fi
 if [ -x "$BUILD/cpudiff" ]; then
-    for lines in "" "--irq" "--nmi" "--rdy" "--irq --nmi --rdy"; do
+    for lines in "" "--irq" "--nmi" "--rdy" "--irq --nmi --rdy" "--rdy --volatile" "--irq --nmi --rdy --volatile"; do
         # shellcheck disable=SC2086
         "$BUILD/cpudiff" --seeds 8 --cycles 20000 $lines >"$BUILD/cpudiff.log" 2>&1 \
             || { grep -A3 DIFFERS "$BUILD/cpudiff.log" | head -5; bad "chip comparison (${lines:-no lines})"; }

@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 4;
+constexpr uint32_t kStateVersion = 5;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
@@ -254,9 +254,20 @@ void C64::tick() {
     s_.aecLow = vic_.aecLow();
     // The CIAs' interrupt outputs reach the 6510 one cycle after they change (Lorenz's
     // IMR, IRQ and NMI programs; hw/cia.md rule 19).
-    cpu_.setIrq(vic_.irq() || s_.cia1IrqSeen);
-    cpu_.setNmi(s_.cia2IrqSeen || s_.restore);
-    cpu_.setRdy(vic_.ba());
+    // The VIC-II's interrupt output reaches the 6510 one cycle late: the CPU sees it as it
+    // was after the VIC's first phase of the last cycle. A raster interrupt raised in cycle 1
+    // is seen from cycle 2; an acknowledge written in cycle N still shows low in N+1 (the
+    // open-collector line is slow to rise; hw/vic2.md rule 15).
+    // (irqEarly: hw/cia.md rule 20.)
+    cpu_.setIrq(s_.vicIrqSeen || s_.cia1IrqSeen || cia1_.irqEarly());
+    s_.vicIrqSeen = vic_.irq();
+    cpu_.setNmi(s_.cia2IrqSeen || cia2_.irqEarly() || s_.restore);
+    // RDY is sampled in the second phase: a read in the first cycle of BA low is the one
+    // that does not complete, and the cycle after BA rises is the one that does. In the
+    // CPU core's terms (a halt is decided before a cycle), that is BA of the last cycle
+    // (hw/cpu.md rule 14a).
+    cpu_.setRdy(!s_.baLowSeen);
+    s_.baLowSeen = !vic_.ba();
     s_.cia1IrqSeen = cia1_.irq();
     s_.cia2IrqSeen = cia2_.irq();
     cpu_.tick();
@@ -299,7 +310,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 1 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
+    return 4 + 4 + 2 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -308,6 +319,8 @@ void C64::saveState(uint8_t* out) const {
     put(&kStateVersion, 4);
     const uint8_t model = static_cast<uint8_t>(timing_->model);
     put(&model, 1);
+    const uint8_t cia = static_cast<uint8_t>(ciaModel());
+    put(&cia, 1);
     put(&s_, sizeof s_);
     const Vic2::State vs = vic_.state();
     put(&vs, sizeof vs);
@@ -324,11 +337,14 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     if (size < stateSize()) return false;
     auto get = [&in](void* p, size_t n) { std::memcpy(p, in, n); in += n; };
     uint32_t magic = 0, version = 0;
-    uint8_t model = 0;
+    uint8_t model = 0, cia = 0;
     get(&magic, 4);
     get(&version, 4);
     get(&model, 1);
-    if (magic != kStateMagic || version != kStateVersion || model != static_cast<uint8_t>(timing_->model)) return false;
+    get(&cia, 1);
+    if (magic != kStateMagic || version != kStateVersion || model != static_cast<uint8_t>(timing_->model) ||
+        cia != static_cast<uint8_t>(ciaModel()))
+        return false;
     State s;
     get(&s, sizeof s);
     Vic2::State vs;

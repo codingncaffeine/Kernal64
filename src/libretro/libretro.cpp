@@ -116,6 +116,13 @@ k64::VicModel modelFromOptions() {
     return k64::VicModel::Mos6569;
 }
 
+k64::CiaModel ciaFromOptions() {
+    retro_variable var{"kernal64_cia", nullptr};
+    if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "8521"))
+        return k64::CiaModel::Mos8521;
+    return k64::CiaModel::Mos6526;
+}
+
 void fillAvInfo(retro_system_av_info* info) {
     const auto& t = machine ? machine->timing() : k64::kTimingPal;
     info->geometry.base_width = static_cast<unsigned>(t.visibleWidth);
@@ -139,6 +146,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
     cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &noGame);
     static const retro_variable vars[] = {
         {"kernal64_model", "Machine; pal|ntsc|ntsc-old"},
+        {"kernal64_cia", "CIA chips; 6526|8521"},
         {"kernal64_joyport", "RetroPad is the joystick in control port; 2|1"},
         {nullptr, nullptr},
     };
@@ -188,8 +196,10 @@ RETRO_API bool retro_load_game(const retro_game_info*) {
         return false;
     }
     machine = std::make_unique<k64::C64>(modelFromOptions());
+    machine->setCiaModel(ciaFromOptions());
     audioCarry = 0.0;
-    log(RETRO_LOG_INFO, "version %s, machine %s", KERNAL64_VERSION, machine->timing().name);
+    log(RETRO_LOG_INFO, "version %s, machine %s, CIA %s", KERNAL64_VERSION, machine->timing().name,
+        machine->ciaModel() == k64::CiaModel::Mos8521 ? "8521" : "6526");
 
     // System ROMs, recognized by content in the frontend's system folder (or a "kernal64"
     // folder inside it).
@@ -224,6 +234,7 @@ RETRO_API unsigned retro_get_region(void) {
 RETRO_API void retro_run(void) {
     bool updated = false;
     if (envCb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
+        machine->setCiaModel(ciaFromOptions());
         const k64::VicModel m = modelFromOptions();
         if (m != machine->timing().model) {
             machine->setModel(m);
