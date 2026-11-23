@@ -35,11 +35,13 @@ add_library(k64core STATIC
   src/core/audio.cpp
   src/core/roms.cpp
   src/core/cartridge.cpp
+  src/core/datasette.cpp
   src/drive/via6522.cpp
   src/drive/c1541.cpp
   src/media/crt.cpp
   src/media/prg.cpp
   src/media/disk.cpp
+  src/media/tap.cpp
 )
 target_include_directories(k64core PUBLIC src/core src/media src/drive)
 # No fused multiply-add: floating-point state (the audio output network) must come out the

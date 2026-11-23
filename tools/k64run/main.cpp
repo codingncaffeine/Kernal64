@@ -39,6 +39,8 @@
 //   default: every expected result so far was made without one, on both emulators.
 // --disk FILE (D64 or G64) puts the disk in drive 8 (and implies --drive); --blank-disk a
 //   blank one (nothing recorded, as out of its box).
+// --tape FILE.tap (or --blank-tape) puts a tape in the datasette; --play / --record hold
+//   its buttons down from the start; --save-tape FILE.tap writes the tape at the end.
 // --save-disk FILE.g64 writes the disk in drive 8, as it is at the end, as a G64.
 // --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
 #include "c64.h"
@@ -84,7 +86,9 @@ int main(int argc, char** argv) {
     uint64_t freezeHold = 1, freezeRelease = 0;
     std::vector<std::pair<uint64_t, std::string>> typeAt;
     bool drive = false;
-    std::string diskFile, saveDisk;
+    std::string diskFile, saveDisk, tapeFile, saveTape;
+    int tapeButton = 0;
+    std::shared_ptr<k64::Tape> theTape;
     std::shared_ptr<k64::GcrDisk> theDisk;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -130,6 +134,11 @@ int main(int argc, char** argv) {
         else if (a == "--drive") drive = true;
         else if (a == "--disk" && i + 1 < argc) { diskFile = argv[++i]; drive = true; }
         else if (a == "--blank-disk") { diskFile = "-"; drive = true; }
+        else if (a == "--tape" && i + 1 < argc) tapeFile = argv[++i];
+        else if (a == "--blank-tape") tapeFile = "-";
+        else if (a == "--play") tapeButton = 1;
+        else if (a == "--record") tapeButton = 2;
+        else if (a == "--save-tape" && i + 1 < argc) saveTape = argv[++i];
         else if (a == "--save-disk" && i + 1 < argc) saveDisk = argv[++i];
         else if (a == "--where" && i + 1 < argc) where = static_cast<int>(std::strtoul(argv[++i], nullptr, 16));
         else if (a == "--dump" && i + 1 < argc) {
@@ -178,6 +187,18 @@ int main(int argc, char** argv) {
         }
         machine.insertDisk(disk);
         theDisk = disk;
+    }
+    if (!tapeFile.empty()) {
+        std::vector<uint8_t> bytes;
+        auto tape = std::make_shared<k64::Tape>();
+        std::string error;
+        if (tapeFile != "-") {
+            if (!readFile(tapeFile, bytes)) { std::fprintf(stderr, "k64run: cannot open %s\n", tapeFile.c_str()); return 3; }
+            if (!k64::parseTap(bytes.data(), bytes.size(), *tape, error)) { std::fprintf(stderr, "k64run: %s: %s\n", tapeFile.c_str(), error.c_str()); return 3; }
+        }
+        machine.datasette().insert(tape);
+        machine.datasette().press(static_cast<k64::Datasette::Button>(tapeButton));
+        theTape = tape;
     }
     if (!autostart.empty()) {
         std::vector<uint8_t> bytes;
@@ -267,6 +288,12 @@ int main(int argc, char** argv) {
             for (int x = 0; x < t.visibleWidth; ++x) { h ^= src[x]; h *= 1099511628211ull; }
         }
         std::printf("k64run: frame hash %016llx\n", static_cast<unsigned long long>(h));
+    }
+    if (!saveTape.empty() && theTape) {
+        const auto tapBytes = k64::writeTap(*theTape, machine.timing().pal ? 0 : 1);
+        FILE* f = std::fopen(saveTape.c_str(), "wb");
+        if (!f || std::fwrite(tapBytes.data(), 1, tapBytes.size(), f) != tapBytes.size()) std::fprintf(stderr, "k64run: cannot write %s\n", saveTape.c_str());
+        if (f) std::fclose(f);
     }
     if (!saveDisk.empty() && theDisk) {
         const auto g = k64::writeG64(*theDisk);

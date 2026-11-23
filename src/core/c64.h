@@ -15,6 +15,7 @@
 #include "cartridge.h"
 #include "prg.h"
 #include "c1541.h"
+#include "datasette.h"
 
 #include <array>
 #include <cstddef>
@@ -61,6 +62,9 @@ public:
     }
     bool driveAttached() const { return driveWanted_ && drive_.hasRoms(); }
     const C1541& drive() const { return drive_; }
+    // The datasette on the cassette port.
+    Datasette& datasette() { return tape_; }
+    const Datasette& datasette() const { return tape_; }
     // The disk in drive 8 (it can change while the machine runs, as a disk is swapped). The
     // drive writes into it.
     void insertDisk(std::shared_ptr<GcrDisk> disk) { drive_.insertDisk(std::move(disk)); }
@@ -195,6 +199,7 @@ private:
     bool debugCart_ = false;
     int debugExit_ = -1;
     C1541 drive_;
+    Datasette tape_;
     bool driveWanted_ = true;
     uint32_t driveNum_ = 1, driveDen_ = 1;   // drive cycles per machine cycle, exactly (setModel)
     CpuBus bus_{this};

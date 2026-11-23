@@ -113,7 +113,9 @@ void C64::injectProgram() {
 uint8_t C64::portPins() const {
     const uint8_t driven = s_.portData & s_.portDdr;
     const uint8_t inputs = static_cast<uint8_t>(~s_.portDdr);
-    return static_cast<uint8_t>(driven | (inputs & 0x17));
+    // Inputs pulled up: bits 0-2, and 4 unless the datasette's sense pulls it (hw/tape.md D1).
+    const uint8_t pulled = static_cast<uint8_t>(tape_.senseLow() ? 0x07 : 0x17);
+    return static_cast<uint8_t>(driven | (inputs & pulled));
 }
 
 uint8_t C64::portRead() const {
@@ -441,6 +443,11 @@ void C64::tick() {
     cia1_.clock();
     cia2_.clock();
     if (cart_.clocked()) cart_.clock();
+    if (tape_.hasTape()) {
+        // hw/tape.md D2: the motor runs while the port drives bit 5 low; bit 3 is the write line.
+        const bool motor = (s_.portDdr & 0x20) && !(s_.portData & 0x20);
+        cia1_.setFlag(tape_.clock(motor, (portPins() & 0x08) != 0));
+    }
     // The TOD pins see the mains frequency (hw/cia.md rule 18): exactly mainsHz ticks per
     // second of machine cycles, spread evenly.
     s_.todCount += static_cast<uint32_t>(timing_->mainsHz);
@@ -492,7 +499,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot) + C1541::stateSize();
+    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot) + C1541::stateSize() + sizeof(Datasette::State);
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -523,6 +530,8 @@ void C64::saveState(uint8_t* out) const {
     put(&snap, sizeof snap);
     drive_.saveState(out);
     out += C1541::stateSize();
+    const Datasette::State ts = tape_.state();
+    put(&ts, sizeof ts);
     cart_.saveContent(out);
 }
 
@@ -570,6 +579,9 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     cpu_.restore(snap);
     drive_.loadState(in);
     in += C1541::stateSize();
+    Datasette::State ts;
+    get(&ts, sizeof ts);
+    tape_.setState(ts);
     cart_.loadContent(in);
     return true;
 }
