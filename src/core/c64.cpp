@@ -444,8 +444,9 @@ void C64::tick() {
     cia2_.clock();
     if (cart_.clocked()) cart_.clock();
     if (tape_.hasTape()) {
-        // hw/tape.md D2: the motor runs while the port drives bit 5 low; bit 3 is the write line.
-        const bool motor = (s_.portDdr & 0x20) && !(s_.portData & 0x20);
+        // hw/tape.md D2: the motor runs unless the port drives bit 5 high (an input pin sits low,
+        // memory.md rule 8); bit 3 is the write line.
+        const bool motor = !((s_.portDdr & 0x20) && (s_.portData & 0x20));
         cia1_.setFlag(tape_.clock(motor, (portPins() & 0x08) != 0));
     }
     // The TOD pins see the mains frequency (hw/cia.md rule 18): exactly mainsHz ticks per

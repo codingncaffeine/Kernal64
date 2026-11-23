@@ -40,6 +40,9 @@ std::vector<DiskSlot> slots;
 size_t slotIndex = 0;
 bool diskEjected = false;
 std::shared_ptr<k64::GcrDisk> disk;          // the one in the drive (none while ejected)
+// The tape in the datasette and its kept copy (what the datasette recorded; PLAN D10).
+std::shared_ptr<k64::Tape> tape;
+std::string tapeSavePath;
 
 std::vector<uint32_t> frameOut;
 std::vector<int16_t> audioOut;
@@ -109,6 +112,8 @@ int joystickPort() {
     return 2;
 }
 
+void notify(const std::string& line);
+
 void applyInput() {
     if (!inputStateCb) return;
     machine->releaseAllKeys();
@@ -122,6 +127,21 @@ void applyInput() {
     // The button on a freezer cartridge: Page Down, or a click of the right stick. It is
     // the cartridge's own button, so without such a cartridge it does nothing.
     machine->setFreezeButton(inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEDOWN) != 0 || pad(RETRO_DEVICE_ID_JOYPAD_R3));
+    // The datasette's buttons (PLAN D25): L2 = PLAY / STOP, R2 = stop and rewind to the start.
+    // Pressed on the button's way down only; without a tape they do nothing.
+    static bool l2Was = false, r2Was = false;
+    const bool l2 = pad(RETRO_DEVICE_ID_JOYPAD_L2), r2 = pad(RETRO_DEVICE_ID_JOYPAD_R2);
+    if (l2 && !l2Was && machine->datasette().hasTape()) {
+        const bool playing = machine->datasette().button() != k64::Datasette::Button::None;
+        if (playing) machine->datasette().stop(); else machine->datasette().press(k64::Datasette::Button::Play);
+        notify(playing ? "Datasette: STOP" : "Datasette: PLAY");
+    }
+    if (r2 && !r2Was && machine->datasette().hasTape()) {
+        machine->datasette().rewind();
+        notify("Datasette: rewound");
+    }
+    l2Was = l2;
+    r2Was = r2;
     const uint8_t lines = static_cast<uint8_t>((pad(RETRO_DEVICE_ID_JOYPAD_UP) ? 0x01 : 0) | (pad(RETRO_DEVICE_ID_JOYPAD_DOWN) ? 0x02 : 0) |
                                                (pad(RETRO_DEVICE_ID_JOYPAD_LEFT) ? 0x04 : 0) | (pad(RETRO_DEVICE_ID_JOYPAD_RIGHT) ? 0x08 : 0) |
                                                (pad(RETRO_DEVICE_ID_JOYPAD_B) ? 0x10 : 0));
@@ -213,6 +233,17 @@ void saveDisk(DiskSlot& slot) {
 }
 
 void saveDisks() { for (DiskSlot& slot : slots) saveDisk(slot); }
+
+void saveTape() {
+    if (!tape || !tape->changed || tapeSavePath.empty() || !machine) return;
+    const auto t = k64::writeTap(*tape, machine->timing().pal ? 0 : 1);
+    const std::string tmp = tapeSavePath + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    const bool ok = f && std::fwrite(t.data(), 1, t.size(), f) == t.size();
+    if (f) std::fclose(f);
+    if (ok && std::rename(tmp.c_str(), tapeSavePath.c_str()) == 0) tape->changed = false;
+    else log(RETRO_LOG_ERROR, "could not save the recorded tape to %s", tapeSavePath.c_str());
+}
 
 // The save folder's copy for content at `path`: "<save folder>/<name without extension>.g64".
 std::string diskCopyPath(const char* path) {
@@ -363,6 +394,23 @@ bool loadContent(const retro_game_info* info) {
                 static_cast<unsigned>(image.chips.size()));
             return true;
         }
+    } else if (bytes.size() >= 12 && !std::memcmp(bytes.data(), "C64-TAPE-RAW", 12)) {
+        // A tape: its kept copy (what the datasette recorded) when there is one. It starts with
+        // PLAY down and LOAD + RUN typed, as on the real machine.
+        tape = std::make_shared<k64::Tape>();
+        tapeSavePath = diskCopyPath(info->path);
+        if (!tapeSavePath.empty()) tapeSavePath.replace(tapeSavePath.size() - 4, 4, ".tap");
+        std::vector<uint8_t> copy;
+        std::string e2;
+        const bool haveCopy = !tapeSavePath.empty() && readWhole(tapeSavePath, copy) && k64::parseTap(copy.data(), copy.size(), *tape, e2);
+        if (haveCopy || k64::parseTap(bytes.data(), bytes.size(), *tape, error)) {
+            if (haveCopy) log(RETRO_LOG_INFO, "tape: the recorded copy %s", tapeSavePath.c_str());
+            machine->datasette().insert(tape);
+            machine->datasette().press(k64::Datasette::Button::Play);
+            machine->setAutotype("LOAD\rRUN\r");
+            log(RETRO_LOG_INFO, "tape in the datasette, started with PLAY, LOAD and RUN");
+            return true;
+        }
     } else if (isDiskImage(bytes) || hasExtension(info->path, ".m3u")) {
         slots.clear();
         diskEjected = false;
@@ -446,6 +494,8 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
         {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Joystick right"},
         {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "Fire"},
         {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3, "Cartridge freeze button"},
+        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2, "Datasette PLAY / STOP"},
+        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2, "Datasette rewind"},
         {0, 0, 0, 0, nullptr},
     };
     cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, const_cast<retro_input_descriptor*>(inputs));
@@ -473,7 +523,7 @@ RETRO_API void retro_get_system_info(retro_system_info* info) {
     std::memset(info, 0, sizeof *info);
     info->library_name = "Kernal64";
     info->library_version = KERNAL64_VERSION;
-    info->valid_extensions = "crt|prg|p00|t64|d64|g64|nib|m3u";
+    info->valid_extensions = "crt|prg|p00|t64|d64|g64|nib|m3u|tap";
     info->need_fullpath = false;
     info->block_extract = false;
 }
@@ -536,6 +586,9 @@ RETRO_API bool retro_load_game_special(unsigned, const retro_game_info*, size_t)
 
 RETRO_API void retro_unload_game(void) {
     saveDisks();
+    saveTape();
+    tape.reset();
+    tapeSavePath.clear();
     slots.clear();
     disk.reset();
     machine.reset();
@@ -587,6 +640,8 @@ RETRO_API void retro_run(void) {
     while (done < frames && audioBatchCb) done += audioBatchCb(audioOut.data() + done * 2, frames - done);
     // What the drive wrote is kept once it has stopped writing (motor off).
     if (disk && disk->changed && !machine->drive().motor()) saveDisks();
+    // A recording is kept once the datasette's buttons are up again.
+    if (tape && tape->changed && machine->datasette().button() == k64::Datasette::Button::None) saveTape();
 }
 
 RETRO_API size_t retro_serialize_size(void) { return machine ? machine->stateSize() : 0; }

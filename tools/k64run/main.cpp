@@ -259,6 +259,10 @@ int main(int argc, char** argv) {
     // $02A6 is where the KERNAL records what it measured at start-up: 1 = PAL, 0 = NTSC.
     std::printf("k64run: %d frames, %llu cycles, pc=%04x, KERNAL detected %s\n", frames,
                 static_cast<unsigned long long>(machine.cycle()), r.pc, machine.ram()[0x02A6] ? "PAL" : "NTSC");
+    if (theTape)
+        std::printf("k64run: tape: pulse %zu of %zu, button %d, motor %s\n", machine.datasette().position(), theTape->pulses.size(),
+                    static_cast<int>(machine.datasette().button()),
+                    (machine.ram()[0] & 0x20) && !(machine.ram()[1] & 0x20) ? "on" : "off");
     if (machine.driveAttached())
         std::printf("k64run: drive 8: head on half-track %d, pc=%04x, motor %s\n", machine.drive().halfTrack(),
                     static_cast<unsigned>(machine.drive().cpuRegs().pc), machine.drive().motor() ? "on" : "off");
