@@ -49,7 +49,9 @@ Files are recognized by their contents, not their names.
   memory once the machine has booted, and started with `RUN`.
 - Disk images (`.d64` with or without error bytes, `.g64`) in drive 8, a 1541 emulated
   down to its read circuit and running its own DOS ROM: started with `LOAD"*",8,1` and
-  `RUN`, as on the real machine. Disks are read-only for now (writing comes next).
+  `RUN`, as on the real machine. What the drive writes (SAVE, formatting, a game's saves)
+  goes into a copy in the frontend's save folder (`<name>.g64`), which is loaded in place of
+  the original next time; your own image file is never written.
 
 ## Core options
 

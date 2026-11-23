@@ -97,7 +97,7 @@ uint8_t C1541::viaPortB(int via, uint8_t out, uint8_t ddr) {
     pins = static_cast<uint8_t>(pins & ~(0x80 | 0x10) & 0xFF);
     pins = static_cast<uint8_t>(pins | ((out & ddr) & 0x90));
     if (!(ddr & 0x80) && !(readMode() && m_.shift == 0x3FF)) pins |= 0x80;
-    if (!(ddr & 0x10) && !(disk_ && disk_->writeProtected)) pins |= 0x10;
+    if (!(ddr & 0x10) && !m_.wpDark && !(disk_ && disk_->writeProtected)) pins |= 0x10;
     return pins;
 }
 
@@ -126,6 +126,7 @@ void C1541::viaOutputs(int via) {
 // One drive cycle = 16 ticks of the 16 MHz clock (R1-R4).
 void C1541::mechanism() {
     m_.readyLow = 0;
+    if (m_.wpDark) --m_.wpDark;
     const bool spinning = motor() && disk_ != nullptr;
     const std::vector<uint8_t>* track = nullptr;
     if (spinning) {

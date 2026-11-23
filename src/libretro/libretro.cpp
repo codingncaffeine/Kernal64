@@ -27,6 +27,11 @@ retro_input_state_t inputStateCb;
 retro_log_printf_t logCb;
 
 std::unique_ptr<k64::C64> machine;
+// The disk in drive 8 and where what the drive writes on it is kept (PLAN D10: a G64 copy in
+// the frontend's save folder, named after the content; the user's file is never written).
+std::shared_ptr<k64::GcrDisk> disk;
+std::string diskSavePath;
+
 std::vector<uint32_t> frameOut;
 std::vector<int16_t> audioOut;
 std::vector<float> audioMono;
@@ -177,6 +182,39 @@ void notify(const std::string& line) {
 
 // The content: a cartridge file, or a single-file program that is put into memory and
 // started once the machine has booted. Told apart by what is in it, not by its name.
+bool readWhole(const std::string& path, std::vector<uint8_t>& bytes) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    uint8_t chunk[65536];
+    size_t n;
+    while ((n = std::fread(chunk, 1, sizeof chunk, f)) > 0) bytes.insert(bytes.end(), chunk, chunk + n);
+    std::fclose(f);
+    return true;
+}
+
+void saveDisk() {
+    if (!disk || !disk->changed || diskSavePath.empty()) return;
+    const auto g = k64::writeG64(*disk);
+    const std::string tmp = diskSavePath + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    const bool ok = f && std::fwrite(g.data(), 1, g.size(), f) == g.size();
+    if (f) std::fclose(f);
+    if (ok && std::rename(tmp.c_str(), diskSavePath.c_str()) == 0) disk->changed = false;
+    else log(RETRO_LOG_ERROR, "could not save the written disk to %s", diskSavePath.c_str());
+}
+
+// The save folder's copy for content at `path`: "<save folder>/<name without extension>.g64".
+std::string diskCopyPath(const char* path) {
+    const char* saveDir = nullptr;
+    if (!path || !envCb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &saveDir) || !saveDir) return {};
+    std::string name = path;
+    const size_t slash = name.find_last_of("/\\");
+    if (slash != std::string::npos) name = name.substr(slash + 1);
+    const size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos) name = name.substr(0, dot);
+    return std::string(saveDir) + "/" + name + ".g64";
+}
+
 bool loadContent(const retro_game_info* info) {
     std::vector<uint8_t> bytes;
     if (info->data && info->size) {
@@ -204,10 +242,14 @@ bool loadContent(const retro_game_info* info) {
     } else if ((bytes.size() >= 8 && !std::memcmp(bytes.data(), "GCR-1541", 8)) || bytes.size() == 174848 ||
                bytes.size() == 175531 || bytes.size() == 196608 || bytes.size() == 197376 ||
                bytes.size() == 205312 || bytes.size() == 206114) {
-        auto disk = std::make_shared<k64::GcrDisk>();
+        disk = std::make_shared<k64::GcrDisk>();
+        diskSavePath = diskCopyPath(info->path);
+        std::vector<uint8_t> copy;
+        const bool haveCopy = !diskSavePath.empty() && readWhole(diskSavePath, copy) && k64::parseDisk(copy.data(), copy.size(), *disk, error);
         if (!machine->driveAttached()) {
             error = "a disk needs drive 8: the 1541 ROMs in the system folder and the drive switched on";
-        } else if (k64::parseDisk(bytes.data(), bytes.size(), *disk, error)) {
+        } else if (haveCopy || k64::parseDisk(bytes.data(), bytes.size(), *disk, error)) {
+            if (haveCopy) log(RETRO_LOG_INFO, "disk: the written copy %s", diskSavePath.c_str());
             machine->insertDisk(disk);
             machine->setAutotype("LOAD\"*\",8,1\rRUN\r");
             log(RETRO_LOG_INFO, "disk in drive 8, started with LOAD\"*\",8,1 and RUN");
@@ -356,7 +398,12 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
 
 RETRO_API bool retro_load_game_special(unsigned, const retro_game_info*, size_t) { return false; }
 
-RETRO_API void retro_unload_game(void) { machine.reset(); }
+RETRO_API void retro_unload_game(void) {
+    saveDisk();
+    disk.reset();
+    diskSavePath.clear();
+    machine.reset();
+}
 
 RETRO_API unsigned retro_get_region(void) {
     return machine && !machine->timing().pal ? RETRO_REGION_NTSC : RETRO_REGION_PAL;
@@ -402,6 +449,8 @@ RETRO_API void retro_run(void) {
     }
     size_t done = 0;
     while (done < frames && audioBatchCb) done += audioBatchCb(audioOut.data() + done * 2, frames - done);
+    // What the drive wrote is kept once it has stopped writing (motor off).
+    if (disk && disk->changed && !machine->drive().motor()) saveDisk();
 }
 
 RETRO_API size_t retro_serialize_size(void) { return machine ? machine->stateSize() : 0; }

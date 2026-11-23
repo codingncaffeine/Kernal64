@@ -97,6 +97,14 @@ done
 side "disk as content, started by itself" "$BUILD/host-disk.log" "$BUILD/k64host" "$CORE" --system "$ROMS" \
     --content "$EXT/testprogs/vdrive/test.d64" --frames 900 --check --expect-screen 'ROM:  254' --expect-screen 'ROM:  103'
 sides
+# What the drive writes is kept (PLAN D10): SAVE to a disk, unload; loaded again, the copy in
+# the save folder has the program.
+mkdir -p "$BUILD/saves"
+"$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves" --content "$EXT/testprogs/vdrive/test.d64" --frames 2600 \
+    --type-at 1300 --type 'NEW\n10 ?42\nSAVE"KEPT",8\n' >"$BUILD/host-save1.log" 2>&1 || bad "disk save: the first run failed"
+"$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves" --content "$EXT/testprogs/vdrive/test.d64" --frames 3200 --check \
+    --type-at 1300 --type 'LOAD"KEPT",8\n' --type-at 2700 --type 'RUN\n' --expect-screen ' 42' >"$BUILD/host-save2.log" 2>&1 \
+    || { tail -5 "$BUILD/host-save2.log"; bad "a disk written through the core was not kept"; }
 grep -q "missing system files" "$BUILD"/host-*.log && bad "system ROMs not found in $ROMS"
 grep -q "no 1541 ROMs" "$BUILD"/host-*.log && bad "1541 ROMs not found in $ROMS"
 # The border option: the picture handed to the frontend has the size asked for.

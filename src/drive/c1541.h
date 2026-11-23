@@ -42,8 +42,11 @@ public:
 
     // The disk in the drive (none: empty). Shared with whoever made it, who can save what the
     // drive wrote (GcrDisk::changed).
-    void insertDisk(std::shared_ptr<GcrDisk> disk) { disk_ = std::move(disk); }
-    void ejectDisk() { disk_.reset(); }
+    // A swap while the drive runs darkens the write protect sensor for a moment, as the
+    // disk's body passes it (R7): that is how the DOS notices a new disk.
+    void insertDisk(std::shared_ptr<GcrDisk> disk) { disk_ = std::move(disk); m_.wpDark = kSwapCycles; }
+    void ejectDisk() { disk_.reset(); m_.wpDark = kSwapCycles; }
+    static constexpr uint32_t kSwapCycles = 400'000;   // 0.4 s: a hand's movement, no document
     bool hasDisk() const { return disk_ != nullptr; }
     int halfTrack() const { return m_.halfTrack; }
 
@@ -92,6 +95,7 @@ private:
         uint8_t wbuf = 0;           // the write shift register (W1)
         uint8_t writing = 0;        // the last bit cell was written (W2)
         uint32_t wpos = 0;          // the bit the next written cell goes to (W2)
+        uint32_t wpDark = 0;        // drive cycles the sensor stays dark for a disk swap (R7)
     };
 #pragma pack(pop)
 

@@ -172,7 +172,9 @@ Tone measureTone(double sampleRate) {
     return {hz, rms > 0.0 ? 20.0 * std::log10(rms) : -200.0};
 }
 // Scripted typing: the key held during the current frame (or none).
-std::string typeText;
+// Each --type is typed from the --type-at given before it (default 200).
+struct Typing { unsigned at; std::string text; };
+std::vector<Typing> typings;
 unsigned typeAt = 200, currentFrame = 0;
 unsigned keyFor(char ch) {
     if (ch >= 'A' && ch <= 'Z') return RETROK_a + static_cast<unsigned>(ch - 'A');
@@ -207,11 +209,15 @@ int16_t inputState(unsigned port, unsigned device, unsigned, unsigned id) {
             if (currentFrame == f || currentFrame == f + 1) return 1;
         return 0;
     }
-    if (port != 0 || device != RETRO_DEVICE_KEYBOARD || currentFrame < typeAt) return 0;
-    const unsigned step = (currentFrame - typeAt) / 6, phase = (currentFrame - typeAt) % 6;
-    if (step >= typeText.size() || phase >= 3) return 0;
-    if (id == RETROK_LSHIFT && shifted(typeText[step])) return 1;
-    return keyFor(typeText[step]) == id ? 1 : 0;
+    if (port != 0 || device != RETRO_DEVICE_KEYBOARD) return 0;
+    for (const Typing& t : typings) {
+        if (currentFrame < t.at) continue;
+        const unsigned step = (currentFrame - t.at) / 6, phase = (currentFrame - t.at) % 6;
+        if (step >= t.text.size() || phase >= 3) continue;
+        if (id == RETROK_LSHIFT && shifted(t.text[step])) return 1;
+        if (keyFor(t.text[step]) == id) return 1;
+    }
+    return 0;
 }
 
 uint64_t fnv1a(const void* p, size_t n) {
@@ -266,8 +272,9 @@ int main(int argc, char** argv) {
         else if (a == "--dump") dump = next();
         else if (a == "--check") check = true;
         else if (a == "--type") {
-            typeText = next();
-            for (size_t p = 0; (p = typeText.find("\\n", p)) != std::string::npos;) typeText.replace(p, 2, "\n");
+            std::string text = next();
+            for (size_t p = 0; (p = text.find("\\n", p)) != std::string::npos;) text.replace(p, 2, "\n");
+            typings.push_back({typeAt, text});
         } else if (a == "--type-at") typeAt = static_cast<unsigned>(std::stoul(next()));
         else if (a == "--expect-screen") expectScreen.push_back(next());
         else if (a == "--expect-tone") { expectHz = std::stod(next()); expectDbMin = std::stod(next()); expectDbMax = std::stod(next()); }
