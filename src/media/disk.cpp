@@ -182,7 +182,8 @@ std::vector<uint8_t> writeG64(const GcrDisk& disk) {
 // the framing), so what follows a SYNC comes back byte for byte one revolution later. The
 // revolution is the distance, near the zone's nominal length, at which the 16 bytes after the
 // first SYNC that is followed by a sector header ($52 = GCR of $08's first five bits) recur;
-// failing that, after any SYNC; failing that, the nominal length from the start.
+// failing that, after any SYNC; failing that, any 64-byte window; failing that, the nominal
+// length from the start.
 static std::vector<uint8_t> oneRevolution(const uint8_t* raw, size_t len, int zone) {
     const size_t nominal = static_cast<size_t>(kTrackBytes[zone & 3]);
     const size_t lo = nominal * 95 / 100, hi = std::min(len - 16, nominal * 105 / 100);
@@ -207,6 +208,18 @@ static std::vector<uint8_t> oneRevolution(const uint8_t* raw, size_t len, int zo
                 return std::vector<uint8_t>(raw + start, raw + start + best);
             }
         }
+    }
+    // A long track can leave too little of the read after its first SYNC for the repeat to
+    // start there. Between SYNCs the framing is the same a revolution later too: a longer
+    // window (64 bytes), starting anywhere the read still holds one revolution after it.
+    for (size_t x = 0; x + lo + 64 <= len; ++x) {
+        size_t best = 0, bestDist = SIZE_MAX;
+        for (size_t p = lo; p <= hi + 16 && x + p + 64 <= len; ++p) {
+            if (std::memcmp(raw + x, raw + x + p, 64) != 0) continue;
+            const size_t dist = p > nominal ? p - nominal : nominal - p;
+            if (dist < bestDist) { best = p; bestDist = dist; }
+        }
+        if (best) return std::vector<uint8_t>(raw + x, raw + x + best);
     }
     return std::vector<uint8_t>(raw, raw + std::min(len, nominal));
 }

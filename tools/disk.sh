@@ -35,10 +35,27 @@ check_file() {
     [ "$got" = "${want:4}" ] || { echo "FAIL $name: the loaded bytes differ"; grep -v '^[0-9a-f]\{4\}:' "$OUT/$name.log" | grep -v '^ *$' | tail -5; return 1; }
 }
 
+# A NIB made from the suite's G64 (written by an independent tool) the way a raw reader
+# records a disk: the suite's scanner reads it, and every sector matches the source.
+check_nib() {
+    local S="$ROOT/gitignore/external/testprogs/drive/scanner"
+    python3 -I "$ROOT/tools/mknib.py" "$S/scan35.g64" "$OUT/scan35.nib" 7 || { echo "FAIL nib: not made"; return 1; }
+    "$K64RUN" "$ROOT/gitignore" --disk "$OUT/scan35.nib" --autostart "$S/scanner35.prg" --debugcart --cycles 31000000 \
+        >"$OUT/nib.log" 2>&1 || { echo "FAIL nib: the scanner did not pass"; tail -3 "$OUT/nib.log"; return 1; }
+    # Every sector of the source, header and data, comes out of the mounted NIB unchanged
+    # (tools/g64sectors.py decodes both itself).
+    "$K64RUN" "$ROOT/gitignore" --disk "$OUT/scan35.nib" --cycles 1 --save-disk "$OUT/nib.g64" >/dev/null 2>&1
+    python3 -I "$ROOT/tools/g64sectors.py" "$S/scan35.g64" >"$OUT/want.txt"
+    python3 -I "$ROOT/tools/g64sectors.py" "$OUT/nib.g64" >"$OUT/got.txt"
+    [ "$(wc -l <"$OUT/want.txt")" -gt 600 ] && cmp -s "$OUT/want.txt" "$OUT/got.txt" \
+        || { echo "FAIL nib: sectors differ from the source ($(wc -l <"$OUT/got.txt") of $(wc -l <"$OUT/want.txt"))"; return 1; }
+}
+
 pids=()
 check_dir & pids+=($!)
+check_nib & pids+=($!)
 for f in DRIVEMEM FILELEN CHECKDISK; do check_file "$f" & pids+=($!); done
 rc=0
 for p in "${pids[@]}"; do wait "$p" || rc=1; done
-[ $rc = 0 ] && echo "disk: directory and 3 files exact"
+[ $rc = 0 ] && echo "disk: directory and 3 files exact; every sector of a NIB reads"
 exit $rc
