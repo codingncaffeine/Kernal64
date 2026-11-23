@@ -52,6 +52,9 @@ Files are recognized by their contents, not their names.
   `RUN`, as on the real machine. What the drive writes (SAVE, formatting, a game's saves)
   goes into a copy in the frontend's save folder (`<name>.g64`), which is loaded in place of
   the original next time; your own image file is never written.
+- Disk lists (`.m3u`, one image path per line) for software on several disks: swap with the
+  frontend's disk control (eject, choose, insert); the DOS sees the change as it would on a
+  real drive.
 
 ## Core options
 

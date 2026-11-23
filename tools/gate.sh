@@ -105,6 +105,11 @@ mkdir -p "$BUILD/saves"
 "$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves" --content "$EXT/testprogs/vdrive/test.d64" --frames 3200 --check \
     --type-at 1300 --type 'LOAD"KEPT",8\n' --type-at 2700 --type 'RUN\n' --expect-screen ' 42' >"$BUILD/host-save2.log" 2>&1 \
     || { tail -5 "$BUILD/host-save2.log"; bad "a disk written through the core was not kept"; }
+# A disk list (.m3u) and the frontend's disk control: the second disk, swapped in, lists.
+printf '%s\n' "$EXT/testprogs/vdrive/test.d64" "$EXT/testprogs/drive/scanner/scan35.d64" >"$BUILD/two.m3u"
+"$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves" --content "$BUILD/two.m3u" --frames 2600 --swap-at 1100 1 \
+    --type-at 1200 --type 'LOAD"$",8\n' --type-at 2300 --type 'LIST\n' --expect-screen '"SCANNER35"' >"$BUILD/host-swap.log" 2>&1 \
+    || { tail -5 "$BUILD/host-swap.log"; bad "disk swap through the frontend's disk control"; }
 grep -q "missing system files" "$BUILD"/host-*.log && bad "system ROMs not found in $ROMS"
 grep -q "no 1541 ROMs" "$BUILD"/host-*.log && bad "1541 ROMs not found in $ROMS"
 # The border option: the picture handed to the frontend has the size asked for.

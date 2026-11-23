@@ -7,6 +7,8 @@
 //                   [--expect-tone HZ DB_MIN DB_MAX] [--expect-level DB_MIN DB_MAX] [--expect-silence]
 //                   [--expect-load-failure] [--freeze-frames N,N,...]
 //
+// --swap-at FRAME INDEX ejects the disk, picks image INDEX (from 0) and inserts it through the
+// core's disk control, as a frontend's disk menu does (not with --check).
 // --freeze-frames holds the RetroPad button the core uses as a cartridge's freeze button
 // (a click of the right stick) during each frame N and the one after it.
 // --type presses the keys for TEXT one at a time from frame --type-at (default 200),
@@ -80,8 +82,15 @@ void coreLog(retro_log_level, const char* fmt, ...) {
     va_end(ap);
 }
 
+// The core's disk control, as a frontend's disk menu uses it (--swap-at).
+const retro_disk_control_ext_callback* diskControl = nullptr;
+std::vector<std::pair<unsigned, unsigned>> swaps;   // frame, image index
+
 bool environment(unsigned cmd, void* data) {
     switch (cmd) {
+    case RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE:
+        diskControl = static_cast<const retro_disk_control_ext_callback*>(data);
+        return true;
     case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
         static_cast<retro_log_callback*>(data)->log = coreLog;
         return true;
@@ -277,6 +286,7 @@ int main(int argc, char** argv) {
             typings.push_back({typeAt, text});
         } else if (a == "--type-at") typeAt = static_cast<unsigned>(std::stoul(next()));
         else if (a == "--expect-screen") expectScreen.push_back(next());
+        else if (a == "--swap-at") { const unsigned at = static_cast<unsigned>(std::stoul(next())); swaps.emplace_back(at, static_cast<unsigned>(std::stoul(next()))); }
         else if (a == "--expect-tone") { expectHz = std::stod(next()); expectDbMin = std::stod(next()); expectDbMax = std::stod(next()); }
         else if (a == "--expect-silence") expectSilence = true;
         else if (a == "--expect-load-failure") expectLoadFailure = true;
@@ -355,6 +365,13 @@ int main(int argc, char** argv) {
     const size_t stateSize = c.retro_serialize_size();
     for (unsigned f = 0; f < frames; ++f) {
         currentFrame = f;
+        for (const auto& [at, index] : swaps) {
+            if (at != f) continue;
+            const bool swapped = diskControl && diskControl->set_eject_state(true) && diskControl->set_image_index(index) &&
+                            diskControl->set_eject_state(false);
+            std::printf("disk control: image %u of %u at frame %u%s\n", index + 1,
+                        diskControl ? diskControl->get_num_images() : 0, f, swapped ? "" : " FAILED");
+        }
         c.retro_run();
         if (f == 0) audioFramesFirst = audioFrames;
         hashes.push_back(fnv1a(lastFrame.pixels.data(), lastFrame.pixels.size() * 4));

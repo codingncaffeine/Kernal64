@@ -4,6 +4,7 @@
 #include "libretro.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -27,10 +28,18 @@ retro_input_state_t inputStateCb;
 retro_log_printf_t logCb;
 
 std::unique_ptr<k64::C64> machine;
-// The disk in drive 8 and where what the drive writes on it is kept (PLAN D10: a G64 copy in
-// the frontend's save folder, named after the content; the user's file is never written).
-std::shared_ptr<k64::GcrDisk> disk;
-std::string diskSavePath;
+// The disks: one image, or the list an .m3u names (swapped through the frontend's disk
+// control). What the drive writes on one is kept (PLAN D10) in a G64 copy in the frontend's
+// save folder, named after the image; the user's files are never written.
+struct DiskSlot {
+    std::string path;                        // the image file
+    std::string savePath;                    // its kept copy
+    std::shared_ptr<k64::GcrDisk> disk;      // read when first inserted
+};
+std::vector<DiskSlot> slots;
+size_t slotIndex = 0;
+bool diskEjected = false;
+std::shared_ptr<k64::GcrDisk> disk;          // the one in the drive (none while ejected)
 
 std::vector<uint32_t> frameOut;
 std::vector<int16_t> audioOut;
@@ -192,16 +201,18 @@ bool readWhole(const std::string& path, std::vector<uint8_t>& bytes) {
     return true;
 }
 
-void saveDisk() {
-    if (!disk || !disk->changed || diskSavePath.empty()) return;
-    const auto g = k64::writeG64(*disk);
-    const std::string tmp = diskSavePath + ".tmp";
+void saveDisk(DiskSlot& slot) {
+    if (!slot.disk || !slot.disk->changed || slot.savePath.empty()) return;
+    const auto g = k64::writeG64(*slot.disk);
+    const std::string tmp = slot.savePath + ".tmp";
     FILE* f = std::fopen(tmp.c_str(), "wb");
     const bool ok = f && std::fwrite(g.data(), 1, g.size(), f) == g.size();
     if (f) std::fclose(f);
-    if (ok && std::rename(tmp.c_str(), diskSavePath.c_str()) == 0) disk->changed = false;
-    else log(RETRO_LOG_ERROR, "could not save the written disk to %s", diskSavePath.c_str());
+    if (ok && std::rename(tmp.c_str(), slot.savePath.c_str()) == 0) slot.disk->changed = false;
+    else log(RETRO_LOG_ERROR, "could not save the written disk to %s", slot.savePath.c_str());
 }
+
+void saveDisks() { for (DiskSlot& slot : slots) saveDisk(slot); }
 
 // The save folder's copy for content at `path`: "<save folder>/<name without extension>.g64".
 std::string diskCopyPath(const char* path) {
@@ -214,6 +225,119 @@ std::string diskCopyPath(const char* path) {
     if (dot != std::string::npos) name = name.substr(0, dot);
     return std::string(saveDir) + "/" + name + ".g64";
 }
+
+// The slot's disk: its kept copy when there is one, else the image file.
+bool loadSlot(DiskSlot& slot, std::string& error) {
+    if (slot.disk) return true;
+    auto d = std::make_shared<k64::GcrDisk>();
+    std::vector<uint8_t> bytes;
+    if (!slot.savePath.empty() && readWhole(slot.savePath, bytes) && k64::parseDisk(bytes.data(), bytes.size(), *d, error)) {
+        log(RETRO_LOG_INFO, "disk: the written copy %s", slot.savePath.c_str());
+    } else {
+        bytes.clear();
+        if (!readWhole(slot.path, bytes)) { error = "cannot read " + slot.path; return false; }
+        if (!k64::parseDisk(bytes.data(), bytes.size(), *d, error)) return false;
+    }
+    slot.disk = d;
+    return true;
+}
+
+void insertSlot() {
+    if (slotIndex >= slots.size()) return;
+    std::string error;
+    if (!loadSlot(slots[slotIndex], error)) {
+        log(RETRO_LOG_ERROR, "disk %u: %s", static_cast<unsigned>(slotIndex + 1), error.c_str());
+        notify("Kernal64: " + error);
+        return;
+    }
+    disk = slots[slotIndex].disk;
+    machine->insertDisk(disk);
+}
+
+// An .m3u: one image path per line (relative to the list), # lines are comments.
+std::vector<std::string> readM3u(const std::string& path) {
+    std::vector<std::string> out;
+    std::vector<uint8_t> bytes;
+    if (!readWhole(path, bytes)) return out;
+    const std::string dir = path.find_last_of("/\\") == std::string::npos ? "" : path.substr(0, path.find_last_of("/\\") + 1);
+    std::string line;
+    for (size_t i = 0; i <= bytes.size(); ++i) {
+        const char c = i < bytes.size() ? static_cast<char>(bytes[i]) : '\n';
+        if (c != '\n' && c != '\r') { line += c; continue; }
+        while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
+        if (!line.empty() && line[0] != '#') out.push_back(line[0] == '/' ? line : dir + line);
+        line.clear();
+    }
+    return out;
+}
+
+bool hasExtension(const char* path, const char* ext) {
+    if (!path) return false;
+    const size_t n = std::strlen(path), m = std::strlen(ext);
+    if (n < m) return false;
+    for (size_t k = 0; k < m; ++k)
+        if (std::tolower(static_cast<unsigned char>(path[n - m + k])) != ext[k]) return false;
+    return true;
+}
+
+bool isDiskImage(const std::vector<uint8_t>& b) {
+    const size_t n = b.size();
+    return (n >= 8 && !std::memcmp(b.data(), "GCR-1541", 8)) || n == 174848 || n == 175531 || n == 196608 ||
+           n == 197376 || n == 205312 || n == 206114;
+}
+
+// --- disk control (the frontend's eject / pick / insert) ---------------------------------
+bool RETRO_CALLCONV dcSetEject(bool ejected) {
+    if (!machine || ejected == diskEjected) return true;
+    diskEjected = ejected;
+    if (ejected) {
+        saveDisks();
+        machine->ejectDisk();
+        disk.reset();
+    } else {
+        insertSlot();
+    }
+    return true;
+}
+bool RETRO_CALLCONV dcGetEject() { return diskEjected; }
+unsigned RETRO_CALLCONV dcGetIndex() { return static_cast<unsigned>(slotIndex); }
+bool RETRO_CALLCONV dcSetIndex(unsigned i) {
+    if (!diskEjected) return false;
+    slotIndex = i;   // i == number of slots: no disk
+    return true;
+}
+unsigned RETRO_CALLCONV dcNumImages() { return static_cast<unsigned>(slots.size()); }
+bool RETRO_CALLCONV dcReplace(unsigned i, const retro_game_info* info) {
+    if (i >= slots.size()) return false;
+    saveDisk(slots[i]);
+    if (!info) { slots.erase(slots.begin() + i); return true; }
+    if (!info->path) return false;
+    slots[i] = DiskSlot{info->path, diskCopyPath(info->path), nullptr};
+    return true;
+}
+bool RETRO_CALLCONV dcAdd() { slots.push_back(DiskSlot{}); return true; }
+unsigned initialIndex = 0;
+std::string initialPath;
+bool RETRO_CALLCONV dcSetInitial(unsigned i, const char* path) {
+    initialIndex = i;
+    initialPath = path ? path : "";
+    return true;
+}
+bool RETRO_CALLCONV dcGetPath(unsigned i, char* out, size_t len) {
+    if (i >= slots.size() || slots[i].path.empty() || !len) return false;
+    std::snprintf(out, len, "%s", slots[i].path.c_str());
+    return true;
+}
+bool RETRO_CALLCONV dcGetLabel(unsigned i, char* out, size_t len) {
+    if (i >= slots.size() || slots[i].path.empty() || !len) return false;
+    std::string name = slots[i].path;
+    const size_t slash = name.find_last_of("/\\");
+    if (slash != std::string::npos) name = name.substr(slash + 1);
+    std::snprintf(out, len, "%s", name.c_str());
+    return true;
+}
+const retro_disk_control_ext_callback kDiskControl = {dcSetEject, dcGetEject, dcGetIndex, dcSetIndex, dcNumImages,
+                                                      dcReplace, dcAdd, dcSetInitial, dcGetPath, dcGetLabel};
 
 bool loadContent(const retro_game_info* info) {
     std::vector<uint8_t> bytes;
@@ -239,18 +363,29 @@ bool loadContent(const retro_game_info* info) {
                 static_cast<unsigned>(image.chips.size()));
             return true;
         }
-    } else if ((bytes.size() >= 8 && !std::memcmp(bytes.data(), "GCR-1541", 8)) || bytes.size() == 174848 ||
-               bytes.size() == 175531 || bytes.size() == 196608 || bytes.size() == 197376 ||
-               bytes.size() == 205312 || bytes.size() == 206114) {
-        disk = std::make_shared<k64::GcrDisk>();
-        diskSavePath = diskCopyPath(info->path);
-        std::vector<uint8_t> copy;
-        const bool haveCopy = !diskSavePath.empty() && readWhole(diskSavePath, copy) && k64::parseDisk(copy.data(), copy.size(), *disk, error);
-        if (!machine->driveAttached()) {
+    } else if (isDiskImage(bytes) || hasExtension(info->path, ".m3u")) {
+        slots.clear();
+        diskEjected = false;
+        if (isDiskImage(bytes)) {
+            slots.push_back(DiskSlot{info->path ? info->path : "", diskCopyPath(info->path), nullptr});
+            // The bytes the frontend handed us, unless a kept copy wins (loadSlot reads that).
+            std::vector<uint8_t> copy;
+            if (slots[0].savePath.empty() || !readWhole(slots[0].savePath, copy)) {
+                auto d = std::make_shared<k64::GcrDisk>();
+                if (k64::parseDisk(bytes.data(), bytes.size(), *d, error)) slots[0].disk = d;
+            }
+        } else {
+            for (const std::string& p : readM3u(info->path)) slots.push_back(DiskSlot{p, diskCopyPath(p.c_str()), nullptr});
+        }
+        slotIndex = (!initialPath.empty() && initialIndex < slots.size() && slots[initialIndex].path == initialPath) ? initialIndex : 0;
+        if (slots.empty()) {
+            error = "the disk list names no disk";
+        } else if (!machine->driveAttached()) {
             error = "a disk needs drive 8: the 1541 ROMs in the system folder and the drive switched on";
-        } else if (haveCopy || k64::parseDisk(bytes.data(), bytes.size(), *disk, error)) {
-            if (haveCopy) log(RETRO_LOG_INFO, "disk: the written copy %s", diskSavePath.c_str());
-            machine->insertDisk(disk);
+        } else if (!loadSlot(slots[slotIndex], error)) {
+            // error says why
+        } else {
+            insertSlot();
             machine->setAutotype("LOAD\"*\",8,1\rRUN\r");
             log(RETRO_LOG_INFO, "disk in drive 8, started with LOAD\"*\",8,1 and RUN");
             return true;
@@ -302,6 +437,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
         {nullptr, nullptr},
     };
     cb(RETRO_ENVIRONMENT_SET_VARIABLES, const_cast<retro_variable*>(vars));
+    cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, const_cast<retro_disk_control_ext_callback*>(&kDiskControl));
     // What the RetroPad's buttons are, for the frontend's remapping screen.
     static const retro_input_descriptor inputs[] = {
         {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP, "Joystick up"},
@@ -337,7 +473,7 @@ RETRO_API void retro_get_system_info(retro_system_info* info) {
     std::memset(info, 0, sizeof *info);
     info->library_name = "Kernal64";
     info->library_version = KERNAL64_VERSION;
-    info->valid_extensions = "crt|prg|p00|t64|d64|g64";
+    info->valid_extensions = "crt|prg|p00|t64|d64|g64|m3u";
     info->need_fullpath = false;
     info->block_extract = false;
 }
@@ -399,9 +535,9 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
 RETRO_API bool retro_load_game_special(unsigned, const retro_game_info*, size_t) { return false; }
 
 RETRO_API void retro_unload_game(void) {
-    saveDisk();
+    saveDisks();
+    slots.clear();
     disk.reset();
-    diskSavePath.clear();
     machine.reset();
 }
 
@@ -450,7 +586,7 @@ RETRO_API void retro_run(void) {
     size_t done = 0;
     while (done < frames && audioBatchCb) done += audioBatchCb(audioOut.data() + done * 2, frames - done);
     // What the drive wrote is kept once it has stopped writing (motor off).
-    if (disk && disk->changed && !machine->drive().motor()) saveDisk();
+    if (disk && disk->changed && !machine->drive().motor()) saveDisks();
 }
 
 RETRO_API size_t retro_serialize_size(void) { return machine ? machine->stateSize() : 0; }
