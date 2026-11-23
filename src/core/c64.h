@@ -10,6 +10,7 @@
 #include "timing.h"
 #include "vic2.h"
 #include "cia6526.h"
+#include "sid.h"
 
 #include <array>
 #include <cstddef>
@@ -31,6 +32,10 @@ public:
     // Both CIAs as the original 6526 or the later 8521. Takes effect at once (no reset).
     void setCiaModel(CiaModel m) { cia1_.setModel(m); cia2_.setModel(m); }
     CiaModel ciaModel() const { return cia1_.model(); }
+    // The SID as the 6581 or the 8580. Takes effect at once (no reset).
+    void setSidModel(SidModel m) { sid_.setModel(m); }
+    SidModel sidModel() const { return sid_.model(); }
+    const Sid& sid() const { return sid_; }
     const Timing& timing() const { return *timing_; }
 
     void runFrame();    // one video frame of cycles, ending where vertical blanking starts
@@ -116,7 +121,6 @@ private:
         uint8_t restore = 0;
         uint8_t cia1IrqSeen = 0, cia2IrqSeen = 0, vicIrqSeen = 0;   // the interrupt lines as the CPU sees them
         uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
-        uint8_t sid[32] = {};
     };
 #pragma pack(pop)
 
@@ -133,6 +137,7 @@ private:
     Cpu6502<CpuBus> cpu_{bus_};
     Vic2 vic_{*this, kTimingPal};
     Cia6526 cia1_{*this, 0}, cia2_{*this, 1};
+    Sid sid_;
 };
 
 } // namespace k64

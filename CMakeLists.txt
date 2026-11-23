@@ -22,6 +22,7 @@ add_library(k64core STATIC
   src/core/c64.cpp
   src/core/vic2.cpp
   src/core/cia6526.cpp
+  src/core/sid.cpp
   src/core/roms.cpp
 )
 target_include_directories(k64core PUBLIC src/core)
@@ -61,6 +62,30 @@ if(EXISTS ${K64_P6502}/perfect6502.c)
   target_include_directories(cpudiff PRIVATE src/core)
   target_compile_options(cpudiff PRIVATE ${K64_WARNINGS})
   target_link_libraries(cpudiff PRIVATE p6502)
+endif()
+
+# Differential test of the SID against the reference engine, built only when its fetched
+# source is present (tools/fetch.sh resid). Never shipped.
+set(K64_RESID ${CMAKE_SOURCE_DIR}/gitignore/external/resid/src)
+if(EXISTS ${K64_RESID}/sid.cc)
+  set(RESID_INLINING 1)
+  set(RESID_INLINE inline)
+  set(RESID_BRANCH_HINTS 1)
+  set(RESID_FPGA_CODE 0)
+  set(RESID_CONSTEVAL consteval)
+  set(RESID_CONSTEXPR "static constexpr")
+  set(RESID_CONSTINIT constinit)
+  set(HAVE_BUILTIN_EXPECT 1)
+  configure_file(${K64_RESID}/siddefs.h.in ${CMAKE_BINARY_DIR}/resid/siddefs.h @ONLY)
+  add_library(resid STATIC ${K64_RESID}/sid.cc ${K64_RESID}/voice.cc ${K64_RESID}/wave.cc ${K64_RESID}/envelope.cc
+              ${K64_RESID}/filter.cc ${K64_RESID}/extfilt.cc ${K64_RESID}/pot.cc ${K64_RESID}/version.cc)
+  target_include_directories(resid SYSTEM PUBLIC ${CMAKE_BINARY_DIR}/resid ${K64_RESID})
+  target_compile_definitions(resid PRIVATE VERSION="1.0")
+  target_compile_options(resid PRIVATE -w)
+  add_executable(siddiff tools/siddiff/main.cpp)
+  target_include_directories(siddiff SYSTEM PRIVATE ${K64_RESID}/..)
+  target_link_libraries(siddiff PRIVATE k64core resid)
+  target_compile_options(siddiff PRIVATE ${K64_WARNINGS})
 endif()
 
 # Runs 6502 test program images (functional test, illegal-opcode tests).

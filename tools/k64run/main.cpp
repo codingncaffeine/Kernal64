@@ -1,7 +1,7 @@
 // k64run: boots the machine headless with the ROMs from a folder, runs a number of
 // frames and prints the text screen (screen memory at $0400, as the KERNAL sets it).
 //
-//   k64run ROM_FOLDER [--frames N] [--model pal|pal-new|pal-old|ntsc|ntsc-new|ntsc-old] [--cia old|new] [--expect TEXT]...
+//   k64run ROM_FOLDER [--frames N] [--model pal|pal-new|pal-old|ntsc|ntsc-new|ntsc-old] [--cia old|new] [--sid old|new] [--expect TEXT]...
 //
 // --expect TEXT fails the run unless TEXT appears on the screen.
 // --png FILE writes the visible picture of the last frame.
@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
     int frames = 150;
     k64::VicModel model = k64::VicModel::Mos6569;
     k64::CiaModel cia = k64::CiaModel::Mos6526;
+    k64::SidModel sid = k64::SidModel::Mos6581;
     std::vector<std::string> expect;
     std::string png, rasterOut, autostart;
     bool debugCart = false;
@@ -61,6 +62,7 @@ int main(int argc, char** argv) {
         else if (a == "--model" && i + 1 < argc) {
             if (!k64::vicModelFromName(argv[++i], model)) { std::fprintf(stderr, "k64run: unknown model %s (%s)\n", argv[i], k64::kVicModelNames); return 2; }
         } else if (a == "--cia" && i + 1 < argc) cia = std::string(argv[++i]) == "new" ? k64::CiaModel::Mos8521 : k64::CiaModel::Mos6526;
+        else if (a == "--sid" && i + 1 < argc) sid = std::string(argv[++i]) == "new" ? k64::SidModel::Mos8580 : k64::SidModel::Mos6581;
         else if (a == "--expect" && i + 1 < argc) expect.emplace_back(argv[++i]);
         else if (a == "--png" && i + 1 < argc) png = argv[++i];
         else if (a == "--hash") hash = true;
@@ -83,6 +85,7 @@ int main(int argc, char** argv) {
     static k64::C64 machine(model);
     machine.setRoms(roms);
     machine.setCiaModel(cia);
+    machine.setSidModel(sid);
     if (!machine.hasSystemRoms()) { std::fprintf(stderr, "k64run: BASIC, KERNAL or character ROM not found in %s\n", argv[1]); return 3; }
     machine.reset();
     machine.enableDebugCart(debugCart);

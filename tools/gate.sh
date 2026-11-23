@@ -7,7 +7,8 @@
 # the libretro conformance checks on every machine model; the PLA against a chip
 # read-out and the KERNAL booting to BASIC on every model; the CPU against the
 # per-opcode bus traces, the functional and undocumented-opcode test programs and
-# the transistor-level chip; the VIC-II against the article's rules and the start-up
+# the transistor-level chip; the SID's digital part against the reference engine cycle by
+# cycle; the VIC-II against the article's rules and the start-up
 # screen against the reference emulator (tools/oracle/build-vice.sh); the reference
 # suite's CPU, CIA, interrupt, general and VIC-II programs on both CIA types and both VIC-II
 # generations; our own probe and raster-effect programs; the core loading in RetroArch
@@ -80,10 +81,10 @@ if [ -x "$ROOT/gitignore/external/vice/build/src/x64sc" ] && command -v podman >
         || { tail -6 "$BUILD/refcheck.log"; bad "start-up screen differs from the reference"; }
 else bad "reference emulator missing: tools/oracle/build-vice.sh"; fi
 
-step "CPU, CIA, interrupt, general and VIC-II test programs against the reference emulator"
+step "CPU, CIA, interrupt, general, VIC-II and SID test programs against the reference emulator"
 # (Lorenz's suite is in "general". Programs waiting for later hardware: tests/suite-known.txt.)
 if [ -f "$ROOT/gitignore/external/testprogs/testbench/c64-testlist.in" ]; then
-    tools/suite.sh '^\.\./(CIA|interrupts|general|CPU|VICII)/' "$BUILD/k64run" >"$BUILD/suite.log" 2>&1 \
+    tools/suite.sh '^\.\./(CIA|interrupts|general|CPU|VICII|SID)/' "$BUILD/k64run" >"$BUILD/suite.log" 2>&1 \
         || { grep -E '^(WORSE|FIXED)' "$BUILD/suite.log" | head -8; bad "test programs worse than the reference"; }
     tail -1 "$BUILD/suite.log"
 else bad "test programs missing: tools/oracle/build-vice.sh"; fi
@@ -122,6 +123,18 @@ if [ -x "$BUILD/cpudiff" ]; then
     "$BUILD/cpudiff" --seeds 40 --cycles 20000 --irq --rdy --volatile --dense --only 08,28,58,78,ea,48,68,a9,40,e8 >"$BUILD/cpudiff.log" 2>&1 \
         || { grep -A3 DIFFERS "$BUILD/cpudiff.log" | head -5; bad "chip comparison (flag and stack instructions, dense)"; }
 else bad "chip comparison not built: tools/fetch.sh perfect6502"; fi
+
+step "SID against the reference engine"
+if [ -x "$BUILD/siddiff" ]; then
+    for m in 6581 8580; do
+        for run in "2 300000 6" "16 300000 6" "400 3000000 6" "40000 40000000 3"; do
+            # shellcheck disable=SC2086
+            set -- $run
+            "$BUILD/siddiff" --model $m --every "$1" --cycles "$2" --seeds "$3" >"$BUILD/siddiff.log" 2>&1 \
+                || { grep -A7 DIFFERS "$BUILD/siddiff.log" | head -8; bad "SID comparison ($m, a write every $1 cycles)"; }
+        done
+    done
+else bad "SID comparison not built: tools/fetch.sh resid"; fi
 
 if [ "$QUICK" = 0 ]; then
     step "RetroArch behind the wall"

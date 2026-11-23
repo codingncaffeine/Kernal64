@@ -126,6 +126,13 @@ k64::CiaModel ciaFromOptions() {
     return k64::CiaModel::Mos6526;
 }
 
+k64::SidModel sidFromOptions() {
+    retro_variable var{"kernal64_sid", nullptr};
+    if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "8580"))
+        return k64::SidModel::Mos8580;
+    return k64::SidModel::Mos6581;
+}
+
 // Border option: "full" shows everything the chip sends between the blanking intervals,
 // "small" the 320x200 window with up to 32 pixels of border left and right and 36 lines
 // above and below (as much of that as the model's picture has, the same on both sides),
@@ -171,6 +178,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
     static const retro_variable vars[] = {
         {"kernal64_model", "Video chip; pal|pal-new|pal-old|ntsc|ntsc-new|ntsc-old"},
         {"kernal64_cia", "CIA chips; 6526|8521"},
+        {"kernal64_sid", "SID chip; 6581|8580"},
         {"kernal64_border", "Border; full|small|none"},
         {"kernal64_joyport", "RetroPad is the joystick in control port; 2|1"},
         {nullptr, nullptr},
@@ -222,6 +230,7 @@ RETRO_API bool retro_load_game(const retro_game_info*) {
     }
     machine = std::make_unique<k64::C64>(modelFromOptions());
     machine->setCiaModel(ciaFromOptions());
+    machine->setSidModel(sidFromOptions());
     crop = cropFromOptions();
     audioCarry = 0.0;
     log(RETRO_LOG_INFO, "version %s, machine %s, CIA %s", KERNAL64_VERSION, machine->timing().name,
@@ -261,6 +270,7 @@ RETRO_API void retro_run(void) {
     bool updated = false;
     if (envCb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
         machine->setCiaModel(ciaFromOptions());
+        machine->setSidModel(sidFromOptions());
         const k64::VicModel m = modelFromOptions();
         const bool newModel = m != machine->timing().model;
         if (newModel) machine->setModel(m);

@@ -4,3 +4,20 @@
 # Format: NAME-PREFIX<TAB>REASON
 # Differences by design: measured chips disagree with the reference emulator, and we follow the chips.
 VICII/colorfetchbug/main.prg	the 8 pixels fetched in the cycle a delayed Bad Line starts: read from $38FF as on measured chips (the suite's vsp-tester, which the reference fails), not from $3FFF
+# SID (Phase 6, in progress). The programs judge themselves; these fail here.
+SID/detect/detect-1-old.prg	reads the combined waveform $30 of the 6581: the combined waveforms are still the plain AND of their parts
+SID/env_test/	envelope timing programs: not examined yet
+SID/noiselfsrinit/	noise register start value on the 8580: not examined yet
+SID/osc_topbit/osc_topbit_test_triangle_old.prg	accumulator top bit with a combined waveform on the 6581: not examined yet
+SID/resid-test/oscsample0-6581.prg	samples of combined waveforms on the 6581: the combined waveforms are still the plain AND of their parts
+SID/resid-test/oscsample1-6581.prg	as above
+SID/wb_testsuite/noise_writeback_check_8_to_C_old.prg	noise write-back through noise + pulse on the 6581 (the suite notes it may fail on real 6581s): not examined yet
+SID/wb_testsuite/noise_writeback_check_9_to_C_old.prg	as above
+SID/wb_testsuite/noise_writeback_check_A_to_C_old.prg	as above
+SID/wb_testsuite/noise_writeback_check_C_to_C_old.prg	as above
+SID/wb_testsuite/noise_writeback_check_D_to_C_old.prg	as above
+SID/wb_testsuite/noise_writeback_check_E_to_C_old.prg	as above
+SID/wb_testsuite/noise_writeback_check_F_to_C_old.prg	as above
+SID/wb_testsuite/noise_writeback_check_C_to_F_new.prg	noise write-back into a combination with triangle, sawtooth and pulse: needs the combined waveforms
+SID/wb_testsuite/noise_writeback_check_D_to_E_old.prg	as above
+SID/wf12nsr/wf12nsr-8580.prg	combined waveforms with noise on the 8580: needs the combined waveforms

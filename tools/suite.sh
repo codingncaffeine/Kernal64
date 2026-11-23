@@ -17,6 +17,8 @@
 #   WORSE      reference passes, we do not       better  we pass, the reference does not
 #   known      WORSE, and listed with its reason in tests/suite-known.txt (hardware of a
 #              later phase); FIXED = listed there but no longer worse: remove the line
+# The SID directory's exit-code programs are judged by their own verdict alone (WORSE when
+# they fail): they were checked on real chips, and the reference emulator fails many.
 # Exit status 0 when no test is WORSE or FIXED. A quarter of the machine's cores run tests at a time
 # (K64_SUITE_JOBS overrides), at low priority. The seconds each of our runs took are in
 # scratch/suite/times.txt, slowest first.
@@ -37,7 +39,7 @@ run_one() {
     IFS=',' read -r dir prg kind cycles opts <<<"$line"
     dir="${dir%/}/"   # some list entries omit the directory's trailing slash
     local name="${dir#../}$prg${opts:+ [$opts]}"
-    local model=pal vmodel=c64 cia=old ciaref=0 ckey="" skip="" o fam=pal newvic=0 vkey
+    local model=pal vmodel=c64 cia=old ciaref=0 ckey="" skip="" o fam=pal newvic=0 vkey sid=old sidref=resid6581
     local -a vextra=()
     IFS=',' read -ra optv <<<"$opts"
     for o in "${optv[@]}"; do
@@ -46,6 +48,8 @@ run_one() {
             vicii-ntsc) model=ntsc; vmodel=ntsc; fam=ntsc ;;
             vicii-ntscold) model=ntsc-old; vmodel=oldntsc; fam=ntsc-old ;;
             cia-new) cia=new; ciaref=1; ckey="+cianew" ;;
+            sid-old) ;;
+            sid-new) sid=new; sidref=resid8580; ckey="$ckey+sidnew" ;;
             vicii-new) newvic=1 ;;
             comment:*|expect:*|warn:*) ;;   # notes for people, not requirements
             *) skip="needs $o" ;;
@@ -75,10 +79,10 @@ run_one() {
         case "$fam" in pal) dx=492; dy=0 ;; ntsc) dx=508; dy=20 ;; *) dx=500; dy=20 ;; esac
         mkdir -p "$shots"
         key2="$(sha1sum "$file" | cut -c1-16)-$vkey$ckey-$cycles"
-        nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --autostart "$file" --cycles "$cycles" \
+        nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" --autostart "$file" --cycles "$cycles" \
             --raster "$out/$tag.raw" >"$out/$tag.k64.log" 2>&1
         if [ ! -s "$shots/$key2.png" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
-            K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -ciamodel $ciaref -jamaction 1 -warp -VICIIborders 2 \
+            K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sound -sidenginemodel $sidref -ciamodel $ciaref -jamaction 1 -warp -VICIIborders 2 \
                 -limitcycles "$cycles" -autostartprgmode 1 -autostart "/k64/${file#"$root"/}" \
                 -exitscreenshot "/k64/${shots#"$root"/}/$key2.png" >"$out/$tag.ref.log" 2>&1
         fi
@@ -91,15 +95,23 @@ run_one() {
         fi
         return
     fi
-    nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --autostart "$file" --debugcart --cycles "$cycles" \
+    nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" --autostart "$file" --debugcart --cycles "$cycles" \
         >"$out/$tag.k64.log" 2>&1
     local ours=$?
+    # The SID programs carry their own verdict, checked on real chips; the reference
+    # emulator's sound engine is older than many of them and fails where the chip passes.
+    # They are judged by the program alone.
+    if [ "${dir#../SID/}" != "$dir" ]; then
+        if [ $ours = 0 ]; then printf '%-9s %s (ours 0, judged by the program)\n' same-pass "$name"
+        else printf '%-9s %s (ours %s, judged by the program)\n' WORSE "$name" "$ours"; fi
+        return
+    fi
     local rel="${file#"$root"/}"
     local cache="$root/gitignore/external/suite-ref.cache" key ref
     key="$(sha1sum "$file" | cut -c1-16) $vkey$ckey $cycles"
     ref="$(grep -F -- "$key " "$cache" 2>/dev/null | tail -1 | awk '{print $NF}')"
     if [ -z "$ref" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
-        K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -ciamodel $ciaref -debugcart -jamaction 1 -warp \
+        K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sound -sidenginemodel $sidref -ciamodel $ciaref -debugcart -jamaction 1 -warp \
             -limitcycles "$cycles" -autostartprgmode 1 -autostart "/k64/$rel" >"$out/$tag.ref.log" 2>&1
         ref=$?
         flock "$cache.lock" sh -c "echo '$key $ref' >> '$cache'"

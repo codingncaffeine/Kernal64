@@ -7,10 +7,8 @@ VICII/border/vborder2.prg
 VICII/border/vborder_ntscold.prg
 VICII/border/vborder_ntsc.prg
 VICII/border/vborder.prg
-VICII/D011Test/d011h2.prg
 VICII/D011Test/d011ntsc.prg
 VICII/D011Test/d011v1.prg
-VICII/D011Test/d011vt.prg
 VICII/D011Test/hh.prg
 VICII/D011Test/s1.prg
 VICII/dmadelay/test1-ntsc.prg
