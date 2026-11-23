@@ -49,8 +49,9 @@ uint8_t Via6522::peek(unsigned reg) const {
     case 0: {
         // Pins that are outputs read the output register whatever the pin's level;
         // inputs the pin, or what CB1 latched.
-        const uint8_t pins = (s_.acr & 0x02) && (s_.ifr & kCb1) ? s_.irb : host_.viaPortB(id_, outB(), s_.ddrb);
-        return static_cast<uint8_t>((outB() & s_.ddrb) | (pins & ~s_.ddrb));
+        const uint8_t pins = (s_.acr & 0x02) && (s_.ifr & kCb1) ? s_.irb : host_.viaPortB(id_, outB(), ddrB());
+        const uint8_t outs = ddrB();   // with ACR bit 7, PB7 is timer 1's output (V3a)
+        return static_cast<uint8_t>((outB() & outs) | (pins & ~outs));
     }
     case 1: case 15:
         // Port A reads its pins, outputs too; or what CA1 latched.
@@ -114,7 +115,7 @@ void Via6522::write(unsigned reg, uint8_t v) {
         s_.t1Reload = 0;
         s_.t1Armed = 1;
         s_.ifr &= static_cast<uint8_t>(~kT1);
-        s_.pb7 = 0;
+        s_.pb7 = (s_.acr & 0x80) ? 0 : 1;   // V3a: low while timer 1 drives PB7, else high
         host_.viaOutputs(id_);
         break;
     case 7:
@@ -133,9 +134,6 @@ void Via6522::write(unsigned reg, uint8_t v) {
         s_.ifr &= static_cast<uint8_t>(~kSr);
         break;
     case 11:
-        // Switched from counting PB6 pulses to counting cycles, timer 2 counts from the
-        // cycle after next (V4a: real-chip bytes, the suite's viavarious via1 G, via2 I/K).
-        if ((s_.acr & 0x20) && !(v & 0x20)) s_.t2Loaded = 1;
         s_.acr = v;
         host_.viaOutputs(id_);
         break;
@@ -222,7 +220,7 @@ void Via6522::clock() {
         const bool freeRun = (s_.acr & 0x40) != 0;
         if (s_.t1Armed) {
             setIfr(kT1);
-            s_.pb7 = freeRun ? !s_.pb7 : 1;
+            if (s_.acr & 0x80) s_.pb7 = !s_.pb7;   // V3a: inverted at each armed time-out while it drives PB7, one-shot too
             outputs = outputs || (s_.acr & 0x80);
         }
         s_.t1Reload = 1;
@@ -236,12 +234,15 @@ void Via6522::clock() {
     s_.pb6 = pb6;
     if (s_.t2Loaded) {
         s_.t2Loaded = 0;
-    } else if (!(s_.acr & 0x20) || pulse) {
+    } else if (!s_.t2Pulses || pulse) {
         if (s_.t2c-- == 0 && s_.t2Armed) {
             setIfr(kT2);
             s_.t2Armed = 0;
         }
     }
+    // V4a (real-chip bytes, viavarious via1 G, via2 I/K, via5 M/O, via9): ACR bit 5 takes
+    // effect a cycle late in both directions; the cycle of the write still counts as before.
+    s_.t2Pulses = (s_.acr & 0x20) ? 1 : 0;
     if (outputs) host_.viaOutputs(id_);
 }
 

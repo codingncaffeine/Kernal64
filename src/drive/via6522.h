@@ -48,7 +48,8 @@ public:
     uint8_t outA() const { return s_.ora; }
     uint8_t ddrA() const { return s_.ddra; }
     uint8_t outB() const;       // with timer 1's output on PB7 when that is switched on
-    uint8_t ddrB() const { return s_.ddrb; }
+    // PB7 is an output while timer 1 drives it (ACR bit 7), whatever its direction bit.
+    uint8_t ddrB() const { return static_cast<uint8_t>(s_.ddrb | (s_.acr & 0x80)); }
 
 #pragma pack(push, 1)
     struct State {
@@ -62,6 +63,7 @@ public:
         uint8_t t1Armed = 0, t2Armed = 0; // the next time-out sets the flag
         uint8_t pb7 = 1;                  // timer 1's output
         uint8_t pb6 = 1;                  // PB6 as last seen (timer 2 counts its falling edges)
+        uint8_t t2Pulses = 0;             // timer 2 counts PB6 pulses: ACR bit 5, a cycle late
         uint8_t ca1 = 1, ca2 = 1, cb1 = 1, cb2 = 1;   // the lines' levels as inputs
         uint8_t ca2Low = 0, cb2Low = 0;   // handshake and pulse output: the line is low
         uint8_t ca2Pulse = 0, cb2Pulse = 0;   // pulse output: back high after this cycle
