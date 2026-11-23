@@ -40,6 +40,9 @@ public:
         uint16_t counter[2] = {}, latch[2] = {0xFFFF, 0xFFFF};
         uint8_t cr[2] = {};
         uint8_t icr = 0, imr = 0, irqLow = 0;
+        uint8_t irHold = 0;             // IR bit still visible after a read (clocks)
+        uint8_t readAge = 2;            // clocks since the last ICR read (saturates at 2)
+        uint8_t tbBug = 0;              // the next ICR read hides timer B's flag
         uint32_t delay = 0, feed = 0;   // the cycle pipeline, see cia6526.cpp
         uint8_t reloadHeld = 0;         // per timer: a load happened in the last clock
         uint8_t pbTimerOut = 0;         // PB6/PB7 as the timers drive them

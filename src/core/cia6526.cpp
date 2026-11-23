@@ -63,6 +63,9 @@ void Cia6526::setIcr(uint8_t bits) {
 void Cia6526::underflow(int t) {
     const uint8_t bit = static_cast<uint8_t>(1 << t);
     setIcr(bit);
+    // Old 6526: a timer B underflow in the clock right after an ICR read is dropped from the
+    // next read (rule 13b).
+    if (t == 1) s_.tbBug = s_.readAge == 1 ? 1 : 0;
     s_.pbToggle ^= static_cast<uint8_t>(0x40 << t);
     if ((s_.cr[t] & 0x06) == 0x02) {   // pulse mode on PB: high for one clock
         s_.pbTimerOut |= static_cast<uint8_t>(0x40 << t);
@@ -104,6 +107,8 @@ void Cia6526::clock() {
     for (int t = 0; t < 2; ++t)
         if (s_.delay & pulseEnd(t, 1)) s_.pbTimerOut &= static_cast<uint8_t>(~(0x40 << t));
     if (s_.delay & kInt1) s_.irqLow = 1;
+    if (s_.irHold) --s_.irHold;
+    if (s_.readAge < 2) ++s_.readAge;
     s_.delay = ((s_.delay << 1) & kShiftMask) | s_.feed;
     serialClock();
 }
@@ -249,7 +254,10 @@ uint8_t Cia6526::peek(unsigned r) const {
         return s_.todLatched ? s_.todLatch[i] : s_.tod[i];
     }
     case 0xC: return s_.sdr;
-    case 0xD: return static_cast<uint8_t>((s_.icr & 0x1F) | (s_.irqLow ? 0x80 : 0));
+    case 0xD: {
+        const uint8_t flags = s_.tbBug ? static_cast<uint8_t>(s_.icr & ~0x02) : s_.icr;
+        return static_cast<uint8_t>((flags & 0x1F) | ((s_.irqLow || s_.irHold) ? 0x80 : 0));
+    }
     case 0xE: return static_cast<uint8_t>(s_.cr[0] & ~0x10);
     default: return static_cast<uint8_t>(s_.cr[1] & ~0x10);
     }
@@ -264,8 +272,13 @@ uint8_t Cia6526::read(unsigned r) {
     } else if (r == 0x8) {              // ... until 10ths is read
         s_.todLatched = 0;
     } else if (r == 0xD) {
+        // The flags and the interrupt line clear at once; the IR bit only one clock later,
+        // so a read in the next cycle still sees it (rule 13a).
+        if (v & 0x80) s_.irHold = 2;
         s_.icr = 0;
         s_.irqLow = 0;
+        s_.tbBug = 0;
+        s_.readAge = 0;
         s_.delay &= ~(kInt0 | kInt1);
     }
     return v;
