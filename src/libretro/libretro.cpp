@@ -202,7 +202,8 @@ bool loadContent(const retro_game_info* info) {
             return true;
         }
     } else if ((bytes.size() >= 8 && !std::memcmp(bytes.data(), "GCR-1541", 8)) || bytes.size() == 174848 ||
-               bytes.size() == 175531 || bytes.size() == 196608 || bytes.size() == 197376) {
+               bytes.size() == 175531 || bytes.size() == 196608 || bytes.size() == 197376 ||
+               bytes.size() == 205312 || bytes.size() == 206114) {
         auto disk = std::make_shared<k64::GcrDisk>();
         if (!machine->driveAttached()) {
             error = "a disk needs drive 8: the 1541 ROMs in the system folder and the drive switched on";

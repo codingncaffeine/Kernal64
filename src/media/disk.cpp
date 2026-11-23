@@ -80,6 +80,8 @@ bool parseD64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error
     case 175531: tracks = 35; errors = true; break;
     case 196608: tracks = 40; break;
     case 197376: tracks = 40; errors = true; break;
+    case 205312: tracks = 42; break;
+    case 206114: tracks = 42; errors = true; break;
     default: error = "not a D64 image (size " + std::to_string(size) + ")"; return false;
     }
     int totalSectors = 0;

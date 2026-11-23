@@ -30,7 +30,7 @@ struct GcrDisk {
 int trackZone(int track);
 int sectorsOnTrack(int track);
 
-// D64: 35 or 40 tracks, optionally with one error byte per sector. The sectors are laid out
+// D64: 35, 40 or 42 tracks, optionally with one error byte per sector. The sectors are laid out
 // as the DOS formats a disk. False, with the reason in `error`, for anything else.
 bool parseD64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
 // G64 ("GCR-1541" header, half-track table, speed table).
