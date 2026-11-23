@@ -49,7 +49,24 @@ for p in "tap204060once:20 40 60" "tap204060invonce:30 50"; do
     esac
 done
 
-# 3. A tape as content: PLAY down, LOAD and RUN typed by the core.
+# 3. Our own turbo tape (tests/tape/mkturbo.py: masters the tape, writes its loader), at a
+# common speed and at the speed of the fastest commercial turbos, on PAL and NTSC.
+for speed in "256 384" "160 240"; do
+    set -- $speed
+    d="$OUT/turbo-$1"; mkdir -p "$d"
+    python3 -I "$ROOT/tests/tape/mkturbo.py" "$d" "$1" "$2" && python3 -I "$ROOT/tools/k64asm.py" -o "$d/turbo.prg" "$d/turbo.s" >/dev/null \
+        || { echo "FAIL tape: turbo $1/$2 not built"; rc=1; continue; }
+    for model in pal ntsc; do
+        if "$B/k64run" "$ROOT/gitignore" --model "$model" --tape "$d/turbo.tap" --play --autostart "$d/turbo.prg" \
+               --debugcart --cycles 60000000 >"$d/$model.log" 2>&1; then
+            echo "tape: our turbo ($1/$2 cycles, $model) loads 8 KB intact"
+        else
+            echo "FAIL tape: our turbo ($1/$2 cycles, $model): $(tail -1 "$d/$model.log")"; rc=1
+        fi
+    done
+done
+
+# 4. A tape as content: PLAY down, LOAD and RUN typed by the core.
 if "$B/k64host" "$CORE" --system "$ROOT/gitignore" --save "$OUT" --content "$OUT/kernal.tap" --frames 2700 \
        --expect-screen ' 4242' >"$OUT/host.log" 2>&1; then
     echo "tape: a tape as content starts by itself"
