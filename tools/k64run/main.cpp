@@ -15,8 +15,10 @@
 //   rows = raster lines 0.., columns = pixels from the start of cycle 1.
 // --raster-frames N (with --raster and --cycles) appends the raster after each of N more
 //   frames: N+1 rasters, to find the frame in which an animated picture equals a reference.
-// --autostart PRG once the KERNAL waits for input: puts the program into memory as LOAD
-//   would and types RUN (the reference emulator's "inject" autostart).
+// --cart FILE.crt plugs a cartridge in before the machine is switched on.
+// --autostart FILE (a program file, the same in a P00 wrapper, or a T64 container) once
+//   the KERNAL waits for input: puts the program into memory as LOAD would and types RUN
+//   (the reference emulator's "inject" autostart).
 // --autostart-delay N waits N more cycles after the KERNAL first waits for input (a
 //   program whose picture depends on when it was started shows it by changing with N).
 // --debugcart ends the run when the program writes its result to $D7FF; the exit status is
@@ -55,12 +57,12 @@ int main(int argc, char** argv) {
     bool noisePulseDrains = true;
     int paddles[2][2] = {{-1, -1}, {-1, -1}};
     std::vector<std::string> expect;
-    std::string png, rasterOut, autostart;
+    std::string png, rasterOut, autostart, cartFile;
     bool debugCart = false;
     uint64_t cycleLimit = 0;
     bool hash = false;
     int rasterFrames = 0;
-    uint64_t autostartDelay = 0, readyAt = 0;
+    uint64_t autostartDelay = 0;
     int where = -1, whereLeft = 32;
     bool whereSeen = false;
     std::vector<std::pair<unsigned, unsigned>> dumps;
@@ -78,6 +80,7 @@ int main(int argc, char** argv) {
             paddles[port - 1][0] = std::atoi(argv[++i]);
             paddles[port - 1][1] = std::atoi(argv[++i]);
         }
+        else if (a == "--cart" && i + 1 < argc) cartFile = argv[++i];
         else if (a == "--expect" && i + 1 < argc) expect.emplace_back(argv[++i]);
         else if (a == "--png" && i + 1 < argc) png = argv[++i];
         else if (a == "--hash") hash = true;
@@ -103,34 +106,38 @@ int main(int argc, char** argv) {
     machine.setSidModel(sid);
     machine.setSidNoisePulseDrains(noisePulseDrains);
     if (!machine.hasSystemRoms()) { std::fprintf(stderr, "k64run: BASIC, KERNAL or character ROM not found in %s\n", argv[1]); return 3; }
+    auto readFile = [](const std::string& path, std::vector<uint8_t>& bytes) {
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return false;
+        int ch;
+        while ((ch = std::fgetc(f)) != EOF) bytes.push_back(static_cast<uint8_t>(ch));
+        std::fclose(f);
+        return true;
+    };
+    if (!cartFile.empty()) {
+        std::vector<uint8_t> bytes;
+        k64::CartImage image;
+        std::string error;
+        if (!readFile(cartFile, bytes)) { std::fprintf(stderr, "k64run: cannot open %s\n", cartFile.c_str()); return 3; }
+        if (!k64::parseCrt(bytes.data(), bytes.size(), image, error) || !machine.attachCartridge(image, error)) {
+            std::fprintf(stderr, "k64run: %s: %s\n", cartFile.c_str(), error.c_str());
+            return 3;
+        }
+    }
+    if (!autostart.empty()) {
+        std::vector<uint8_t> bytes;
+        k64::ProgramFile program;
+        std::string error;
+        if (!readFile(autostart, bytes)) { std::fprintf(stderr, "k64run: cannot open %s\n", autostart.c_str()); return 3; }
+        if (!k64::parseProgram(bytes.data(), bytes.size(), program, error)) {
+            std::fprintf(stderr, "k64run: %s: %s\n", autostart.c_str(), error.c_str());
+            return 3;
+        }
+        machine.setAutostart(program, autostartDelay);
+    }
     machine.reset();
     for (int port = 0; port < 2; ++port) machine.setPaddles(port + 1, paddles[port][0], paddles[port][1]);
     machine.enableDebugCart(debugCart);
-    std::vector<uint8_t> prg;
-    if (!autostart.empty()) {
-        FILE* f = std::fopen(autostart.c_str(), "rb");
-        if (!f) { std::fprintf(stderr, "k64run: cannot open %s\n", autostart.c_str()); return 3; }
-        int ch;
-        while ((ch = std::fgetc(f)) != EOF) prg.push_back(static_cast<uint8_t>(ch));
-        std::fclose(f);
-        if (prg.size() < 3) { std::fprintf(stderr, "k64run: %s is not a program file\n", autostart.c_str()); return 3; }
-    }
-    bool injected = prg.empty();
-    auto inject = [&] {
-        // The KERNAL's input loop polls the keyboard buffer at $E5CD; from there on it is ready.
-        const uint16_t load = static_cast<uint16_t>(prg[0] | (prg[1] << 8));
-        const uint16_t end = static_cast<uint16_t>(load + prg.size() - 2);
-        for (size_t i = 2; i < prg.size(); ++i) machine.pokeRam(static_cast<uint16_t>(load + i - 2), prg[i]);
-        for (int p : {0x2D, 0x2F, 0x31, 0xAE}) {   // VARTAB, ARYTAB, STREND, end of load
-            const auto ptr = static_cast<uint16_t>(p);
-            machine.pokeRam(ptr, static_cast<uint8_t>(end));
-            machine.pokeRam(static_cast<uint16_t>(ptr + 1), static_cast<uint8_t>(end >> 8));
-        }
-        const char run[] = {'R', 'U', 'N', 13};
-        for (int i = 0; i < 4; ++i) machine.pokeRam(static_cast<uint16_t>(0x0277 + i), static_cast<uint8_t>(run[i]));
-        machine.pokeRam(0xC6, 4);
-        injected = true;
-    };
     if (cycleLimit) {
         while (machine.cycle() < cycleLimit && machine.debugCartResult() < 0) {
             if (where >= 0) {
@@ -143,10 +150,6 @@ int main(int argc, char** argv) {
                 whereSeen = at;
             }
             machine.tick();
-            if (!injected && machine.cpuRegs().pc == 0xE5CD) {
-                if (!readyAt) readyAt = machine.cycle();
-                if (machine.cycle() >= readyAt + autostartDelay) inject();
-            }
         }
     } else {
         for (int f = 0; f < frames; ++f) machine.runFrame();

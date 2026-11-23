@@ -20,3 +20,6 @@ pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=47,YB=10  pal  old  2
 pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=47,YB=10  pal  old  3  --paddles 1 63 10
 pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=47,YB=10  pal  old  2  --paddles 2 191 200
 pots.s  X1=63,Y1=10,X2=191,Y2=200,XB=48,YB=10  pal  old  4  --paddles 1 63 10 --paddles 2 191 200
+# A program started by the machine's autostart finds BASIC's pointers as LOAD leaves them.
+autostart.s  -  pal  old  0
+autostart.s  -  ntsc  new  0

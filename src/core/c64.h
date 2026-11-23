@@ -12,10 +12,13 @@
 #include "cia6526.h"
 #include "sid.h"
 #include "audio.h"
+#include "cartridge.h"
+#include "prg.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace k64 {
@@ -39,6 +42,17 @@ public:
     void setSidNoisePulseDrains(bool drains) { sid_.setNoisePulseDrains(drains); }
     const Sid& sid() const { return sid_; }
     const Timing& timing() const { return *timing_; }
+
+    // The expansion port. A cartridge goes in and out with the machine off: reset() after.
+    // False, with the reason in `error`, when the cartridge's hardware is not built.
+    bool attachCartridge(const CartImage& image, std::string& error) { return cart_.attach(image, error); }
+    void detachCartridge() { cart_.detach(); }
+    const Cartridge& cartridge() const { return cart_; }
+
+    // A program to put into memory and start with RUN once the KERNAL waits for a key
+    // after this and every later reset() (an empty one: none). The wait can be made
+    // `delayCycles` longer, to move the start against the frame.
+    void setAutostart(const ProgramFile& program, uint64_t delayCycles = 0);
 
     // Audio: produced once a sample rate is set (the test tools run without it). Mono,
     // about -1 .. 1; whatever a frame produced is read after it.
@@ -112,6 +126,8 @@ private:
     bool vicIsCharRom(uint16_t vaddr14) const override;
     void updateLightPen();   // CIA 1 port B bit 4 is the VIC-II's light pen input
     void updatePots();       // the control ports' paddle lines through the switch to the SID
+    uint16_t plaInputsVic(uint16_t vaddr14) const;
+    void injectProgram();
 
     uint16_t plaInputsCpu(uint16_t a, bool read) const;
     uint8_t portPins() const;    // the 6510 port lines as the PLA sees them
@@ -133,6 +149,8 @@ private:
         uint8_t restore = 0;
         int16_t pot[2][2] = {{-1, -1}, {-1, -1}};   // paddle lines [port][x, y]; -1 = open
         uint8_t potAny = 0;               // something is on a paddle line
+        uint8_t autostartPending = 0;     // the program is still to be put into memory
+        uint64_t autostartReadyAt = 0;    // the cycle the KERNAL first waited for a key in
         uint8_t cia1IrqSeen = 0, cia2IrqSeen = 0, vicIrqSeen = 0;   // the interrupt lines as the CPU sees them
         uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
     };
@@ -140,6 +158,9 @@ private:
 
     const Timing* timing_;
     State s_;
+    Cartridge cart_;
+    ProgramFile autostart_;      // settings, like the ROMs: not part of the state
+    uint64_t autostartDelay_ = 0;
     std::array<uint8_t, 65536> ram_{};
     std::array<uint8_t, 1024> colorRam_{};
     std::array<uint8_t, 8192> basic_{}, kernal_{};

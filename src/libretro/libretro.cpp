@@ -160,6 +160,53 @@ Crop cropFromOptions() {
     return {x0 - mx, y0 - my, 320 + 2 * mx, 200 + 2 * my};
 }
 
+void notify(const std::string& line) {
+    static std::string text;
+    text = line;
+    retro_message msg{text.c_str(), 600};
+    envCb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+}
+
+// The content: a cartridge file, or a single-file program that is put into memory and
+// started once the machine has booted. Told apart by what is in it, not by its name.
+bool loadContent(const retro_game_info* info) {
+    std::vector<uint8_t> bytes;
+    if (info->data && info->size) {
+        const auto* p = static_cast<const uint8_t*>(info->data);
+        bytes.assign(p, p + info->size);
+    } else if (info->path) {
+        FILE* f = std::fopen(info->path, "rb");
+        if (f) {
+            uint8_t chunk[65536];
+            size_t n;
+            while ((n = std::fread(chunk, 1, sizeof chunk, f)) > 0 && bytes.size() < (64u << 20)) bytes.insert(bytes.end(), chunk, chunk + n);
+            std::fclose(f);
+        }
+    }
+    std::string error;
+    if (bytes.empty()) {
+        error = "the file could not be read";
+    } else if (bytes.size() >= 16 && !std::memcmp(bytes.data() + 4, "CARTRIDGE", 9)) {
+        k64::CartImage image;
+        if (k64::parseCrt(bytes.data(), bytes.size(), image, error) && machine->attachCartridge(image, error)) {
+            log(RETRO_LOG_INFO, "cartridge: hardware type %u, %u chip packet(s)", static_cast<unsigned>(image.type),
+                static_cast<unsigned>(image.chips.size()));
+            return true;
+        }
+    } else {
+        k64::ProgramFile program;
+        if (k64::parseProgram(bytes.data(), bytes.size(), program, error)) {
+            machine->setAutostart(program);
+            log(RETRO_LOG_INFO, "program: %u bytes at $%04x, started after boot", static_cast<unsigned>(program.data.size()),
+                static_cast<unsigned>(program.load));
+            return true;
+        }
+    }
+    log(RETRO_LOG_ERROR, "content not loaded: %s", error.c_str());
+    notify("Kernal64: " + error);
+    return false;
+}
+
 void fillAvInfo(retro_system_av_info* info) {
     const auto& t = machine ? machine->timing() : k64::kTimingPal;
     const int w = machine ? crop.w : t.visibleWidth, h = machine ? crop.h : t.visibleLines;
@@ -216,8 +263,8 @@ RETRO_API void retro_get_system_info(retro_system_info* info) {
     std::memset(info, 0, sizeof *info);
     info->library_name = "Kernal64";
     info->library_version = KERNAL64_VERSION;
-    info->valid_extensions = "prg|t64|d64|g64|tap|crt|m3u";
-    info->need_fullpath = true;
+    info->valid_extensions = "crt|prg|p00|t64";
+    info->need_fullpath = false;
     info->block_extract = false;
 }
 
@@ -229,7 +276,7 @@ RETRO_API void retro_reset(void) {
     if (machine) machine->reset();
 }
 
-RETRO_API bool retro_load_game(const retro_game_info*) {
+RETRO_API bool retro_load_game(const retro_game_info* info) {
     retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
     if (!envCb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt)) {
         log(RETRO_LOG_ERROR, "frontend does not accept XRGB8888");
@@ -255,13 +302,14 @@ RETRO_API bool retro_load_game(const retro_game_info*) {
         else missing += std::string(missing.empty() ? "" : ", ") + k64::romName(r);
     }
     machine->setRoms(roms);
+    if (info && (info->data || info->path) && !loadContent(info)) {
+        machine.reset();
+        return false;
+    }
     machine->reset();
     if (!missing.empty()) {
         log(RETRO_LOG_ERROR, "missing system files in %s: %s", sysDir, missing.c_str());
-        static std::string text;
-        text = "Kernal64: missing system files: " + missing;
-        retro_message msg{text.c_str(), 600};
-        envCb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+        notify("Kernal64: missing system files: " + missing);
     }
     return true;
 }

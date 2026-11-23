@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 11;
+constexpr uint32_t kStateVersion = 12;
 }
 
 C64::C64(VicModel model) : timing_(&timingFor(model)) {
@@ -52,7 +52,34 @@ void C64::reset() {
     cia1_.reset();
     cia2_.reset();
     cpu_.reset();
+    cart_.reset();
+    s_.autostartPending = autostart_.data.empty() ? 0 : 1;
     updatePots();
+}
+
+void C64::setAutostart(const ProgramFile& program, uint64_t delayCycles) {
+    autostart_ = program;
+    autostartDelay_ = delayCycles;
+    s_.autostartPending = autostart_.data.empty() ? 0 : 1;
+    s_.autostartReadyAt = 0;
+}
+
+// What BASIC's LOAD leaves behind, without a drive: the bytes in memory, the end address
+// as the start of variables and as the KERNAL's end of load; then RUN and RETURN in the
+// keyboard buffer. (RUN sets the start of arrays and of free space from the start of
+// variables itself, as LOAD does.)
+void C64::injectProgram() {
+    const uint16_t load = autostart_.load;
+    const auto end = static_cast<uint16_t>(load + autostart_.data.size());
+    for (size_t i = 0; i < autostart_.data.size(); ++i) ram_[static_cast<uint16_t>(load + i)] = autostart_.data[i];
+    for (int p : {0x2D, 0xAE}) {
+        ram_[static_cast<size_t>(p)] = static_cast<uint8_t>(end);
+        ram_[static_cast<size_t>(p) + 1] = static_cast<uint8_t>(end >> 8);
+    }
+    const uint8_t run[] = {'R', 'U', 'N', 13};
+    for (size_t i = 0; i < 4; ++i) ram_[0x0277 + i] = run[i];
+    ram_[0xC6] = 4;
+    s_.autostartPending = 0;
 }
 
 // ---- the 6510 port -----------------------------------------------------------
@@ -91,7 +118,8 @@ uint16_t C64::plaInputsCpu(uint16_t a, bool read) const {
     if (a & 0x1000) in |= pla::A12;
     if (read) in |= pla::RnW;
     if (vic_.ba()) in |= pla::BA;      // with BA low, I/O is not selected (memory.md rule 4)
-    in |= pla::nEXROM | pla::nGAME;    // no cartridge
+    if (cart_.exrom()) in |= pla::nEXROM;
+    if (cart_.game()) in |= pla::nGAME;
     // #AEC low (CPU cycle), #CAS low (access in progress), VA lines irrelevant here.
     return in;
 }
@@ -101,18 +129,26 @@ unsigned C64::vicBank() const {
     return 3u - (cia2_.portAOut() & 3u);
 }
 
-bool C64::vicIsCharRom(uint16_t vaddr) const {
+uint16_t C64::plaInputsVic(uint16_t vaddr) const {
     const unsigned bank = vicBank();
-    uint16_t in = pla::nAEC | pla::RnW | pla::nLORAM | pla::nHIRAM | pla::nCHAREN | pla::nEXROM | pla::nGAME |
+    uint16_t in = pla::nAEC | pla::RnW | pla::nLORAM | pla::nHIRAM | pla::nCHAREN |
                   pla::BA | pla::A15 | pla::A14 | pla::A13 | pla::A12; // address bus pulled up in VIC cycles
+    if (cart_.exrom()) in |= pla::nEXROM;
+    if (cart_.game()) in |= pla::nGAME;
     if (!(bank & 1)) in |= pla::nVA14;
     if (vaddr & 0x2000) in |= pla::VA13;
     if (vaddr & 0x1000) in |= pla::VA12;
-    return !(pla::table()[in] & pla::nCHARROM);
+    return in;
 }
 
+bool C64::vicIsCharRom(uint16_t vaddr) const { return !(pla::table()[plaInputsVic(vaddr)] & pla::nCHARROM); }
+
 uint8_t C64::vicFetch(uint16_t vaddr) const {
-    if (vicIsCharRom(vaddr)) return chargen_[vaddr & 0x0FFF];
+    const uint8_t out = pla::table()[plaInputsVic(vaddr)];
+    if (!(out & pla::nCHARROM)) return chargen_[vaddr & 0x0FFF];
+    // With GAME low and EXROM high the VIC-II's upper 4K are the cartridge's ROMH; the
+    // cartridge sees the pulled-up address lines, $F000-$FFFF (hw/cart.md P3).
+    if (!(out & pla::nROMH)) return cart_.peekRomH(static_cast<uint16_t>(0xF000 | (vaddr & 0x0FFF)));
     return ram_[(vicBank() << 14) | (vaddr & 0x3FFF)];
 }
 
@@ -125,6 +161,8 @@ uint8_t C64::peekCpu(uint16_t a) const {
     if (!(out & pla::nBASIC)) return basic_[a & 0x1FFF];
     if (!(out & pla::nKERNAL)) return kernal_[a & 0x1FFF];
     if (!(out & pla::nCHARROM)) return chargen_[a & 0x0FFF];
+    if (!(out & pla::nROML)) return cart_.peekRomL(a);
+    if (!(out & pla::nROMH)) return cart_.peekRomH(a);
     if (!(out & pla::nCASRAM)) return ram_[a];
     return s_.vicLastByte;
 }
@@ -145,6 +183,8 @@ uint8_t C64::cpuReadBus(uint16_t a) {
     if (!(out & pla::nKERNAL)) return kernal_[a & 0x1FFF];
     if (!(out & pla::nCHARROM)) return chargen_[a & 0x0FFF];
     if (!(out & pla::nIO)) return ioRead(a);
+    if (!(out & pla::nROML)) return cart_.readRomL(a);
+    if (!(out & pla::nROMH)) return cart_.readRomH(a);
     if (!(out & pla::nCASRAM)) return ram_[a];
     return s_.vicLastByte; // nothing selected: the data bus still holds the VIC-II's byte
 }
@@ -185,8 +225,11 @@ uint8_t C64::ioRead(uint16_t a) {
         return static_cast<uint8_t>((s_.vicLastByte & 0xF0) | colorRam_[a & 0x03FF]);
     case 0xC: return cia1_.read(a);
     case 0xD: return cia2_.read(a);
-    default:
-        return s_.vicLastByte; // I/O 1 and I/O 2: nothing attached
+    default: {
+        // I/O 1 and I/O 2: the cartridge's; what it does not answer leaves the bus as it is.
+        uint8_t v = 0;
+        return cart_.readIo(a, v) ? v : s_.vicLastByte;
+    }
     }
 }
 
@@ -204,7 +247,7 @@ void C64::ioWrite(uint16_t a, uint8_t v) {
         if ((a & 0x0F) < 4) updateLightPen();   // ports and directions
         return;
     case 0xD: cia2_.write(a, v); return;
-    default: return;
+    default: cart_.writeIo(a, v); return;
     }
 }
 
@@ -333,6 +376,7 @@ void C64::tick() {
     if (audioRate_ > 0.0) resampler_.push(static_cast<float>(boardFilter_.clock(sid_.clockAudio())));
     cia1_.clock();
     cia2_.clock();
+    if (cart_.clocked()) cart_.clock();
     // The TOD pins see the mains frequency (hw/cia.md rule 18): exactly mainsHz ticks per
     // second of machine cycles, spread evenly.
     s_.todCount += static_cast<uint32_t>(timing_->mainsHz);
@@ -347,6 +391,11 @@ void C64::tick() {
 
     ++s_.cycle;
     if (vic_.line() == 0 && vic_.cycleInLine() == 1) ++s_.frame;
+    // The KERNAL's input loop polls the keyboard buffer at $E5CD: from there on it is ready.
+    if (s_.autostartPending && cpu_.regs().pc == 0xE5CD) {
+        if (!s_.autostartReadyAt) s_.autostartReadyAt = s_.cycle;
+        if (s_.cycle >= s_.autostartReadyAt + autostartDelay_) injectProgram();
+    }
 }
 
 void C64::runFrame() {
@@ -370,7 +419,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
+    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot);
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -391,6 +440,8 @@ void C64::saveState(uint8_t* out) const {
     put(&c2, sizeof c2);
     const Sid::State ss = sid_.state();
     put(&ss, sizeof ss);
+    const Cartridge::State cs = cart_.state();
+    put(&cs, sizeof cs);
     const BoardFilter::State bs = boardFilter_.state();
     put(&bs, sizeof bs);
     put(ram_.data(), ram_.size());
@@ -421,11 +472,14 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     get(&c2, sizeof c2);
     Sid::State ss;
     get(&ss, sizeof ss);
+    Cartridge::State cs;
+    get(&cs, sizeof cs);
     BoardFilter::State bs;
     get(&bs, sizeof bs);
     if (vs.cycle < 1 || vs.cycle > timing_->cyclesPerLine || vs.line < 0 || vs.line >= timing_->linesPerFrame ||
         vs.vmli >= 40 || vs.dmli > 40 || vs.xscrollPipe > 7)
         return false;
+    if (!cart_.setState(cs)) return false;   // a state of another cartridge
     s_ = s;
     vic_.setState(vs);
     cia1_.setState(c1);

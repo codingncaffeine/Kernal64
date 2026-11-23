@@ -5,6 +5,7 @@
 //                   [--system DIR] [--save DIR] [--dump FILE.ppm] [--check]
 //                   [--type TEXT] [--type-at FRAME] [--expect-screen TEXT]
 //                   [--expect-tone HZ DB_MIN DB_MAX] [--expect-level DB_MIN DB_MAX] [--expect-silence]
+//                   [--expect-load-failure]
 //
 // --type presses the keys for TEXT one at a time from frame --type-at (default 200),
 // each held 3 frames and released 3 ("\n" = RETURN). --expect-screen fails the run
@@ -12,6 +13,7 @@
 // --expect-tone fails the run unless the last half second of audio is a tone of HZ (within
 // 0.1 %) at a level between DB_MIN and DB_MAX (RMS, dB below full scale); --expect-level
 // checks the level alone; --expect-silence fails unless every sample of the run is zero. The audio is only ever looked at as numbers.
+// --expect-load-failure: the core must refuse the content (the run ends there).
 // --check runs the conformance checks and exits non-zero on the first failure.
 // Without it the run prints a summary only.
 #include "libretro.h"
@@ -230,7 +232,7 @@ int main(int argc, char** argv) {
     bool check = false;
     std::vector<std::string> expectScreen;
     double expectHz = 0.0, expectDbMin = 0.0, expectDbMax = 0.0;
-    bool expectSilence = false, expectLevel = false;
+    bool expectSilence = false, expectLevel = false, expectLoadFailure = false;
     double levelMin = 0.0, levelMax = 0.0;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -251,6 +253,7 @@ int main(int argc, char** argv) {
         else if (a == "--expect-screen") expectScreen.push_back(next());
         else if (a == "--expect-tone") { expectHz = std::stod(next()); expectDbMin = std::stod(next()); expectDbMax = std::stod(next()); }
         else if (a == "--expect-silence") expectSilence = true;
+        else if (a == "--expect-load-failure") expectLoadFailure = true;
         else if (a == "--expect-level") { expectLevel = true; levelMin = std::stod(next()); levelMax = std::stod(next()); }
         else if (a == "--option") {
             std::string kv = next();
@@ -286,9 +289,27 @@ int main(int argc, char** argv) {
     c.retro_get_system_info(&si);
     std::printf("core: %s %s (extensions %s)\n", si.library_name, si.library_version, si.valid_extensions);
 
+    // As a frontend does for a core that does not ask for the path alone: the file's bytes.
     retro_game_info gi{};
+    std::vector<uint8_t> contentBytes;
     gi.path = content.empty() ? nullptr : content.c_str();
-    if (!c.retro_load_game(content.empty() ? nullptr : &gi)) { fail("retro_load_game returned false"); return 1; }
+    if (!content.empty() && !si.need_fullpath) {
+        FILE* f = std::fopen(content.c_str(), "rb");
+        if (!f) { std::fprintf(stderr, "k64host: cannot open %s\n", content.c_str()); return 3; }
+        int ch;
+        while ((ch = std::fgetc(f)) != EOF) contentBytes.push_back(static_cast<uint8_t>(ch));
+        std::fclose(f);
+        gi.data = contentBytes.data();
+        gi.size = contentBytes.size();
+    }
+    const bool loaded = c.retro_load_game(content.empty() ? nullptr : &gi);
+    if (expectLoadFailure) {
+        if (loaded) { fail("retro_load_game accepted content it should refuse"); return 1; }
+        std::printf("content refused, as expected\n");
+        c.retro_deinit();
+        return 0;
+    }
+    if (!loaded) { fail("retro_load_game returned false"); return 1; }
     c.retro_get_system_av_info(&av);
     if (check && !pixelFormatSet) fail("core never set a pixel format");
     std::printf("av: %ux%u (max %ux%u) aspect %.4f fps %.4f rate %.0f\n", av.geometry.base_width,

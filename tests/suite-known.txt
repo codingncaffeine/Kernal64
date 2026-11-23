@@ -18,3 +18,5 @@ SID/wb_testsuite/noise_writeback_check_D_to_C_old.prg	as above
 SID/wb_testsuite/noise_writeback_check_E_to_C_old.prg	as above
 SID/wb_testsuite/noise_writeback_check_F_to_C_old.prg	as above
 SID/wf12nsr/wf12nsr-8580.prg	noise + pulse on the 8580 reads $F8 on the chip in two places where we read $FC; no rule found that gives it without draining the register, which the chip does not do
+# Cartridges.
+C64/carts/ef-eapi/ [mountcrt:test-eapi.crt]	programs the cartridge's flash chips: their command sequences are not built yet (reading, banking and the cartridge's RAM are)

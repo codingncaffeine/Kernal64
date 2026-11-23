@@ -1,0 +1,9 @@
+# Lines in the format of the reference suite's test list, for programs of the suite that
+# its own list lacks or marks as needing a person although their picture stands still.
+# tools/suite.sh reads them after the list.
+# Ultimax configuration with a plain cartridge: the memory map as the CPU sees it, and the
+# VIC-II reading the cartridge's ROM as its upper 4K.
+../C64/carts/ultimax/,,screenshot,10000000,mountcrt:ultimax.crt,vicii-pal
+../C64/carts/ultimax/,,screenshot,10000000,mountcrt:ultimax-vic.crt,vicii-pal
+# 8K banks with the bank register in the first I/O area: the area is not readable.
+../C64/carts/ocean/,,screenshot,10000000,mountcrt:ocean.crt

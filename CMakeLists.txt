@@ -26,8 +26,11 @@ add_library(k64core STATIC
   src/core/sid_analog.cpp
   src/core/audio.cpp
   src/core/roms.cpp
+  src/core/cartridge.cpp
+  src/media/crt.cpp
+  src/media/prg.cpp
 )
-target_include_directories(k64core PUBLIC src/core)
+target_include_directories(k64core PUBLIC src/core src/media)
 # No fused multiply-add: floating-point state (the audio output network) must come out the
 # same on every platform, or save states and netplay checksums differ between them.
 target_compile_options(k64core PRIVATE ${K64_WARNINGS} -ffp-contract=off)

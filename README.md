@@ -9,8 +9,8 @@ libretro core for RetroArch and Emutastic.
 with keyboard and joysticks, and the VIC-II with sprites, in its old and new chip
 generations for PAL and NTSC, are in: the machine boots to BASIC and takes typing. The
 SID is in for the 6581 and the 8580, from the oscillators to the filter and the volume
-stage, and can be heard.
-Cartridges, tape and disk are still to come.
+stage, and can be heard. Cartridges and single-file programs start from the frontend.
+Tape and disk are still to come.
 
 ## Building on Linux
 
@@ -33,6 +33,14 @@ frontend's system folder:
 - `1541-c000.325302-01.bin` and `1541-e000.901229-05.bin` — disk drive
 
 Files are recognized by their contents, not their names.
+
+## Content
+
+- Cartridge files (`.crt`): plain 8K, 16K and Ultimax cartridges and the bank-switched
+  hardware types 4, 5, 7, 8, 10, 15, 17, 18, 19 and 32 of the file format (type 32
+  read-only for now). Other types are refused with a message.
+- Program files (`.prg`, `.p00`) and the first program of a `.t64` container: put into
+  memory once the machine has booted, and started with `RUN`.
 
 ## Core options
 

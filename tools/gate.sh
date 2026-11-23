@@ -14,10 +14,12 @@
 # API; the VIC-II against the article's rules and the start-up
 # screen against the reference emulator (tools/oracle/build-vice.sh); the reference
 # suite's CPU, CIA, interrupt, general and VIC-II programs on both CIA types and both VIC-II
-# generations; our own probe and raster-effect programs; the core loading in RetroArch
-# behind the wall.
+# generations, its cartridge programs with the cartridge plugged in; our own probe,
+# cartridge and raster-effect programs; cartridge and program files as content through the
+# API; the core loading in RetroArch behind the wall.
 # The third-party suites come from tools/fetch.sh.
-# Runs on a quarter of the cores at low priority; its build folder is removed at exit.
+# Runs on a quarter of the cores at low priority (independent single-threaded runs go side
+# by side in batches of that size); its build folder is removed at exit.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -26,8 +28,29 @@ JOBS="$(( $(nproc --all) / 4 > 0 ? $(nproc --all) / 4 : 1 ))"
 BUILD="$(mktemp -d "$ROOT/build-gate.XXXXXX")"
 trap 'rm -rf "$BUILD"' EXIT
 fails=0
-step() { echo "== $*"; }
+step() { echo "== $* [${SECONDS}s]"; }
 bad() { echo "GATE FAIL: $*"; fails=$((fails + 1)); }
+# Independent single-threaded runs side by side, $JOBS at a time (a full batch runs to its
+# end before the next run starts):
+#   side LABEL LOG COMMAND...   starts one;   sides   waits for all and reports the failed.
+side_pids=(); side_labels=(); side_logs=(); side_waited=0
+side_reap() {
+    local i
+    for ((i = side_waited; i < ${#side_pids[@]}; i++)); do
+        wait "${side_pids[$i]}" || {
+            grep -A7 -E 'DIFFERS|FAIL' "${side_logs[$i]}" | head -8 | grep . || tail -5 "${side_logs[$i]}"
+            bad "${side_labels[$i]}"
+        }
+    done
+    side_waited=${#side_pids[@]}
+}
+side() {
+    local label="$1" log="$2"; shift 2
+    if [ $(( ${#side_pids[@]} - side_waited )) -ge "$JOBS" ]; then side_reap; fi
+    "$@" >"$log" 2>&1 &
+    side_pids+=($!); side_labels+=("$label"); side_logs+=("$log")
+}
+sides() { side_reap; side_pids=(); side_labels=(); side_logs=(); side_waited=0; }
 
 step "tracked files"
 # ROMs, media, documents and plans never enter the repository.
@@ -56,11 +79,11 @@ step "libretro conformance"
 for model in pal ntsc ntsc-old pal-new ntsc-new pal-old; do
     # Typing at the READY prompt through the API: BASIC must answer. Nothing has touched the
     # SID: every audio sample is zero.
-    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 400 --check --option kernal64_model=$model \
-        --type 'PRINT 6*7\n' --expect-screen ' 42' --expect-silence \
-        >"$BUILD/host-$model.log" 2>&1 || { tail -5 "$BUILD/host-$model.log"; bad "conformance ($model)"; }
-    grep -q "missing system files" "$BUILD/host-$model.log" && bad "system ROMs not found in $ROMS"
+    side "conformance ($model)" "$BUILD/host-$model.log" "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 400 --check \
+        --option kernal64_model=$model --type 'PRINT 6*7\n' --expect-screen ' 42' --expect-silence
 done
+sides
+grep -q "missing system files" "$BUILD"/host-*.log && bad "system ROMs not found in $ROMS"
 # The border option: the picture handed to the frontend has the size asked for.
 for want in "none 320x200" "small 384x270"; do
     "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 60 --check --option kernal64_border="${want% *}" >"$BUILD/host-border.log" 2>&1
@@ -69,30 +92,28 @@ done
 
 step "audio"
 # The rate conversion and the board's output network, as numbers.
-"$BUILD/audiotest" >"$BUILD/audiotest.log" 2>&1 || { tail -5 "$BUILD/audiotest.log"; bad "audio output path"; }
+side "audio output path" "$BUILD/audiotest.log" "$BUILD/audiotest"
 # Through the API: a triangle on voice 1 (frequency register 7493, full volume and sustain)
 # comes out at register * clock / 2^24 Hz, one voice's level, on both chips and clocks.
 for run in "pal 440.02 6581" "ntsc 456.76 6581" "ntsc-old 456.76 8580" "pal-new 440.02 8580"; do
     # shellcheck disable=SC2086
     set -- $run
-    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1000 --option kernal64_model=$1 --option kernal64_sid=$3 \
-        --type 'POKE54296,15:POKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n' --expect-tone $2 -18.5 -15.5 \
-        >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "tone ($1, $3)"; }
+    side "tone ($1, $3)" "$BUILD/tone-$1.log" "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1000 \
+        --option kernal64_model=$1 --option kernal64_sid=$3 \
+        --type 'POKE54296,15:POKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n' --expect-tone $2 -18.5 -15.5
 done
 # The same tone with the conformance checks: the state saved half-way holds a filter and an
 # output network in motion, and the replay from it must end in the same state byte for byte.
-"$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1600 --check \
-    --type 'POKE54296,15:POKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n' --expect-tone 440.02 -18.5 -15.5 \
-    >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "conformance with a tone playing"; }
+side "conformance with a tone playing" "$BUILD/tone-check.log" "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1600 --check \
+    --type 'POKE54296,15:POKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n' --expect-tone 440.02 -18.5 -15.5
 # Through the filter (8580, cutoff at its top, about 20 kHz): with the voice routed into it
 # the low-pass lets the 440 Hz tone through at its level, the high-pass leaves about 1/400
 # of it. (Two typed lines: BASIC takes 80 characters per line.)
 for run in "31 -18.5 -15.5 low-pass" "79 -80 -60 high-pass"; do
     # shellcheck disable=SC2086
     set -- $run
-    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1300 --option kernal64_sid=8580 \
-        --type "POKE54295,1:POKE54294,255:POKE54296,$1\nPOKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n" --expect-level $2 $3 \
-        >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "tone through the $4"; }
+    side "tone through the $4" "$BUILD/tone-$4.log" "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1300 --option kernal64_sid=8580 \
+        --type "POKE54295,1:POKE54294,255:POKE54296,$1\nPOKE54277,0:POKE54278,240:POKE54272,69:POKE54273,29:POKE54276,17\n" --expect-level $2 $3
 done
 
 # The 6581 noise + pulse option through the API: voice 3 runs noise + pulse for a moment,
@@ -101,10 +122,11 @@ done
 for run in "drains-it -200 -90" "leaves-it-alone -22.5 -18.5"; do
     # shellcheck disable=SC2086
     set -- $run
-    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1300 --check --option "kernal64_sid_noise_pulse=${1//-/ }" \
-        --type 'POKE54296,15:POKE54292,240:POKE54287,255:POKE54290,193\nPOKE54290,129\n' --expect-level $2 $3 \
-        >"$BUILD/host-tone.log" 2>&1 || { tail -3 "$BUILD/host-tone.log"; bad "noise + pulse option (${1//-/ })"; }
+    side "noise + pulse option (${1//-/ })" "$BUILD/tone-noise-$1.log" "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 1300 --check \
+        --option "kernal64_sid_noise_pulse=${1//-/ }" \
+        --type 'POKE54296,15:POKE54292,240:POKE54287,255:POKE54290,193\nPOKE54290,129\n' --expect-level $2 $3
 done
+sides
 
 step "memory map and boot"
 if [ -f "$ROOT/gitignore/external/pla/PLA.BIN" ]; then
@@ -112,9 +134,12 @@ if [ -f "$ROOT/gitignore/external/pla/PLA.BIN" ]; then
         || { tail -4 "$BUILD/pla.log"; bad "PLA against the chip read-out"; }
 else bad "PLA read-out missing: tools/fetch.sh pla"; fi
 for model in pal ntsc ntsc-old pal-new ntsc-new pal-old; do
+    side "boot to the BASIC prompt ($model)" "$BUILD/boot-$model.log" \
+        "$BUILD/k64run" "$ROMS" --frames 150 --model $model --expect "READY." --expect "38911 BASIC BYTES FREE"
+done
+sides
+for model in pal ntsc ntsc-old pal-new ntsc-new pal-old; do
     want=$([ "${model#pal}" != "$model" ] && echo PAL || echo NTSC)
-    "$BUILD/k64run" "$ROMS" --frames 150 --model $model --expect "READY." --expect "38911 BASIC BYTES FREE" \
-        >"$BUILD/boot-$model.log" 2>&1 || { tail -3 "$BUILD/boot-$model.log"; bad "boot to the BASIC prompt ($model)"; }
     grep -q "KERNAL detected $want" "$BUILD/boot-$model.log" || bad "KERNAL did not detect $want ($model)"
 done
 
@@ -124,73 +149,78 @@ if [ -x "$ROOT/gitignore/external/vice/build/src/x64sc" ] && command -v podman >
         || { tail -6 "$BUILD/refcheck.log"; bad "start-up screen differs from the reference"; }
 else bad "reference emulator missing: tools/oracle/build-vice.sh"; fi
 
-step "CPU, CIA, interrupt, general, VIC-II and SID test programs against the reference emulator"
+step "CPU, CIA, interrupt, general, VIC-II, SID and cartridge test programs against the reference emulator"
 # (Lorenz's suite is in "general". Programs waiting for later hardware: tests/suite-known.txt.)
 if [ -f "$ROOT/gitignore/external/testprogs/testbench/c64-testlist.in" ]; then
-    tools/suite.sh '^\.\./(CIA|interrupts|general|CPU|VICII|SID)/' "$BUILD/k64run" >"$BUILD/suite.log" 2>&1 \
+    tools/suite.sh '^(\.\./(CIA|interrupts|general|CPU|VICII|SID|C64)/|\./selftest/)' "$BUILD/k64run" >"$BUILD/suite.log" 2>&1 \
         || { grep -E '^(WORSE|FIXED)' "$BUILD/suite.log" | head -8; bad "test programs worse than the reference"; }
     tail -1 "$BUILD/suite.log"
 else bad "test programs missing: tools/oracle/build-vice.sh"; fi
 
-step "own probe programs"
-tools/probes.sh "$BUILD/k64run" >"$BUILD/probes.log" 2>&1 || { grep -v '^ok' "$BUILD/probes.log" | head -8; bad "probe programs"; }
-
-step "own raster-effect programs"
-tools/effects.sh "$BUILD/k64run" >"$BUILD/effects.log" 2>&1 || { grep -v '^ok' "$BUILD/effects.log" | head -8; bad "raster-effect programs"; }
-
-step "VIC-II rules"
-"$BUILD/victest" >"$BUILD/victest.log" 2>&1 || { grep FAIL "$BUILD/victest.log" | head -8; bad "VIC-II rule tests"; }
-
-step "SID paddle converters"
-"$BUILD/sidtest" >"$BUILD/sidtest.log" 2>&1 || { grep FAIL "$BUILD/sidtest.log" | head -8; bad "SID paddle converter rules"; }
-
-step "CPU"
+step "own probe, cartridge and raster-effect programs, content files, VIC-II and SID rule tests, CPU tests"
+# Independent of each other: side by side.
 EXT="$ROOT/gitignore/external"
+side "probe programs" "$BUILD/probes.log" tools/probes.sh "$BUILD/k64run"
+# Each banked cartridge type's switching, checked from inside our own test cartridge; then
+# every kind of content file through the machine and through the built core.
+side "own cartridge programs and content files" "$BUILD/carts.log" \
+    bash -c 'tools/carts.sh "$1/k64run" && tools/media.sh "$1"' _ "$BUILD"
+side "raster-effect programs" "$BUILD/effects.log" tools/effects.sh "$BUILD/k64run"
+side "VIC-II rule tests" "$BUILD/victest.log" "$BUILD/victest"
+side "SID paddle converter rules" "$BUILD/sidtest.log" "$BUILD/sidtest"
 if [ -d "$EXT/singlestep/6502/v1" ]; then
-    "$BUILD/cputest" "$EXT/singlestep/6502/v1" --quiet >"$BUILD/cputest.log" 2>&1 \
-        || { tail -5 "$BUILD/cputest.log"; bad "per-opcode bus traces"; }
+    side "per-opcode bus traces" "$BUILD/cputest.log" "$BUILD/cputest" "$EXT/singlestep/6502/v1" --quiet
 else bad "per-opcode suite missing: tools/fetch.sh singlestep"; fi
 if [ -f "$EXT/dormann/bin_files/6502_functional_test.bin" ]; then
-    "$BUILD/imgtest" "$EXT/dormann/bin_files/6502_functional_test.bin@0" --start 400 --success 3469 >"$BUILD/dormann.log" 2>&1 \
-        || { tail -3 "$BUILD/dormann.log"; bad "functional test"; }
+    side "functional test" "$BUILD/dormann.log" "$BUILD/imgtest" "$EXT/dormann/bin_files/6502_functional_test.bin@0" --start 400 --success 3469
 else bad "functional test missing: tools/fetch.sh dormann"; fi
 SEDDON="$(ls "$EXT"/seddon/releases/6502-tests-generic.*.dat 2>/dev/null | tail -1)"
 if [ -n "$SEDDON" ]; then
-    "$BUILD/imgtest" "$SEDDON@2000" --start 2000 --end 202b --fail 2013 --print 2033 --max-cycles 10000000000 \
-        >"$BUILD/seddon.log" 2>&1 || { grep -v " - ok" "$BUILD/seddon.log" | tail -5; bad "undocumented-opcode tests"; }
+    side "undocumented-opcode tests" "$BUILD/seddon.log" \
+        "$BUILD/imgtest" "$SEDDON@2000" --start 2000 --end 202b --fail 2013 --print 2033 --max-cycles 10000000000
 else bad "undocumented-opcode tests missing: tools/fetch.sh seddon"; fi
+sides
+
+step "CPU against the chip"
 if [ -x "$BUILD/cpudiff" ]; then
+    n=0
     for lines in "" "--irq" "--nmi" "--rdy" "--irq --nmi --rdy" "--rdy --volatile" "--irq --nmi --rdy --volatile"; do
+        n=$((n + 1))
         # shellcheck disable=SC2086
-        "$BUILD/cpudiff" --seeds 8 --cycles 20000 $lines >"$BUILD/cpudiff.log" 2>&1 \
-            || { grep -A3 DIFFERS "$BUILD/cpudiff.log" | head -5; bad "chip comparison (${lines:-no lines})"; }
+        side "chip comparison (${lines:-no lines})" "$BUILD/cpudiff-$n.log" "$BUILD/cpudiff" --seeds 8 --cycles 20000 $lines
     done
     # Flag and stack instructions alone, with the lines changing every few cycles.
-    "$BUILD/cpudiff" --seeds 40 --cycles 20000 --irq --rdy --volatile --dense --only 08,28,58,78,ea,48,68,a9,40,e8 >"$BUILD/cpudiff.log" 2>&1 \
-        || { grep -A3 DIFFERS "$BUILD/cpudiff.log" | head -5; bad "chip comparison (flag and stack instructions, dense)"; }
+    side "chip comparison (flag and stack instructions, dense)" "$BUILD/cpudiff-dense.log" \
+        "$BUILD/cpudiff" --seeds 40 --cycles 20000 --irq --rdy --volatile --dense --only 08,28,58,78,ea,48,68,a9,40,e8
+    sides
 else bad "chip comparison not built: tools/fetch.sh perfect6502"; fi
 
 step "SID against the reference engine"
 if [ -x "$BUILD/siddiff" ]; then
-    for m in 6581 8580; do
-        # A write every N cycles: dense traffic down to almost none (the last run leaves the
-        # chip alone long enough for the 8580's slow fades).
-        for run in "2 300000 6" "16 300000 6" "400 3000000 6" "40000 40000000 3" "3000000 60000000 3"; do
-            # shellcheck disable=SC2086
-            set -- $run
-            "$BUILD/siddiff" --model $m --every "$1" --cycles "$2" --seeds "$3" >"$BUILD/siddiff.log" 2>&1 \
-                || { grep -A7 DIFFERS "$BUILD/siddiff.log" | head -8; bad "SID comparison ($m, a write every $1 cycles)"; }
+    # A write every N cycles: dense traffic down to almost none (the last run leaves the
+    # chip alone long enough for the 8580's slow fades). The long runs start first, so
+    # that they share a batch.
+    for run in "3000000 60000000 3" "40000 40000000 3" "400 3000000 6" "16 300000 6" "2 300000 6"; do
+        # shellcheck disable=SC2086
+        set -- $run
+        for m in 6581 8580; do
+            side "SID comparison ($m, a write every $1 cycles)" "$BUILD/siddiff-$m-$1.log" \
+                "$BUILD/siddiff" --model $m --every "$1" --cycles "$2" --seeds "$3"
         done
+        if [ "$1" = 40000 ]; then
+            # The combined waveforms are a model, not the reference's sampled tables: its
+            # match with the chip samples is a number, kept in tests/wave-score.txt. A
+            # change of the model changes the numbers and has to change that file with them.
+            side "combined waveform score" "$BUILD/wave-score.txt" "$BUILD/siddiff" --score "$EXT/testprogs/SID/resid-test"
+            side "DAC tables against the reference" "$BUILD/dacs.log" "$BUILD/siddiff" --dacs
+            # The analog part: tone measurements of both engines, inside their bands, and
+            # the same numbers as recorded (a change of the model has to change
+            # tests/filter-score.txt).
+            side "filter, mixer and volume stage outside a band" "$BUILD/filter-score.txt" "$BUILD/siddiff" --filter
+        fi
     done
-    # The combined waveforms are a model, not the reference's sampled tables: its match
-    # with the chip samples is a number, kept in tests/wave-score.txt. A change of the
-    # model changes the numbers and has to change that file with them.
-    "$BUILD/siddiff" --score "$EXT/testprogs/SID/resid-test" >"$BUILD/wave-score.txt" 2>&1
+    sides
     diff -u tests/wave-score.txt "$BUILD/wave-score.txt" || bad "combined waveforms: the score differs from tests/wave-score.txt"
-    "$BUILD/siddiff" --dacs >"$BUILD/dacs.log" 2>&1 || { cat "$BUILD/dacs.log"; bad "DAC tables against the reference"; }
-    # The analog part: tone measurements of both engines, inside their bands, and the same
-    # numbers as recorded (a change of the model has to change tests/filter-score.txt).
-    "$BUILD/siddiff" --filter >"$BUILD/filter-score.txt" 2>&1 || { grep FAIL "$BUILD/filter-score.txt"; bad "filter, mixer and volume stage outside a band"; }
     diff -u tests/filter-score.txt "$BUILD/filter-score.txt" || bad "analog part: the score differs from tests/filter-score.txt"
 else bad "SID comparison not built: tools/oracle/build-vice.sh"; fi
 

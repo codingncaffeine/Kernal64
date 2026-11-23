@@ -11,7 +11,9 @@
 # reference screenshots are cached in gitignore/external/suite-ref-shots/. The suite's
 # "interactive" programs that show a still picture when left alone are judged the same way
 # (tests/suite-interactive.txt).
-# Tests that need hardware we do not have yet (cartridges, disk
+# A test with a cartridge file (the list's mountcrt: option) runs with it plugged in, on
+# both; lines the suite's own list lacks are added from tests/suite-extra.txt.
+# Tests that need hardware we do not have yet (a cartridge type not built, disk
 # images, expansions) are listed as skipped with the reason. Results:
 #   same-pass  both pass            same-fail  both fail (the reference fails too)
 #   WORSE      reference passes, we do not       better  we pass, the reference does not
@@ -39,7 +41,7 @@ run_one() {
     IFS=',' read -r dir prg kind cycles opts <<<"$line"
     dir="${dir%/}/"   # some list entries omit the directory's trailing slash
     local name="${dir#../}$prg${opts:+ [$opts]}"
-    local model=pal vmodel=c64 cia=old ciaref=0 ckey="" skip="" o fam=pal newvic=0 vkey sid=old sidref=resid6581
+    local model=pal vmodel=c64 cia=old ciaref=0 ckey="" skip="" o fam=pal newvic=0 vkey sid=old sidref=resid6581 crt=""
     local -a vextra=()
     IFS=',' read -ra optv <<<"$opts"
     for o in "${optv[@]}"; do
@@ -51,6 +53,7 @@ run_one() {
             sid-old) ;;
             sid-new) sid=new; sidref=resid8580; ckey="$ckey+sidnew" ;;
             vicii-new) newvic=1 ;;
+            mountcrt:*) crt="${o#mountcrt:}" ;;
             comment:*|expect:*|warn:*) ;;   # notes for people, not requirements
             *) skip="needs $o" ;;
         esac
@@ -70,8 +73,25 @@ run_one() {
     fi
     [ "$kind" = exitcode ] || [ "$kind" = screenshot ] || skip="${kind} test"
     if [ -n "$skip" ]; then printf 'skip      %s (%s)\n' "$name" "$skip"; return; fi
-    local file="$root/gitignore/external/testprogs/testbench/$dir$prg"
+    local base="$root/gitignore/external/testprogs/testbench/$dir"
+    local file="$base$prg"
     local tag; tag="$(echo "$name" | tr -c 'A-Za-z0-9.-' '_')"
+    # What goes into the machine: a program to start, a cartridge, or both. The cache key
+    # is the program's hash (as before cartridges) or, without a program, the cartridge's.
+    local -a media=() refmedia=()
+    if [ -n "$prg" ]; then
+        media+=(--autostart "$file")
+        refmedia+=(-autostartprgmode 1 -autostart "/k64/${file#"$root"/}")
+    fi
+    if [ -n "$crt" ]; then
+        media+=(--cart "$base$crt")
+        refmedia+=(-cartcrt "/k64/${base#"$root"/}$crt")
+        if [ -n "$prg" ]; then ckey="$ckey+crt$(sha1sum "$base$crt" | cut -c1-8)"; else file="$base$crt"; ckey="$ckey+crt"; fi
+        # A cartridge whose hardware is not built yet is refused by our machine at once.
+        if "$k64run" "$root/gitignore" --cart "$base$crt" --cycles 1 2>&1 | grep -q 'is not supported yet'; then
+            printf 'skip      %s (%s)\n' "$name" "cartridge hardware not built yet"; return
+        fi
+    fi
     local t0=${EPOCHREALTIME/[.,]/}
     trap 'printf "%d.%d %s\n" $(( (${EPOCHREALTIME/[.,]/} - t0) / 1000000 )) $(( (${EPOCHREALTIME/[.,]/} - t0) / 100000 % 10 )) "$name" >>"$out/times.raw"' RETURN
     if [ "$kind" = screenshot ]; then
@@ -79,11 +99,11 @@ run_one() {
         case "$fam" in pal) dx=492; dy=0 ;; ntsc) dx=508; dy=20 ;; *) dx=500; dy=20 ;; esac
         mkdir -p "$shots"
         key2="$(sha1sum "$file" | cut -c1-16)-$vkey$ckey-$cycles"
-        nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" --autostart "$file" --cycles "$cycles" \
+        nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" "${media[@]}" --cycles "$cycles" \
             --raster "$out/$tag.raw" >"$out/$tag.k64.log" 2>&1
         if [ ! -s "$shots/$key2.png" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
             K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sidenginemodel $sidref -ciamodel $ciaref -jamaction 1 -warp -VICIIborders 2 \
-                -limitcycles "$cycles" -autostartprgmode 1 -autostart "/k64/${file#"$root"/}" \
+                -limitcycles "$cycles" "${refmedia[@]}" \
                 -exitscreenshot "/k64/${shots#"$root"/}/$key2.png" >"$out/$tag.ref.log" 2>&1
         fi
         if [ ! -s "$shots/$key2.png" ]; then printf '%-9s %s (no reference screenshot)\n' WORSE "$name"; return; fi
@@ -95,16 +115,15 @@ run_one() {
         fi
         return
     fi
-    nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" --autostart "$file" --debugcart --cycles "$cycles" \
+    nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" "${media[@]}" --debugcart --cycles "$cycles" \
         >"$out/$tag.k64.log" 2>&1
     local ours=$?
-    local rel="${file#"$root"/}"
     local cache="$root/gitignore/external/suite-ref.cache" key ref
     key="$(sha1sum "$file" | cut -c1-16) $vkey$ckey $cycles"
     ref="$(grep -F -- "$key " "$cache" 2>/dev/null | tail -1 | awk '{print $NF}')"
     if [ -z "$ref" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
         K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sidenginemodel $sidref -ciamodel $ciaref -debugcart -jamaction 1 -warp \
-            -limitcycles "$cycles" -autostartprgmode 1 -autostart "/k64/$rel" >"$out/$tag.ref.log" 2>&1
+            -limitcycles "$cycles" "${refmedia[@]}" >"$out/$tag.ref.log" 2>&1
         ref=$?
         flock "$cache.lock" sh -c "echo '$key $ref' >> '$cache'"
     fi
@@ -122,7 +141,7 @@ export -f run_one
 
 JOBS="${K64_SUITE_JOBS:-$(( $(nproc --all) / 4 > 0 ? $(nproc --all) / 4 : 1 ))}"
 : >"$OUT/times.raw"
-grep -v '^#' "$LIST" | grep -E -- "$PATTERN" | grep -v '^\s*$' |
+{ cat "$LIST"; cat "$ROOT/tests/suite-extra.txt" 2>/dev/null; } | grep -v '^#' | grep -E -- "$PATTERN" | grep -v '^\s*$' |
     xargs -d '\n' -P "$JOBS" -I{} bash -c 'run_one "$1" "$2" "$3" "$4"' _ {} "$ROOT" "$K64RUN" "$OUT" |
     sort -k2 >"$OUT/scoreboard.raw"
 sort -rn "$OUT/times.raw" >"$OUT/times.txt"; rm -f "$OUT/times.raw"
