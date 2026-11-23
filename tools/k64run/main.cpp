@@ -33,13 +33,14 @@
 //   the CPU starts the instruction at ADDR. --freeze-hold N: let go of it N cycles later
 //   (default 1).
 // --type-at CYCLE TEXT (with --cycles; may be given several times) puts TEXT into the
-//   KERNAL's keyboard buffer at that machine cycle, as if typed ("\r" = RETURN; at most
-//   10 characters).
+//   KERNAL's keyboard buffer at that machine cycle, as if typed ("\r" = RETURN, "\xNN" = the
+//   PETSCII code NN, e.g. "\x86" = F3; at most 10 characters).
 // --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
 #include "c64.h"
 #include "roms.h"
 #include "png.h"
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -109,6 +110,11 @@ int main(int argc, char** argv) {
             std::string text;
             for (const char* p = argv[++i]; *p; ++p) {
                 if (p[0] == '\\' && p[1] == 'r') { text += '\r'; ++p; }
+                else if (p[0] == '\\' && p[1] == 'x' && std::isxdigit(static_cast<unsigned char>(p[2])) &&
+                         std::isxdigit(static_cast<unsigned char>(p[3]))) {
+                    text += static_cast<char>(std::strtoul(std::string(p + 2, 2).c_str(), nullptr, 16));
+                    p += 3;
+                }
                 else text += *p;
             }
             typeAt.emplace_back(at, text.substr(0, 10));
