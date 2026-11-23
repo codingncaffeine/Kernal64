@@ -41,7 +41,7 @@ void destroyChip(void*);
 void step(void*);
 unsigned short readAddressBus(void*);
 unsigned char readDataBus(void*);
-unsigned int readRW(void*);
+unsigned char readRW(void*);   // as the simulation defines it (its header says unsigned int)
 unsigned short readPC(void*);
 unsigned char readA(void*);
 unsigned char readX(void*);
