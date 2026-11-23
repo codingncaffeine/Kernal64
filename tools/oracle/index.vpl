@@ -1,0 +1,21 @@
+# VICE Palette file
+#
+# TYPE:VICII
+# NAME:k64 index palette: color i = (i*16, 255-i*16, 0x5a)
+
+00 ff 5a
+10 ef 5a
+20 df 5a
+30 cf 5a
+40 bf 5a
+50 af 5a
+60 9f 5a
+70 8f 5a
+80 7f 5a
+90 6f 5a
+a0 5f 5a
+b0 4f 5a
+c0 3f 5a
+d0 2f 5a
+e0 1f 5a
+f0 0f 5a

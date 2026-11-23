@@ -2,5 +2,5 @@
 FROM docker.io/library/debian:trixie
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       build-essential pkg-config autoconf automake flex bison xa65 dos2unix texinfo \
-      libpng-dev zlib1g-dev ca-certificates curl subversion file \
+      libpng-dev zlib1g-dev ca-certificates curl subversion file gdb \
     && rm -rf /var/lib/apt/lists/*

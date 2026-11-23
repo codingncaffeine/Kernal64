@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Runs the reference emulator (built by tools/oracle/build-vice.sh) headless in its
+# container, with no network, no sound and no input. The repository is mounted at /k64,
+# so file arguments are given relative to the repository root as /k64/... paths.
+#
+#   tools/oracle/vice.sh [x64sc options...]
+#
+# (-t: VICE 3.9 crashes while logging when its output is not a terminal.)
+# -default comes first: it resets the options given before it. The ROMs are named
+# explicitly (the -directory search path did not find them); they are byte-identical
+# to the user's (SHA-1 checked 2026-11-22).
+# Colors come from tools/oracle/index.vpl (color i = R i*16, G 255-i*16) with no CRT
+# filter, so a screenshot maps back to color indices exactly.
+# K64_VICE_MODEL picks the machine (c64 = 6569 PAL, ntsc = 6567R8, oldntsc = 6567R56A);
+# it is set before the ROMs because choosing a model resets them.
+# Typical: -limitcycles N -exitscreenshot /k64/scratch/out.png -VICIIborders 2 (whole raster)
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+VICE="/k64/gitignore/external/vice"
+exec podman run --rm -t --network none --cpus 1 -v "$ROOT":/k64:Z k64-vice-oracle \
+    nice -n 10 "$VICE/build/src/x64sc" -default -model "${K64_VICE_MODEL:-c64}" \
+    -kernal "$VICE/src-tree/data/C64/kernal-901227-03.bin" -basic "$VICE/src-tree/data/C64/basic-901226-01.bin" \
+    -chargen "$VICE/src-tree/data/C64/chargen-901225-01.bin" \
+    -VICIIextpal -VICIIpalette /k64/tools/oracle/index.vpl -VICIIfilter 0 \
+    -sounddev dummy +sound "$@"

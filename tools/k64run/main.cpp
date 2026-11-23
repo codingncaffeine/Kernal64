@@ -5,6 +5,8 @@
 //
 // --expect TEXT fails the run unless TEXT appears on the screen.
 // --png FILE writes the visible picture of the last frame.
+// --raster FILE writes the whole raster of the last frame: one palette index per pixel,
+//   rows = raster lines 0.., columns = pixels from the start of cycle 1.
 // --hash prints an FNV-1a hash of the last frame's visible palette indices.
 #include "c64.h"
 #include "roms.h"
@@ -30,7 +32,7 @@ int main(int argc, char** argv) {
     int frames = 150;
     k64::VicModel model = k64::VicModel::Mos6569;
     std::vector<std::string> expect;
-    std::string png;
+    std::string png, rasterOut;
     bool hash = false;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -41,6 +43,7 @@ int main(int argc, char** argv) {
         } else if (a == "--expect" && i + 1 < argc) expect.emplace_back(argv[++i]);
         else if (a == "--png" && i + 1 < argc) png = argv[++i];
         else if (a == "--hash") hash = true;
+        else if (a == "--raster" && i + 1 < argc) rasterOut = argv[++i];
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     const k64::RomSet roms = k64::findRoms(argv[1]);
@@ -67,6 +70,14 @@ int main(int argc, char** argv) {
         std::vector<uint32_t> frame(static_cast<size_t>(t.visibleWidth) * t.visibleLines);
         machine.visibleFrame(frame.data());
         if (!k64png::write(png, frame.data(), t.visibleWidth, t.visibleLines)) { std::fprintf(stderr, "k64run: cannot write %s\n", png.c_str()); return 3; }
+    }
+    if (!rasterOut.empty()) {
+        FILE* f = std::fopen(rasterOut.c_str(), "wb");
+        const size_t w = static_cast<size_t>(t.cyclesPerLine) * 8;
+        bool ok = f != nullptr;
+        for (int line = 0; ok && line < t.linesPerFrame; ++line)
+            ok = std::fwrite(machine.raster() + static_cast<size_t>(line) * k64::kMaxRasterWidth, 1, w, f) == w;
+        if (!f || std::fclose(f) != 0 || !ok) { std::fprintf(stderr, "k64run: cannot write %s\n", rasterOut.c_str()); return 3; }
     }
     if (hash) {
         uint64_t h = 1469598103934665603ull;

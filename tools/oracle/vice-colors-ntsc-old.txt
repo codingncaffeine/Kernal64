@@ -1,0 +1,18 @@
+# RGB the reference emulator writes for color index 0-15 (ntsc-old), tools/oracle/vice.sh
+# (measured with tools/oracle/calib.py: first text row cells from reference pixel 136,31)
+00ff56
+00ff59
+00ff5a
+1aff5d
+36fd5f
+51e560
+6cce63
+87b864
+a1a067
+bd8a69
+d8726a
+f35b6d
+ff456e
+ff2d71
+ff1772
+ff0074

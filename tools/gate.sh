@@ -7,7 +7,8 @@
 # the libretro conformance checks on every machine model; the PLA against a chip
 # read-out and the KERNAL booting to BASIC on every model; the CPU against the
 # per-opcode bus traces, the functional and undocumented-opcode test programs and
-# the transistor-level chip; the VIC-II against the article's rules; the core loading in RetroArch behind the wall.
+# the transistor-level chip; the VIC-II against the article's rules and the start-up
+# screen against the reference emulator (tools/oracle/build-vice.sh); the core loading in RetroArch behind the wall.
 # The third-party suites come from tools/fetch.sh.
 # Runs on a quarter of the cores at low priority; its build folder is removed at exit.
 set -uo pipefail
@@ -62,6 +63,12 @@ for model in pal ntsc ntsc-old; do
         >"$BUILD/boot-$model.log" 2>&1 || { tail -3 "$BUILD/boot-$model.log"; bad "boot to the BASIC prompt ($model)"; }
     grep -q "KERNAL detected $want" "$BUILD/boot-$model.log" || bad "KERNAL did not detect $want ($model)"
 done
+
+step "start-up screen against the reference emulator"
+if [ -x "$ROOT/gitignore/external/vice/build/src/x64sc" ] && command -v podman >/dev/null; then
+    tools/oracle/refcheck.sh "$BUILD/k64run" "$BUILD/refcheck" >"$BUILD/refcheck.log" 2>&1 \
+        || { tail -6 "$BUILD/refcheck.log"; bad "start-up screen differs from the reference"; }
+else bad "reference emulator missing: tools/oracle/build-vice.sh"; fi
 
 step "VIC-II rules"
 "$BUILD/victest" >"$BUILD/victest.log" 2>&1 || { grep FAIL "$BUILD/victest.log" | head -8; bad "VIC-II rule tests"; }
