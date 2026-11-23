@@ -49,7 +49,7 @@ public:
 #pragma pack(push, 1)
     struct State {
         uint8_t pra = 0, prb = 0, ddra = 0, ddrb = 0;
-        uint16_t counter[2] = {}, latch[2] = {0xFFFF, 0xFFFF};
+        uint16_t counter[2] = {0xFFFF, 0xFFFF}, latch[2] = {0xFFFF, 0xFFFF};   // all ones after RES
         uint8_t cr[2] = {};
         uint8_t icr = 0, imr = 0, irqLow = 0;
         uint8_t irHold = 0;             // IR bit still visible after a read (clocks)
