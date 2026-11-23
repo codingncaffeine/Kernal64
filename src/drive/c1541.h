@@ -104,6 +104,7 @@ private:
     Via6522 via1_{*this, 0};   // the serial bus
     Via6522 via2_{*this, 1};   // the disk mechanism
     Mech m_;
+    uint8_t bus_last_ = 0;     // the data bus's last value (B1)
     std::shared_ptr<GcrDisk> disk_;
 };
 

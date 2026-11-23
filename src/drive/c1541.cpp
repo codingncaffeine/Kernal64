@@ -21,6 +21,7 @@ void C1541::reset() {
     cpu_.reset();
     cycle_ = 0;
     m_ = Mech{};
+    bus_last_ = 0;
     via1_.setCa1(atnLow_);
 }
 
@@ -28,16 +29,20 @@ void C1541::reset() {
 // twice; the lower half repeats every $2000: RAM at $0000-$07FF, the serial bus's 6522
 // at $1800-$1BFF, the disk's at $1C00-$1FFF, nothing in between.
 uint8_t C1541::read(uint16_t a) {
-    if (a & 0x8000) return rom_[a & 0x3FFF];
-    switch (a & 0x1C00) {
-    case 0x0000: case 0x0400: return ram_[a & 0x07FF];
-    case 0x1800: return via1_.read(a & 15);
-    case 0x1C00: return via2_.read(a & 15);
-    default: return static_cast<uint8_t>(a >> 8);   // nothing answers: the bus keeps the address's high byte
+    uint8_t v;
+    if (a & 0x8000) v = rom_[a & 0x3FFF];
+    else switch (a & 0x1C00) {
+    case 0x0000: case 0x0400: v = ram_[a & 0x07FF]; break;
+    case 0x1800: v = via1_.read(a & 15); break;
+    case 0x1C00: v = via2_.read(a & 15); break;
+    default: v = bus_last_; break;   // B1: nothing answers; the bus keeps its last value
     }
+    bus_last_ = v;
+    return v;
 }
 
 void C1541::write(uint16_t a, uint8_t v) {
+    bus_last_ = v;
     if (a & 0x8000) return;
     switch (a & 0x1C00) {
     case 0x0000: case 0x0400: ram_[a & 0x07FF] = v; break;
@@ -197,7 +202,7 @@ void C1541::writeBit(bool one, uint8_t zone) {
 // ---- save states ------------------------------------------------------------------
 
 size_t C1541::stateSize() {
-    return 2048 + sizeof(uint64_t) + 3 + 2 * sizeof(Via6522::State) + sizeof(Cpu6502<Bus>::Snapshot) + sizeof(Mech);
+    return 2048 + sizeof(uint64_t) + 3 + 2 * sizeof(Via6522::State) + sizeof(Cpu6502<Bus>::Snapshot) + sizeof(Mech) + 1;
 }
 
 void C1541::saveState(uint8_t* out) const {
@@ -211,6 +216,7 @@ void C1541::saveState(uint8_t* out) const {
     const auto snap = cpu_.snapshot();
     put(&snap, sizeof snap);
     put(&m_, sizeof m_);
+    put(&bus_last_, 1);
 }
 
 void C1541::loadState(const uint8_t* in) {
@@ -231,6 +237,7 @@ void C1541::loadState(const uint8_t* in) {
     get(&snap, sizeof snap);
     cpu_.restore(snap);
     get(&m_, sizeof m_);
+    get(&bus_last_, 1);
 }
 
 void C1541::tick() {
