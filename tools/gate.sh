@@ -4,8 +4,11 @@
 #   tools/gate.sh [--quick]     --quick skips the RetroArch run
 #
 # Steps: nothing forbidden is tracked; a clean build with warnings as errors;
-# the libretro conformance checks on every machine model; the test suites that
-# exist so far; the core loading in RetroArch behind the wall.
+# the libretro conformance checks on every machine model; the PLA against a chip
+# read-out and the KERNAL booting to BASIC on every model; the CPU against the
+# per-opcode bus traces, the functional and undocumented-opcode test programs and
+# the transistor-level chip; the core loading in RetroArch behind the wall.
+# The third-party suites come from tools/fetch.sh.
 # Runs on a quarter of the cores at low priority; its build folder is removed at exit.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,11 +41,50 @@ CORE="$BUILD/kernal64_libretro.so"
 extra="$(nm -D --defined-only "$CORE" | awk '{print $3}' | grep -v '^retro_' || true)"
 [ -z "$extra" ] || bad "core exports non-libretro symbols: $(echo "$extra" | head -3 | tr '\n' ' ')"
 
+# The machine needs the user's system ROMs (never in the repository): the gitignore folder.
+ROMS="$ROOT/gitignore"
+
 step "libretro conformance"
 for model in pal ntsc ntsc-old; do
-    "$BUILD/k64host" "$CORE" --frames 300 --check --option kernal64_model=$model >"$BUILD/host-$model.log" 2>&1 \
-        || { tail -5 "$BUILD/host-$model.log"; bad "conformance ($model)"; }
+    "$BUILD/k64host" "$CORE" --system "$ROMS" --frames 300 --check --option kernal64_model=$model \
+        >"$BUILD/host-$model.log" 2>&1 || { tail -5 "$BUILD/host-$model.log"; bad "conformance ($model)"; }
+    grep -q "missing system files" "$BUILD/host-$model.log" && bad "system ROMs not found in $ROMS"
 done
+
+step "memory map and boot"
+if [ -f "$ROOT/gitignore/external/pla/PLA.BIN" ]; then
+    "$BUILD/placheck" "$ROOT/gitignore/external/pla/PLA.BIN" >"$BUILD/pla.log" 2>&1 \
+        || { tail -4 "$BUILD/pla.log"; bad "PLA against the chip read-out"; }
+else bad "PLA read-out missing: tools/fetch.sh pla"; fi
+for model in pal ntsc ntsc-old; do
+    want=$([ "$model" = pal ] && echo PAL || echo NTSC)
+    "$BUILD/k64run" "$ROMS" --frames 150 --model $model --expect "READY." --expect "38911 BASIC BYTES FREE" \
+        >"$BUILD/boot-$model.log" 2>&1 || { tail -3 "$BUILD/boot-$model.log"; bad "boot to the BASIC prompt ($model)"; }
+    grep -q "KERNAL detected $want" "$BUILD/boot-$model.log" || bad "KERNAL did not detect $want ($model)"
+done
+
+step "CPU"
+EXT="$ROOT/gitignore/external"
+if [ -d "$EXT/singlestep/6502/v1" ]; then
+    "$BUILD/cputest" "$EXT/singlestep/6502/v1" --quiet >"$BUILD/cputest.log" 2>&1 \
+        || { tail -5 "$BUILD/cputest.log"; bad "per-opcode bus traces"; }
+else bad "per-opcode suite missing: tools/fetch.sh singlestep"; fi
+if [ -f "$EXT/dormann/bin_files/6502_functional_test.bin" ]; then
+    "$BUILD/imgtest" "$EXT/dormann/bin_files/6502_functional_test.bin@0" --start 400 --success 3469 >"$BUILD/dormann.log" 2>&1 \
+        || { tail -3 "$BUILD/dormann.log"; bad "functional test"; }
+else bad "functional test missing: tools/fetch.sh dormann"; fi
+SEDDON="$(ls "$EXT"/seddon/releases/6502-tests-generic.*.dat 2>/dev/null | tail -1)"
+if [ -n "$SEDDON" ]; then
+    "$BUILD/imgtest" "$SEDDON@2000" --start 2000 --end 202b --fail 2013 --print 2033 --max-cycles 10000000000 \
+        >"$BUILD/seddon.log" 2>&1 || { grep -v " - ok" "$BUILD/seddon.log" | tail -5; bad "undocumented-opcode tests"; }
+else bad "undocumented-opcode tests missing: tools/fetch.sh seddon"; fi
+if [ -x "$BUILD/cpudiff" ]; then
+    for lines in "" "--irq" "--nmi" "--rdy" "--irq --nmi --rdy"; do
+        # shellcheck disable=SC2086
+        "$BUILD/cpudiff" --seeds 8 --cycles 20000 $lines >"$BUILD/cpudiff.log" 2>&1 \
+            || { grep -A3 DIFFERS "$BUILD/cpudiff.log" | head -5; bad "chip comparison (${lines:-no lines})"; }
+    done
+else bad "chip comparison not built: tools/fetch.sh perfect6502"; fi
 
 if [ "$QUICK" = 0 ]; then
     step "RetroArch behind the wall"

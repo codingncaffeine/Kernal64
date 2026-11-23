@@ -1,5 +1,6 @@
 // libretro entry points.
 #include "../core/c64.h"
+#include "../core/roms.h"
 #include "libretro.h"
 
 #include <cmath>
@@ -7,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 #ifndef KERNAL64_VERSION
@@ -134,6 +136,26 @@ RETRO_API bool retro_load_game(const retro_game_info*) {
     machine = std::make_unique<k64::C64>(modelFromOptions());
     audioCarry = 0.0;
     log(RETRO_LOG_INFO, "version %s, machine %s", KERNAL64_VERSION, machine->timing().name);
+
+    // System ROMs, recognized by content in the frontend's system folder (or a "kernal64"
+    // folder inside it).
+    const char* sysDir = nullptr;
+    if (!envCb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sysDir) || !sysDir) sysDir = ".";
+    const k64::RomSet roms = k64::findRoms(sysDir);
+    std::string missing;
+    for (k64::RomRole r : {k64::RomRole::Basic, k64::RomRole::Kernal, k64::RomRole::Chargen}) {
+        if (roms.has(r)) log(RETRO_LOG_INFO, "%s: from %s", k64::romName(r), roms.from[static_cast<size_t>(r)].c_str());
+        else missing += std::string(missing.empty() ? "" : ", ") + k64::romName(r);
+    }
+    machine->setRoms(roms);
+    machine->reset();
+    if (!missing.empty()) {
+        log(RETRO_LOG_ERROR, "missing system files in %s: %s", sysDir, missing.c_str());
+        static std::string text;
+        text = "Kernal64: missing system files: " + missing;
+        retro_message msg{text.c_str(), 600};
+        envCb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+    }
     return true;
 }
 
@@ -158,7 +180,7 @@ RETRO_API void retro_run(void) {
     }
     if (inputPollCb) inputPollCb();
 
-    machine->runFrame();
+    if (machine->hasSystemRoms()) machine->runFrame();
 
     const Visible v = visibleFor(machine->timing().model);
     const uint32_t* src = machine->raster();

@@ -18,6 +18,11 @@ ln -sf "$BUILD/compile_commands.json" "$ROOT/compile_commands.json"
 mkdir -p "$ROOT/bin"
 install -m 755 "$BUILD/kernal64_libretro.so" "$ROOT/bin/kernal64_libretro.so"
 install -m 755 "$BUILD/k64host" "$ROOT/bin/k64host"
+install -m 755 "$BUILD/cputest" "$ROOT/bin/cputest"
+install -m 755 "$BUILD/imgtest" "$ROOT/bin/imgtest"
+install -m 755 "$BUILD/placheck" "$ROOT/bin/placheck"
+install -m 755 "$BUILD/k64run" "$ROOT/bin/k64run"
+[ -f "$BUILD/cpudiff" ] && install -m 755 "$BUILD/cpudiff" "$ROOT/bin/cpudiff"
 cat > "$ROOT/bin/kernal64" <<'EOF'
 #!/bin/sh
 # Starts the Kernal64 core in RetroArch. Any arguments (a disk or program file) are passed on.

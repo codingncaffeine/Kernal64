@@ -39,3 +39,16 @@ for entry in "${SOURCES[@]}"; do
     echo "$license" > "$dir/.k64-license"
     echo "fetch: $name at ${pin:0:8} ($license)"
 done
+
+# The PLA read-out (PLA.BIN, 64 KB, one byte of outputs per input combination) comes from
+# the user's own copy of Jens Schoenfeld's archive, gitignore/pla.zip; it is unpacked, never
+# downloaded.
+if want pla "$@"; then
+    if [ -f "$ROOT/gitignore/pla.zip" ]; then
+        mkdir -p "$EXT/pla"
+        unzip -o -q "$ROOT/gitignore/pla.zip" PLA.BIN -d "$EXT/pla"
+        echo "fetch: pla (PLA.BIN unpacked from gitignore/pla.zip)"
+    else
+        echo "fetch: pla skipped (no gitignore/pla.zip)"
+    fi
+fi
