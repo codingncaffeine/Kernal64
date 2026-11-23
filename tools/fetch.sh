@@ -55,6 +55,11 @@ if want spindle "$@"; then
     fi
 fi
 
+# Bitfire (BSD-3): cloned at a pinned commit and built in a container (tools/loaders/build.sh).
+if want bitfire "$@"; then
+    "$ROOT/tools/loaders/build.sh"
+fi
+
 # The PLA read-out (PLA.BIN, 64 KB, one byte of outputs per input combination) comes from
 # the user's own copy of Jens Schoenfeld's archive, gitignore/pla.zip; it is unpacked, never
 # downloaded.

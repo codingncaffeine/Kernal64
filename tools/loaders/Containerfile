@@ -1,0 +1,6 @@
+# The toolchain the open-source fast loaders build with (tools/loaders/build.sh): their 6502
+# assemblers and a C compiler. Builds run inside with no network; sources come in mounted.
+FROM docker.io/library/debian:trixie
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential make acme cc65 xa65 64tass ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
