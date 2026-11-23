@@ -120,8 +120,7 @@ void C1541::viaOutputs(int via) {
 
 // One drive cycle = 16 ticks of the 16 MHz clock (R1-R4).
 void C1541::mechanism() {
-    // BYTE READY goes low at the cycle boundary it was due at (R4).
-    if (m_.readyIn && --m_.readyIn == 0) m_.readyLow = soe() ? 1 : 0;
+    m_.readyLow = 0;
     const bool spinning = motor() && disk_ != nullptr;
     const std::vector<uint8_t>* track = nullptr;
     if (spinning) {
@@ -143,27 +142,56 @@ void C1541::mechanism() {
             if ((m_.uf4 & 3) == 2) {
                 // A bit cell ends: a 1 if no flux change came for a whole cell since the last.
                 m_.shift = static_cast<uint16_t>(((m_.shift << 1) | (m_.uf4 == 2 ? 1 : 0)) & 0x3FF);
-                m_.readyLow = 0;
+                if (!readMode()) {
+                    // W2: the write register's top bit goes onto the disk under the head.
+                    if (spinning) writeBit((m_.wbuf & 0x80) != 0, zone);
+                    m_.wbuf = static_cast<uint8_t>(m_.wbuf << 1);
+                }
+                m_.byteDone = 0;
                 if (readMode() && m_.shift == 0x3FF) {
-                    m_.bits = 0;   // SYNC: the byte count starts again
+                    m_.bits = 0;   // SYNC holds the bit counter at its start (R4)
                 } else if (++m_.bits == 8) {
                     m_.bits = 0;
-                    m_.latch = static_cast<uint8_t>(m_.shift);
-                    // BYTE READY at the next cycle boundary at least 10 ticks on (R4).
-                    m_.readyIn = static_cast<uint8_t>(16 - tick < 10 ? 2 : 1);
+                    m_.byteDone = 1;
+                    if (readMode()) m_.latch = static_cast<uint8_t>(m_.shift);
                 }
+            } else if ((m_.uf4 & 3) == 3 && m_.byteDone) {
+                // R4: BYTE READY is low while the counter stands at 7 and the bit-cell
+                // counter's QA and QB are both high: the zone-clock period after the shift
+                // that completed the byte. The same line loads the write register from port
+                // A's lines (W1): the DOS's byte in write mode, the read latch otherwise.
+                m_.wbuf = viaPortA(1, via2_.outA(), via2_.ddrA());
+                if (soe()) m_.readyLow = 1;
             }
         }
         if (!spinning) continue;
-        // The disk moves one tick; a new bit cell under the head that holds a 1 is a flux change.
+        // The disk moves one tick; a new bit cell under the head that holds a 1 is a flux change
+        // (not while the head writes: its read amplifier is off, W3).
         const uint32_t next = m_.angle + 1 == kTicksPerRev ? 0 : m_.angle + 1;
-        if (track) {
+        if (track && readMode()) {
             const uint64_t a = m_.angle * bitsPerRev / kTicksPerRev;
             const uint64_t b = next ? next * bitsPerRev / kTicksPerRev : 0;
             if (a != b && ((*track)[b >> 3] & (0x80 >> (b & 7)))) m_.flux = 1;
         }
         m_.angle = next;
     }
+}
+
+// W2: one bit at the cell under the head. A half-track with nothing recorded gets a track of
+// the length the zone being written gives in one revolution, blank (no flux changes).
+void C1541::writeBit(bool one, uint8_t zone) {
+    if (disk_->writeProtected) return;
+    const size_t i = static_cast<size_t>(GcrDisk::index(m_.halfTrack));
+    auto& t = disk_->tracks[i];
+    if (t.empty()) {
+        t.assign(static_cast<size_t>(zoneTrackBytes(zone)), 0x00);
+        disk_->zone[i] = zone;
+    }
+    const uint64_t b = static_cast<uint64_t>(m_.angle) * t.size() * 8 / kTicksPerRev;
+    const uint8_t mask = static_cast<uint8_t>(0x80 >> (b & 7));
+    t[b >> 3] = static_cast<uint8_t>(one ? (t[b >> 3] | mask) : (t[b >> 3] & ~mask));
+    disk_->written[i] = true;
+    disk_->changed = true;
 }
 
 // ---- save states ------------------------------------------------------------------

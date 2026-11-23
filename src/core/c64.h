@@ -61,8 +61,9 @@ public:
     }
     bool driveAttached() const { return driveWanted_ && drive_.hasRoms(); }
     const C1541& drive() const { return drive_; }
-    // The disk in drive 8 (it can change while the machine runs, as a disk is swapped).
-    void insertDisk(std::shared_ptr<const GcrDisk> disk) { drive_.insertDisk(std::move(disk)); }
+    // The disk in drive 8 (it can change while the machine runs, as a disk is swapped). The
+    // drive writes into it.
+    void insertDisk(std::shared_ptr<GcrDisk> disk) { drive_.insertDisk(std::move(disk)); }
     void ejectDisk() { drive_.ejectDisk(); }
 
     // A program to put into memory and start with RUN once the KERNAL waits for a key

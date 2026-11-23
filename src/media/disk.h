@@ -19,6 +19,9 @@ struct GcrDisk {
     // The speed zone each half-track was recorded at (0 = tracks 31+, 3 = tracks 1-17).
     std::array<uint8_t, kHalfTracks> zone{};
     bool writeProtected = false;
+    // Half-tracks the drive has written since the disk was made or last saved.
+    std::array<bool, kHalfTracks> written{};
+    bool changed = false;
 
     static int index(int halfTrack) { return halfTrack - 2; }   // half-track number -> array index
 };
@@ -34,6 +37,9 @@ bool parseD64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error
 bool parseG64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
 // By content: G64 by its signature, D64 by its size.
 bool parseDisk(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
+
+// The bytes per revolution of a track recorded at zone 0-3 (G2).
+int zoneTrackBytes(int zone);
 
 // The 4-to-5 bit code (hw/drive.md G1), exposed for tests.
 void gcrEncode4(const uint8_t in[4], uint8_t out[5]);

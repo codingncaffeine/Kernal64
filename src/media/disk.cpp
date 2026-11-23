@@ -26,6 +26,8 @@ uint32_t le32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (st
 
 } // namespace
 
+int zoneTrackBytes(int zone) { return kTrackBytes[zone & 3]; }
+
 int trackZone(int track) { return (track < 31) + (track < 25) + (track < 18); }
 
 int sectorsOnTrack(int track) {

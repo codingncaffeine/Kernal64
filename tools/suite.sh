@@ -41,7 +41,7 @@ run_one() {
     IFS=',' read -r dir prg kind cycles opts <<<"$line"
     dir="${dir%/}/"   # some list entries omit the directory's trailing slash
     local name="${dir#../}$prg${opts:+ [$opts]}"
-    local model=pal vmodel=c64 cia=old ciaref=0 ckey="" skip="" o fam=pal newvic=0 vkey sid=old sidref=resid6581 crt=""
+    local model=pal vmodel=c64 cia=old ciaref=0 ckey="" skip="" o fam=pal newvic=0 vkey sid=old sidref=resid6581 crt="" disk="" vdrive=0
     local -a vextra=()
     IFS=',' read -ra optv <<<"$opts"
     for o in "${optv[@]}"; do
@@ -54,6 +54,7 @@ run_one() {
             sid-new) sid=new; sidref=resid8580; ckey="$ckey+sidnew" ;;
             vicii-new) newvic=1 ;;
             mountcrt:*) crt="${o#mountcrt:}" ;;
+            mountd64:*|mountg64:*) disk="${o#mount???:}" ;;
             comment:*|expect:*|warn:*) ;;   # notes for people, not requirements
             *) skip="needs $o" ;;
         esac
@@ -83,6 +84,20 @@ run_one() {
         media+=(--autostart "$file")
         refmedia+=(-autostartprgmode 1 -autostart "/k64/${file#"$root"/}")
     fi
+    # The drive's own programs run with drive 8 on both emulators (PLAN D23: every other line
+    # keeps the drive-less machine its expected results were made with); the suite's image
+    # files are never written (the reference gets a copy, ours never writes files back).
+    if [ "${dir#../drive/}" != "$dir" ] || [ -n "$disk" ]; then
+        vdrive=1; ckey="$ckey+drive"
+        media+=(--drive)
+    fi
+    if [ -n "$disk" ]; then
+        media+=(--disk "$base$disk")
+        # The reference writes into an attached image: it gets a copy of its own per run.
+        cp "$base$disk" "$out/$tag.disk"
+        refmedia+=(-8 "/k64/${out#"$root"/}/$tag.disk")
+        ckey="$ckey+disk$(sha1sum "$base$disk" | cut -c1-8)"
+    fi
     if [ -n "$crt" ]; then
         media+=(--cart "$base$crt")
         refmedia+=(-cartcrt "/k64/${base#"$root"/}$crt")
@@ -102,7 +117,7 @@ run_one() {
         nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" "${media[@]}" --cycles "$cycles" \
             --raster "$out/$tag.raw" >"$out/$tag.k64.log" 2>&1
         if [ ! -s "$shots/$key2.png" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
-            K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sidenginemodel $sidref -ciamodel $ciaref -jamaction 1 -warp -VICIIborders 2 \
+            K64_VICE_DRIVE="$vdrive" K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sidenginemodel $sidref -ciamodel $ciaref -jamaction 1 -warp -VICIIborders 2 \
                 -limitcycles "$cycles" "${refmedia[@]}" \
                 -exitscreenshot "/k64/${shots#"$root"/}/$key2.png" >"$out/$tag.ref.log" 2>&1
         fi
@@ -122,7 +137,7 @@ run_one() {
     key="$(sha1sum "$file" | cut -c1-16) $vkey$ckey $cycles"
     ref="$(grep -F -- "$key " "$cache" 2>/dev/null | tail -1 | awk '{print $NF}')"
     if [ -z "$ref" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
-        K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sidenginemodel $sidref -ciamodel $ciaref -debugcart -jamaction 1 -warp \
+        K64_VICE_DRIVE="$vdrive" K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sidenginemodel $sidref -ciamodel $ciaref -debugcart -jamaction 1 -warp \
             -limitcycles "$cycles" "${refmedia[@]}" >"$out/$tag.ref.log" 2>&1
         ref=$?
         flock "$cache.lock" sh -c "echo '$key $ref' >> '$cache'"

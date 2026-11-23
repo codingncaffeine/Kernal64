@@ -2,8 +2,8 @@
 // for the disk mechanism. Rules and sources: local-notes/hw/drive.md.
 //
 // The disk mechanism: the spindle, the head on its stepper, and the read circuit (zone
-// clock, bit-cell counter, shift register, SYNC and BYTE READY), hw/drive.md R. Writing is
-// not built yet.
+// clock, bit-cell counter, shift register, SYNC and BYTE READY), hw/drive.md R, and the
+// write path, W.
 #pragma once
 
 #include "cpu6502.h"
@@ -40,8 +40,9 @@ public:
     bool led() const;         // the activity light
     bool motor() const;       // the spindle motor
 
-    // The disk in the drive (none: empty). Shared with whoever made it; the drive only reads it.
-    void insertDisk(std::shared_ptr<const GcrDisk> disk) { disk_ = std::move(disk); }
+    // The disk in the drive (none: empty). Shared with whoever made it, who can save what the
+    // drive wrote (GcrDisk::changed).
+    void insertDisk(std::shared_ptr<GcrDisk> disk) { disk_ = std::move(disk); }
     void ejectDisk() { disk_.reset(); }
     bool hasDisk() const { return disk_ != nullptr; }
     int halfTrack() const { return m_.halfTrack; }
@@ -72,6 +73,7 @@ private:
     uint8_t viaPortB(int via, uint8_t out, uint8_t ddr) override;
     void viaOutputs(int via) override;
     void mechanism();         // one drive cycle of the spindle and the read circuit
+    void writeBit(bool one, uint8_t zone);
     bool readMode() const { return via2_.cb2Out(); }
     bool soe() const { return via2_.ca2Out(); }
 
@@ -85,8 +87,9 @@ private:
         uint8_t bits = 0;           // bits since the last byte or SYNC
         uint8_t latch = 0;          // the byte port A reads
         uint8_t flux = 0;           // a flux change reaches the counters in the next tick
-        uint8_t readyIn = 0;        // drive cycles until BYTE READY goes low (0 = none due)
-        uint8_t readyLow = 0;       // BYTE READY is low (until the next bit)
+        uint8_t byteDone = 0;       // the bit counter stands at 7: a byte is complete (R4)
+        uint8_t readyLow = 0;       // BYTE READY was low in this drive cycle
+        uint8_t wbuf = 0;           // the write shift register (W1)
     };
 #pragma pack(pop)
 
@@ -101,7 +104,7 @@ private:
     Via6522 via1_{*this, 0};   // the serial bus
     Via6522 via2_{*this, 1};   // the disk mechanism
     Mech m_;
-    std::shared_ptr<const GcrDisk> disk_;
+    std::shared_ptr<GcrDisk> disk_;
 };
 
 } // namespace k64
