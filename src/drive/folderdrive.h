@@ -48,7 +48,7 @@ public:
     void loadState(const uint8_t* in);
 
 private:
-    enum Mode : uint8_t { Idle, AtnRx, ListenRx, Turnaround, Talk, NoData };
+    enum Mode : uint8_t { Idle, AtnRx, ListenRx, Turnaround, Talk, NoData, AtnIgnore };   // AtnIgnore: addressed elsewhere, off the bus until ATN ends
     enum Rx : uint8_t { RxWaitTalker, RxReady, RxEoiAck, RxBits, RxWaitClk };
     enum Tx : uint8_t { TxPrepare, TxWaitListener, TxEoiWait, TxEoiRelease, TxBitSet, TxBitValid, TxWaitAck };
 

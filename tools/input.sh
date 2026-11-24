@@ -145,8 +145,8 @@ sbs_start core 1 "fast loading: a disk (control: off)" --content "$ROOT/gitignor
 # The folder drive (option kernal64_folder_drive, device 10 by default: a host folder as a disk, in the
 # save folder, "<content> Drive"): a program saved, NEW, loaded and run (replayed from a state); the "$"
 # listing; a sequential file written with PRINT# and read with INPUT#; rename; scratch with its status;
-# SAVE"@:" replaces, a second plain SAVE is refused (63 FILE EXISTS). Control: with the drive off,
-# device 10 is not present.
+# SAVE"@:" replaces, a second plain SAVE is refused (63 FILE EXISTS); another, absent device is reported
+# absent. Control: with the drive off, device 10 is not present.
 folder() {   # folder NAME WANT [K64HOST...]
     local name="$1" want="$2"; shift 2
     rm -rf "$OUT/folder-$name"; mkdir -p "$OUT/folder-$name"
@@ -165,6 +165,10 @@ sbs_start folder "@: replaces, a second SAVE is refused" 0 --frames 2600 --type-
     --expect-screen ' 1 ' --expect-screen ' 3 '
 sbs_start folder "(control: off, device 10 not present)" 1 --frames 600 --option kernal64_folder_drive=off \
     --type-at 200 --type '10 PRINT 1\nSAVE"P",10\n' --expect-screen 'SAVING'
+# Another device addressed while the folder drive is on: it lets go of the bus as a 1541 does, so an
+# absent device is reported absent (it used to answer for every device and LOAD hung at SEARCHING).
+sbs_start folder "an absent device 12 is not present" 0 --frames 1600 --option kernal64_drive8=off \
+    --type-at 800 --type 'LOAD"$",12\n' --expect-screen 'DEVICE NOT PRESENT'
 
 # The keyboard (option kernal64_keyboard). Symbolic, the default: keys type what a US keyboard
 # prints (k64host types that way: SHIFT+8 is *, SHIFT+= is +, SHIFT+; is :, SHIFT+' is "); the

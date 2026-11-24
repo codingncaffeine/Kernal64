@@ -13,6 +13,8 @@ namespace {
 // without the talker's clock, acknowledged by holding DATA for 60 us; a bit held at least 60 us for a
 // C64 listener (its video chip can stop its processor for 40 us); the frame acknowledged within 1 ms.
 constexpr uint32_t kEoiTimeout = 200, kEoiAck = 60;
+// A LISTEN or TALK for another device: acknowledged for this many cycles, then off the bus.
+constexpr uint32_t kIgnoreAck = 60;
 // Both halves of a bit last 80 us: the C64 KERNAL watches CLK in loops of 15-30 cycles (a debounced double
 // read), and its video chip can stop its processor for about 40 cycles on a badline, so a half shorter than
 // a stop plus a loop can pass unseen and the C64 counts a bit short (measured: with 20 us the first byte of a
@@ -81,6 +83,12 @@ void FolderDrive::tick(bool atnLow, bool clkLow, bool dataLow) {
     case Idle:
     case NoData:
         s_.pullClk = s_.pullData = 0;
+        break;
+    case AtnIgnore:
+        // The byte that addressed another device is acknowledged (DATA held a moment, as the
+        // frame handshake asks), then the lines are let go until ATN ends.
+        s_.pullClk = 0;
+        s_.pullData = ++s_.timer < kIgnoreAck ? 1 : 0;
         break;
     case AtnRx:
     case ListenRx:
@@ -202,6 +210,7 @@ void FolderDrive::tick(bool atnLow, bool clkLow, bool dataLow) {
 }
 
 void FolderDrive::atnEnded() {
+    if (s_.mode == AtnIgnore) { s_.mode = Idle; s_.pullClk = s_.pullData = 0; return; }
     if (s_.mode != AtnRx) return;
     if (s_.listening) {
         s_.mode = ListenRx;   // still holding DATA: the computer talks next, CLK held
@@ -241,6 +250,14 @@ void FolderDrive::byteReceived(uint8_t b, bool eoi) {
             s_.addressed = (b & 0x1F) == device_ ? 1 : 0;
             s_.talking = s_.addressed;
             if (s_.addressed) s_.listening = 0;
+        }
+        if (((b >= 0x20 && b < 0x3F) || (b >= 0x40 && b < 0x5F)) && !s_.addressed) {
+            // Addressed to another device: off the bus until ATN ends, as a 1541 does. The
+            // rest of this ATN sequence (the secondary address) is not acknowledged by us, so
+            // the computer sees an absent device as absent (KERNAL $F3ED: ?DEVICE NOT PRESENT).
+            s_.mode = AtnIgnore;
+            s_.timer = 0;
+            return;
         } else if (b >= 0x60 && s_.addressed) {   // the secondary address
             s_.channel = static_cast<uint8_t>(b & 0x0F);
             s_.secondary = static_cast<uint8_t>(b & 0xF0);
