@@ -14,6 +14,7 @@ rewind, run-ahead and netplay work with all of it.
 **Documentation is in the [wiki](https://github.com/codingncaffeine/Kernal64/wiki):**
 [system files](https://github.com/codingncaffeine/Kernal64/wiki/System-files),
 [content](https://github.com/codingncaffeine/Kernal64/wiki/Content),
+[drives and media](https://github.com/codingncaffeine/Kernal64/wiki/Drives-and-media),
 [hard drives](https://github.com/codingncaffeine/Kernal64/wiki/Hard-drives),
 [controls](https://github.com/codingncaffeine/Kernal64/wiki/Controls),
 [core options](https://github.com/codingncaffeine/Kernal64/wiki/Core-options) and the project's
