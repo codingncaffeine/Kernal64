@@ -11,18 +11,27 @@ running its own DOS, the datasette, and a CMD HD hard drive running its own DOS.
 
 ## What sets it apart
 
+Compared with VICE (3.9), the long-standing C64 emulator our tests are checked against:
+
+- **`.nib` disk dumps load directly.** VICE needs them converted to `.g64` first.
+- **More of the test suite passes.** Kernal64 passes the same 1,176 test programs as VICE and 16 that VICE fails,
+  among them `vsp-tester`.
+- **More SID test programs pass:** 157 of 165 chip-verified programs, against VICE's 143.
+- **Hard drives come ready.** Kernal64 makes a CMD HD image with the drive's DOS installed and its partitions
+  formatted; in VICE you install the DOS yourself from the drive's utilities disk.
+
+In more detail:
+
 - Every chip is built from its documents and checked against
   ground truth: the CPU against a transistor-level simulation of the 6502 and all 2,560,000
   per-opcode bus traces; the PLA against a real chip's read-out for all 65,536 inputs; the
   drives and cartridges against bytes captured from real hardware. On the established C64 test
-  suite it passes 1,176 programs, matching the reference emulator, and 16 more where the
-  reference fails.
+  suite it passes 1,176 programs, as VICE does, and 16 that VICE fails.
 - **Its own SID models.** The combined waveforms and the filter are our own circuit models
-  of the chip, not copied tables: 157 of 165 chip-verified SID test programs pass (the
-  reference emulator: 143).
+  of the chip, not copied tables: 157 of 165 chip-verified SID test programs pass (VICE: 143).
 - **A real 1541, down to its read circuit.** The drive runs its own DOS ROM on its own 6502
   and reads a spinning disk, so fast loaders work as on the machine. `.nib` disk dumps mount
-  directly: most emulators need them converted to `.g64` first.
+  directly, with no conversion.
 - **Freezer cartridges checked against real ones.** The freeze of the type 36 cartridge
   matches, byte for byte, dumps measured on five real cartridges of both boards.
 - **A real hard drive.** The CMD HD is emulated as the whole machine it is (processor, boot
