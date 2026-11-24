@@ -158,6 +158,13 @@ sbs_start folder "files" 0 --frames 2600 --type-at 200 \
     --type '10 OPEN2,10,2,"DATA,S,W":PRINT#2,"HI THERE":CLOSE2\n20 OPEN2,10,2,"DATA,S,R":INPUT#2,A$:CLOSE2:PRINTA$\n30 OPEN15,10,15,"R:INFO=DATA":CLOSE15:SAVE"GONE",10\n40 OPEN15,10,15,"S:GONE":INPUT#15,E,E$,T,S:CLOSE15:PRINTE;E$;T\nRUN\n' \
     --type-at 2000 --type 'LOAD"$",10\n' --type-at 2400 --type 'LIST\n' \
     --expect-screen 'HI THERE' --expect-screen ' 1 FILES SCRATCHED 1' --expect-screen '"INFO"' --expect-screen ' SEQ'
+# FD-ATN: ATN pulled by a program's own code (here BASIC's POKE, not the KERNAL's serial routines)
+# is not answered, so a fast loader that uses ATN as one of its lines is not disturbed: DATA stays
+# released (PEEK bit 7 = 128, printed + 1). Before the change the folder drive pulled it (1).
+# Drive 8 is off: a 1541 answers ATN in hardware, as a real one does.
+sbs_start folder "ATN from a program's own code is not answered" 0 --frames 1200 --option kernal64_drive8=off --type-at 200 \
+    --type '10 POKE56576,PEEK(56576)OR8:FORI=1TO20:NEXT:A=PEEK(56576)AND128\n20 POKE56576,PEEK(56576)AND247:PRINTA+1\nRUN\n' \
+    --expect-screen ' 129'
 sbs_start folder "@: replaces, a second SAVE is refused" 0 --frames 2600 --type-at 200 \
     --type '10 PRINT 1\nSAVE"P",10\n' --type-at 500 --type '10 PRINT 2\nSAVE"P",10\n' \
     --type-at 800 --type 'NEW\nLOAD"P",10\n' --type-at 1150 --type 'RUN\n' \

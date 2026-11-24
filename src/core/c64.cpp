@@ -129,6 +129,12 @@ uint8_t C64::portRead() const {
 
 // ---- the PLA's view ------------------------------------------------------------
 
+bool C64::cpuInKernal() const {
+    const uint16_t pc = cpu_.regs().pc;
+    // BA only gates I/O, and the VIC-II's BA may not be settled for this cycle yet: taken as high.
+    return pc >= 0xE000 && !(pla::table()[plaInputsCpu(pc, true) | pla::BA] & pla::nKERNAL);
+}
+
 uint16_t C64::plaInputsCpu(uint16_t a, bool read) const {
     const uint8_t pins = portPins();
     uint16_t in = 0;
@@ -459,7 +465,7 @@ void C64::tick() {
         const uint8_t pa = cia2_.portAOut();
         const bool drive = driveAttached();
         folder_.tick((pa & 0x08) != 0, (pa & 0x10) != 0 || (drive && drive_.pullsClk()) || (hdOn_ && hd_.pullsClk()),
-                     (pa & 0x20) != 0 || (drive && drive_.pullsData()) || (hdOn_ && hd_.pullsData()));
+                     (pa & 0x20) != 0 || (drive && drive_.pullsData()) || (hdOn_ && hd_.pullsData()), cpuInKernal());
     }
     if (hdOn_) {
         // The CMD HD's 2 MHz clock: twice the 1541's ratio (driveNum_/driveDen_ = 1 MHz). Its

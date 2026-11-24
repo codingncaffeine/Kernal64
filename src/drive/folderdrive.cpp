@@ -74,8 +74,22 @@ void FolderDrive::startAtn() {
     s_.eoi = 0;
 }
 
-void FolderDrive::tick(bool atnLow, bool clkLow, bool dataLow) {
-    if (atnLow && !s_.prevAtn) startAtn();
+// FD-ATN: the folder drive is reached through the KERNAL's serial routines. A program with its
+// own loader often uses ATN as one of its own lines; any device that answers ATN then pulls DATA
+// in the middle of that protocol and breaks it (a real second drive does the same, which is why
+// such programs ask for other drives to be switched off). So ATN pulled while the computer is not
+// running the KERNAL ROM is not answered: the folder drive keeps off the bus until ATN ends, as it
+// does for a command addressed to another device.
+void FolderDrive::tick(bool atnLow, bool clkLow, bool dataLow, bool kernal) {
+    if (atnLow && !s_.prevAtn) {
+        if (kernal) {
+            startAtn();
+        } else {
+            s_.mode = AtnIgnore;
+            s_.timer = kIgnoreAck;   // no acknowledgment: not addressed at all
+            s_.pullClk = s_.pullData = 0;
+        }
+    }
     else if (!atnLow && s_.prevAtn) atnEnded();
     s_.prevAtn = atnLow ? 1 : 0;
 

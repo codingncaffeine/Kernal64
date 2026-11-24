@@ -192,6 +192,12 @@ private:
     void injectProgram();
 
     uint16_t plaInputsCpu(uint16_t a, bool read) const;
+
+    // The CPU is running the KERNAL ROM: its program counter is in $E000-$FFFF and the PLA
+
+    // selects the KERNAL there.
+
+    bool cpuInKernal() const;
     uint8_t portPins() const;    // the 6510 port lines as the PLA sees them
     uint8_t portRead() const;    // reading $01
     unsigned vicBank() const;    // 0..3, from CIA 2 port A (inverted)

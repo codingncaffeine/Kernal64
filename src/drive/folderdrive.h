@@ -37,7 +37,9 @@ public:
     void reset();
 
     // One machine cycle (about a microsecond). The lines as the others drive them: true = pulled low.
-    void tick(bool atnLow, bool clkLow, bool dataLow);
+    // kernal: the computer's CPU is running the KERNAL ROM. ATN pulled by other code is a program's
+    // own use of the bus (a fast loader): the folder drive keeps off it (FD-ATN below).
+    void tick(bool atnLow, bool clkLow, bool dataLow, bool kernal = true);
     bool pullsClk() const { return s_.pullClk != 0; }
     bool pullsData() const { return s_.pullData != 0; }
 
