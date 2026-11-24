@@ -73,6 +73,7 @@ void C64::reset() {
     drive_.setBus(false, false, false);
     drive_.reset();   // the serial bus's RESET line is the machine's
     folder_.reset();
+    if (hdOn_) { hd_.setBus(false, false, false); hd_.reset(); hdPhase_ = 0; }
     s_.autostartPending = autostart_.data.empty() ? 0 : 1;
     updatePots();
 }
@@ -384,8 +385,10 @@ uint8_t C64::ciaPortA(int cia, uint8_t driven) {
     // inverters; the inputs read CLK (bit 6) and DATA (bit 7) as they are: low when any
     // device pulls them.
     const bool drive = driveAttached();
-    const bool clk = !(driven & 0x10) && !(drive && drive_.pullsClk()) && !(folderOn_ && folder_.pullsClk());
-    const bool data = !(driven & 0x20) && !(drive && drive_.pullsData()) && !(folderOn_ && folder_.pullsData());
+    const bool clk = !(driven & 0x10) && !(drive && drive_.pullsClk()) && !(folderOn_ && folder_.pullsClk()) &&
+                     !(hdOn_ && hd_.pullsClk());
+    const bool data = !(driven & 0x20) && !(drive && drive_.pullsData()) && !(folderOn_ && folder_.pullsData()) &&
+                      !(hdOn_ && hd_.pullsData());
     return static_cast<uint8_t>((driven & 0x3F) | (clk ? 0x40 : 0) | (data ? 0x80 : 0)) &
            static_cast<uint8_t>(driven | 0x3F);
 }
@@ -443,8 +446,8 @@ void C64::tick() {
             s_.drivePhase -= driveDen_;
             const uint8_t pa = end >= delay ? now : before;
             // The lines are low when anybody pulls them: the folder drive's pulls reach the 1541 too.
-            drive_.setBus((pa & 0x08) != 0, (pa & 0x10) != 0 || (folderOn_ && folder_.pullsClk()),
-                          (pa & 0x20) != 0 || (folderOn_ && folder_.pullsData()));
+            drive_.setBus((pa & 0x08) != 0, (pa & 0x10) != 0 || (folderOn_ && folder_.pullsClk()) || (hdOn_ && hd_.pullsClk()),
+                          (pa & 0x20) != 0 || (folderOn_ && folder_.pullsData()) || (hdOn_ && hd_.pullsData()));
             drive_.tick();
             end += driveDen_;
         }
@@ -455,8 +458,23 @@ void C64::tick() {
         // cycle: its protocol timings are counted in these cycles).
         const uint8_t pa = cia2_.portAOut();
         const bool drive = driveAttached();
-        folder_.tick((pa & 0x08) != 0, (pa & 0x10) != 0 || (drive && drive_.pullsClk()),
-                     (pa & 0x20) != 0 || (drive && drive_.pullsData()));
+        folder_.tick((pa & 0x08) != 0, (pa & 0x10) != 0 || (drive && drive_.pullsClk()) || (hdOn_ && hd_.pullsClk()),
+                     (pa & 0x20) != 0 || (drive && drive_.pullsData()) || (hdOn_ && hd_.pullsData()));
+    }
+    if (hdOn_) {
+        // The CMD HD's 2 MHz clock: twice the 1541's ratio (driveNum_/driveDen_ = 1 MHz). Its
+        // cycles that end before this cycle's bus access run first and see the lines as the
+        // computer drives them now. (The 1541's measured bus delay, S5, is not assumed here.)
+        const uint8_t pa = cia2_.portAOut();
+        const bool drive = driveAttached();
+        hdPhase_ += 2ull * driveNum_;
+        while (hdPhase_ >= driveDen_) {
+            hdPhase_ -= driveDen_;
+            hd_.setBus((pa & 0x08) != 0,
+                       (pa & 0x10) != 0 || (drive && drive_.pullsClk()) || (folderOn_ && folder_.pullsClk()),
+                       (pa & 0x20) != 0 || (drive && drive_.pullsData()) || (folderOn_ && folder_.pullsData()));
+            hd_.tick();
+        }
     }
     cpu_.tick();
     if (s_.potAny) updatePots();

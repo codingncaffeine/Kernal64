@@ -45,6 +45,9 @@
 //   its buttons down from the start; --save-tape FILE.tap writes the tape at the end.
 // --save-disk FILE.g64 writes the disk in drive 8, as it is at the end, as a G64.
 // --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
+// --hd ROM puts a CMD HD on the serial bus with that boot ROM; --hd-disk FILE.dhd is its disk
+//   (a raw image of 512-byte blocks; a blank one = an empty or sparse file of the size wanted).
+//   Its clock starts at 2026-11-24 12:00:00, so runs repeat exactly.
 #include "c64.h"
 #include "roms.h"
 #include "png.h"
@@ -89,6 +92,7 @@ int main(int argc, char** argv) {
     uint64_t freezeHold = 1, freezeRelease = 0;
     std::vector<std::pair<uint64_t, std::string>> typeAt;
     bool drive = false;
+    std::string hdRom, hdDisk;
     std::string diskFile, saveDisk, tapeFile, saveTape;
     int tapeButton = 0;
     std::shared_ptr<k64::Tape> theTape;
@@ -135,6 +139,8 @@ int main(int argc, char** argv) {
             typeAt.emplace_back(at, text.substr(0, 10));
         }
         else if (a == "--drive") drive = true;
+        else if (a == "--hd" && i + 1 < argc) hdRom = argv[++i];
+        else if (a == "--hd-disk" && i + 1 < argc) hdDisk = argv[++i];
         else if (a == "--disk" && i + 1 < argc) { diskFile = argv[++i]; drive = true; }
         else if (a == "--blank-disk") { diskFile = "-"; drive = true; }
         else if (a == "--tape" && i + 1 < argc) tapeFile = argv[++i];
@@ -214,6 +220,27 @@ int main(int argc, char** argv) {
             return 3;
         }
         machine.setAutostart(program, autostartDelay);
+    }
+    static k64::BlockFile hdFile;
+    if (!hdRom.empty()) {
+        std::vector<uint8_t> bytes;
+        if (!readFile(hdRom, bytes) || !machine.hardDrive().setRom(bytes.data(), bytes.size())) {
+            std::fprintf(stderr, "k64run: %s: not a CMD HD boot ROM (16K, or 32K holding it twice)\n", hdRom.c_str());
+            return 3;
+        }
+        if (!hdDisk.empty()) {
+            if (!hdFile.open(hdDisk, 0)) { std::fprintf(stderr, "k64run: cannot open %s\n", hdDisk.c_str()); return 3; }
+            machine.hardDrive().attachDisk(&hdFile);
+        }
+        machine.hardDrive().setTime({26, 11, 24, 2, 12, 0, 0});
+        machine.hardDrive().scsi().trace = std::getenv("K64_SCSI_TRACE") != nullptr;
+        if (const char* w = std::getenv("K64_HD_WATCH"))
+            for (const char* q = w; *q;) {
+                char* e = nullptr;
+                machine.hardDrive().watch.push_back(static_cast<uint16_t>(std::strtoul(q, &e, 16)));
+                q = *e ? e + 1 : e;
+            }
+        machine.setHardDriveOn(true);
     }
     machine.reset();
     for (int port = 0; port < 2; ++port) machine.setPaddles(port + 1, paddles[port][0], paddles[port][1]);

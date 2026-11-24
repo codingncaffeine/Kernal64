@@ -39,6 +39,9 @@ add_library(k64core STATIC
   src/drive/via6522.cpp
   src/drive/c1541.cpp
   src/drive/folderdrive.cpp
+  src/drive/cmdhd.cpp
+  src/drive/scsidisk.cpp
+  src/drive/rtc72421.cpp
   src/media/crt.cpp
   src/media/prg.cpp
   src/media/disk.cpp
@@ -130,6 +133,10 @@ target_compile_options(k64run PRIVATE ${K64_WARNINGS})
 
 # The VIC-II checked rule by rule against the article.
 # The 1541's board with its ROM: self test, idle loop, the answer to ATN.
+add_executable(hdtest tools/hdtest/main.cpp)
+target_link_libraries(hdtest PRIVATE k64core)
+target_compile_options(hdtest PRIVATE ${K64_WARNINGS})
+
 add_executable(drivetest tools/drivetest/main.cpp)
 target_link_libraries(drivetest PRIVATE k64core)
 target_compile_options(drivetest PRIVATE ${K64_WARNINGS})

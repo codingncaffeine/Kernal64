@@ -229,6 +229,7 @@ script "disks through drive 8 (directory and files byte for byte)" "$BUILD/disk.
 script "fast loaders on PAL and NTSC (Spindle, Bitfire)" "$BUILD/loaders.log" tools/loaders.sh "$BUILD/k64run"
 script "the datasette (KERNAL save + load, recorded pulses, tape as content)" "$BUILD/tape.log" tools/tape.sh "$BUILD"
 script "controllers, mapped buttons, on-screen keyboard, option versions" "$BUILD/input.log" tools/input.sh "$BUILD"
+script "CMD HD: its board boots the boot ROM, device 30 answers on a blank disk" "$BUILD/cmdhd.log" tools/cmdhd.sh "$BUILD"
 # Independent of each other: side by side.
 side "VIC-II rule tests" "$BUILD/victest.log" "$BUILD/victest"
 side "SID paddle converter rules" "$BUILD/sidtest.log" "$BUILD/sidtest"

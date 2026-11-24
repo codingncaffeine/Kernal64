@@ -16,6 +16,7 @@
 #include "prg.h"
 #include "c1541.h"
 #include "folderdrive.h"
+#include "cmdhd.h"
 #include "datasette.h"
 
 #include <algorithm>
@@ -73,6 +74,15 @@ public:
         folderOn_ = store != nullptr;
     }
     bool folderDriveOn() const { return folderOn_; }
+    // A CMD HD on the serial bus (PLAN Phase 11b): on when its boot ROM is set and it is
+    // switched on; its disk is a host file. Switching it on starts it from power on.
+    // (Not yet in save states: Phase 11b step 4.)
+    CmdHd& hardDrive() { return hd_; }
+    void setHardDriveOn(bool on) {
+        if (on && !hdOn_) { hd_.setBus(false, false, false); hd_.reset(); hdPhase_ = 0; }
+        hdOn_ = on && hd_.hasRom();
+    }
+    bool hardDriveOn() const { return hdOn_; }
     // The datasette on the cassette port.
     // The tape moves past the head: a button down and the motor running (what fast loading watches).
     bool tapeMoving() const {
@@ -238,6 +248,9 @@ private:
     C1541 drive_;
     FolderDrive folder_;
     bool folderOn_ = false;
+    CmdHd hd_;
+    bool hdOn_ = false;
+    uint64_t hdPhase_ = 0;   // the HD's 2 MHz clock against ours, as drivePhase
     Datasette tape_;
     bool driveWanted_ = true;
     uint32_t driveNum_ = 1, driveDen_ = 1;   // drive cycles per machine cycle, exactly (setModel)
