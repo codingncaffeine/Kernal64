@@ -32,6 +32,7 @@
 // to TO: INPUT = a RetroPad button (b a y x up down left right select start l r l2 r2 l3 r3),
 // an analog axis (lx ly rx ry), the mouse (mx my = movement per frame, mleft mright) or the
 // light gun (gx gy = position -32767..32767, gtrigger, goffscreen).
+// --dump-frames DIR writes every frame of the first run as DIR/NNNNN.ppm (for making a video).
 // --expect-ram ADDR VALUE (hex address, decimal value): RAM at the end must hold VALUE.
 // --expect-led N: the core's LED 0 must have been switched on at least N times.
 // Files: the host offers a VFS (version 1, plain files underneath) as RetroArch does and
@@ -403,6 +404,7 @@ int main(int argc, char** argv) {
     double expectHz = 0.0, expectDbMin = 0.0, expectDbMax = 0.0;
     bool expectSilence = false, expectLevel = false, expectLoadFailure = false;
     unsigned expectLed = 0;
+    std::string dumpFrames;
     std::vector<std::pair<unsigned, unsigned>> expectRam;
     bool expectVfs = false;
     double levelMin = 0.0, levelMax = 0.0;
@@ -439,6 +441,7 @@ int main(int argc, char** argv) {
         else if (a == "--expect-level") { expectLevel = true; levelMin = std::stod(next()); levelMax = std::stod(next()); }
         else if (a == "--options-version") optionsVersion = static_cast<unsigned>(std::stoul(next()));
         else if (a == "--no-vfs") offerVfs = false;
+        else if (a == "--dump-frames") dumpFrames = next();
         else if (a == "--expect-ram") {
             const unsigned addr = static_cast<unsigned>(std::stoul(next(), nullptr, 16));
             expectRam.emplace_back(addr & 0xFFFF, static_cast<unsigned>(std::stoul(next())));
@@ -570,6 +573,11 @@ int main(int argc, char** argv) {
                         diskControl ? diskControl->get_num_images() : 0, f, swapped ? "" : " FAILED");
         }
         c.retro_run();
+        if (!dumpFrames.empty()) {
+            char name[32];
+            std::snprintf(name, sizeof name, "/%05u.ppm", f);
+            if (!writePpm((dumpFrames + name).c_str())) fail("could not write a frame to %s", dumpFrames.c_str());
+        }
         if (f == 0) audioFramesFirst = audioFrames;
         hashes.push_back(fnv1a(lastFrame.pixels.data(), lastFrame.pixels.size() * 4));
         if (f + 1 == frames / 2) {
