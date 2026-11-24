@@ -237,6 +237,16 @@ side "1541 board with its ROM" "$BUILD/drivetest.log" "$BUILD/drivetest" "$ROMS"
 if [ -d "$EXT/singlestep/6502/v1" ]; then
     side "per-opcode bus traces" "$BUILD/cputest.log" "$BUILD/cputest" "$EXT/singlestep/6502/v1" --quiet
 else bad "per-opcode suite missing: tools/fetch.sh singlestep"; fi
+# The CMD HD's 65C02, both variants. WDC's $5C is left out: its data sheet says eight cycles,
+# the emulator-made traces four (local-notes/hw/cpu65c02.md).
+if [ -d "$EXT/singlestep/rockwell65c02/v1" ] && [ -d "$EXT/singlestep/wdc65c02/v1" ]; then
+    side "65C02 per-opcode bus traces, Rockwell" "$BUILD/cputest-r65c02.log" "$BUILD/cputest" "$EXT/singlestep/rockwell65c02/v1" --65c02 rockwell --quiet
+    side "65C02 per-opcode bus traces, WDC" "$BUILD/cputest-w65c02.log" "$BUILD/cputest" "$EXT/singlestep/wdc65c02/v1" \
+        $(for o in $(seq 0 255); do [ $o -ne 92 ] && printf '%02x ' $o; done) --65c02 wdc --quiet
+else bad "65C02 per-opcode suites missing: tools/fetch.sh singlestep"; fi
+if [ -f "$EXT/dormann/bin_files/65C02_extended_opcodes_test.bin" ]; then
+    side "65C02 extended-opcode test" "$BUILD/dormann-65c02.log" "$BUILD/imgtest" "$EXT/dormann/bin_files/65C02_extended_opcodes_test.bin@0" --start 400 --success 24f1 --65c02 wdc
+else bad "65C02 extended-opcode test missing: tools/fetch.sh dormann"; fi
 if [ -f "$EXT/dormann/bin_files/6502_functional_test.bin" ]; then
     side "functional test" "$BUILD/dormann.log" "$BUILD/imgtest" "$EXT/dormann/bin_files/6502_functional_test.bin@0" --start 400 --success 3469
 else bad "functional test missing: tools/fetch.sh dormann"; fi

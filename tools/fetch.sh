@@ -10,9 +10,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXT="$ROOT/gitignore/external"
 mkdir -p "$EXT"
 
-# name | repository | pinned commit | sparse paths (empty = whole tree) | license as found
+# name | repository | pinned commit | sparse paths, space-separated (empty = whole tree) | license as found
 SOURCES=(
-  "singlestep|https://github.com/SingleStepTests/65x02.git|2f6980a2d95757486c7bee24355c360e40e2a224|6502/v1|MIT"
+  "singlestep|https://github.com/SingleStepTests/65x02.git|2f6980a2d95757486c7bee24355c360e40e2a224|6502/v1 rockwell65c02/v1 wdc65c02/v1|MIT"
   "dormann|https://github.com/klaus2m5/6502_65c02_functional_tests.git|7954e2dbb49c469ea286070bf46cdd71aeb29e4b||GPL-3.0"
   "seddon|https://github.com/tom-seddon/6502-tests.git|6ecccbfebdb9e10588b1019166bcb5b3b6e617bc||GPL-3.0"
   "perfect6502|https://github.com/mist64/perfect6502.git|09fc542877a84318291aa42dab143a3e2c3db974||MIT"
@@ -24,13 +24,16 @@ for entry in "${SOURCES[@]}"; do
     IFS='|' read -r name url pin sparse license <<<"$entry"
     want "$name" "$@" || continue
     dir="$EXT/$name"
+    paths=(); for p in $sparse; do paths+=("/$p/"); done
     if [ -d "$dir/.git" ] && [ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" = "$pin" ]; then
+        # A path added to the list later is checked out into the existing clone.
+        [ -n "$sparse" ] && git -C "$dir" sparse-checkout set --no-cone "${paths[@]}"
         echo "fetch: $name at ${pin:0:8} (already)"; continue
     fi
     rm -rf "$dir"
     if [ -n "$sparse" ]; then
         git clone -q --filter=blob:none --no-checkout "$url" "$dir"
-        git -C "$dir" sparse-checkout set --no-cone "/$sparse/"
+        git -C "$dir" sparse-checkout set --no-cone "${paths[@]}"
     else
         git clone -q --filter=blob:none --no-checkout "$url" "$dir"
     fi

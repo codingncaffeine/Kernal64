@@ -1,11 +1,16 @@
 // cputest: runs the per-opcode single-instruction suite (SingleStepTests 65x02,
-// 6502/v1) against the CPU core, comparing every bus cycle and the final state.
+// 6502/v1; with --65c02, rockwell65c02/v1 or wdc65c02/v1) against a CPU core, comparing
+// every bus cycle and the final state.
 //
-//   cputest DIR [OPCODE_HEX...] [--max-fail N] [--quiet]
+//   cputest DIR [OPCODE_HEX...] [--max-fail N] [--quiet] [--65c02 rockwell|wdc]
+//
+// A 65C02 set leaves out the opcodes it cannot test that way (WAI, STP): a missing or
+// empty file is skipped and counted there.
 //
 // Memory is 64 KB of plain RAM; an access to an address the test does not list is
 // a failure (the suite's own rule). Exit code 0 only if every case passed.
 #include "cpu6502.h"
+#include "cpu65c02.h"
 
 #include <cctype>
 #include <cstdint>
@@ -115,33 +120,23 @@ std::string flags(uint8_t p) {
     return s;
 }
 
-} // namespace
+struct Options { int maxFail = 5; bool quiet = false; bool c02 = false; };
 
-int main(int argc, char** argv) {
-    if (argc < 2) { std::fprintf(stderr, "usage: cputest DIR [OPCODE_HEX...] [--max-fail N] [--quiet]\n"); return 2; }
-    std::string dir = argv[1];
-    std::vector<int> ops;
-    int maxFail = 5;
-    bool quiet = false;
-    for (int i = 2; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--max-fail") && i + 1 < argc) maxFail = std::atoi(argv[++i]);
-        else if (!std::strcmp(argv[i], "--quiet")) quiet = true;
-        else ops.push_back(static_cast<int>(std::strtol(argv[i], nullptr, 16)));
-    }
-    if (ops.empty()) for (int o = 0; o < 256; ++o) ops.push_back(o);
-
-    static TestBus bus;
-    k64::Cpu6502<TestBus> cpu(bus);
-    cpu.setAneMagic(0xEE);   // the suite was generated with this constant
+template <class Cpu>
+int runSuite(Cpu& cpu, TestBus& bus, const std::string& dir, const std::vector<int>& ops, const Options& o) {
+    const int maxFail = o.maxFail;
+    const bool quiet = o.quiet;
     long total = 0, failed = 0;
-    int opsFailed = 0;
+    int opsFailed = 0, skipped = 0;
     for (int op : ops) {
         char name[16];
         std::snprintf(name, sizeof name, "%02x.json", op);
         std::ifstream f(dir + "/" + name, std::ios::binary);
+        if (!f && o.c02) { ++skipped; continue; }
         if (!f) { std::fprintf(stderr, "missing %s/%s\n", dir.c_str(), name); return 3; }
         std::stringstream ss; ss << f.rdbuf();
         const std::string text = ss.str();
+        if (text.empty() && o.c02) { ++skipped; continue; }   // the WDC set's WAI and STP
         Parser parser{text.data(), text.data() + text.size()};
         const Json tests = parser.value();
 
@@ -215,6 +210,38 @@ int main(int argc, char** argv) {
             std::printf("opcode %02x: %ld of %zu failed\n", op, opFail, tests.items.size());
         }
     }
+    if (skipped) std::printf("cputest: %d opcode(s) not in this set (skipped)\n", skipped);
     std::printf("cputest: %ld cases, %ld failed, %d opcode(s) with failures\n", total, failed, opsFailed);
     return failed ? 1 : 0;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 2) { std::fprintf(stderr, "usage: cputest DIR [OPCODE_HEX...] [--max-fail N] [--quiet] [--65c02 rockwell|wdc]\n"); return 2; }
+    std::string dir = argv[1];
+    std::vector<int> ops;
+    Options o;
+    k64::C02Variant variant = k64::C02Variant::Rockwell;
+    for (int i = 2; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--max-fail") && i + 1 < argc) o.maxFail = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--quiet")) o.quiet = true;
+        else if (!std::strcmp(argv[i], "--65c02") && i + 1 < argc) {
+            o.c02 = true;
+            const std::string v = argv[++i];
+            if (v == "wdc") variant = k64::C02Variant::Wdc;
+            else if (v != "rockwell") { std::fprintf(stderr, "--65c02 takes rockwell or wdc\n"); return 2; }
+        }
+        else ops.push_back(static_cast<int>(std::strtol(argv[i], nullptr, 16)));
+    }
+    if (ops.empty()) for (int op = 0; op < 256; ++op) ops.push_back(op);
+
+    static TestBus bus;
+    if (o.c02) {
+        static k64::Cpu65C02<TestBus> cpu(bus, variant);
+        return runSuite(cpu, bus, dir, ops, o);
+    }
+    static k64::Cpu6502<TestBus> cpu(bus);
+    cpu.setAneMagic(0xEE);   // the suite was generated with this constant
+    return runSuite(cpu, bus, dir, ops, o);
 }
