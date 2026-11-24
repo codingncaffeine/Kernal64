@@ -1,18 +1,21 @@
 // hdtest: runs the CMD HD's board on its own: its boot ROM, a disk image, the front panel.
 //
 //   hdtest ROM [--disk FILE.dhd] [--seconds S] [--hold swap8,swap9,wp] [--scsi-trace]
-//          [--expect-pc-range LO-HI] [--expect-visit ADDR]
+//          [--expect-pc-range LO-HI] [--expect-visit ADDR] [--hot]
 //
 // Prints the panel latch each time it changes (with the time), the SCSI commands with
 // --scsi-trace, and where the processor is at the end. --expect-pc-range: exit 0 only if
 // the processor ends inside LO-HI (hex). --expect-visit: exit 0 only if the instruction at
 // ADDR (hex) ran in the last half second, e.g. the head of the boot ROM's idle loop.
+// --hot: the 16 instruction addresses run most often in the last half second.
 #include "cmdhd.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -22,7 +25,8 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> rom((std::istreambuf_iterator<char>(f)), {});
     double seconds = 2;
     std::string disk, hold;
-    bool trace = false;
+    bool trace = false, hot = false;
+    std::map<uint16_t, long> counts;
     long lo = -1, hi = -1, visit = -1;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -30,6 +34,7 @@ int main(int argc, char** argv) {
         else if (a == "--seconds" && i + 1 < argc) seconds = std::atof(argv[++i]);
         else if (a == "--hold" && i + 1 < argc) hold = argv[++i];
         else if (a == "--scsi-trace") trace = true;
+        else if (a == "--hot") hot = true;
         else if (a == "--expect-pc-range" && i + 1 < argc) {
             const std::string r = argv[++i];
             lo = std::strtol(r.c_str(), nullptr, 16);
@@ -55,7 +60,10 @@ int main(int argc, char** argv) {
     long changes = 0, visits = 0;
     const uint64_t lastHalf = cycles > k64::CmdHd::kClockHz / 2 ? cycles - k64::CmdHd::kClockHz / 2 : 0;
     for (uint64_t c = 0; c < cycles; ++c) {
-        if (visit >= 0 && c >= lastHalf && hd.cpuAtInstructionStart() && hd.cpuRegs().pc == visit) ++visits;
+        if (c >= lastHalf && hd.cpuAtInstructionStart()) {
+            if (visit >= 0 && hd.cpuRegs().pc == visit) ++visits;
+            if (hot) ++counts[hd.cpuRegs().pc];
+        }
         hd.tick();
         if (hd.lights() != lights && changes < 60) {
             lights = hd.lights();
@@ -65,6 +73,14 @@ int main(int argc, char** argv) {
     }
     const unsigned pc = hd.cpuRegs().pc;
     std::printf("hdtest: pc %04X after %.2f s, %ld latch changes\n", pc, seconds, changes);
+    if (hot) {
+        std::vector<std::pair<long, uint16_t>> v;
+        for (auto& [addr, n] : counts) v.push_back({n, addr});
+        std::sort(v.rbegin(), v.rend());
+        std::printf("hdtest: hot:");
+        for (size_t i = 0; i < v.size() && i < 16; ++i) std::printf(" %04X(%ld)", v[i].second, v[i].first);
+        std::printf("\n");
+    }
     if (visit >= 0) {
         std::printf("hdtest: %04lX ran %ld times in the last half second: %s\n", visit, visits, visits ? "PASS" : "FAIL");
         if (!visits) return 1;

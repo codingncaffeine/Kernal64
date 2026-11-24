@@ -48,6 +48,10 @@
 // --hd ROM puts a CMD HD on the serial bus with that boot ROM; --hd-disk FILE.dhd is its disk
 //   (a raw image of 512-byte blocks; a blank one = an empty or sparse file of the size wanted).
 //   Its clock starts at 2026-11-24 12:00:00, so runs repeat exactly.
+// --hd-panel-at CYCLE ACTION (with --cycles; repeatable) works the HD's front panel: hold:LIST
+//   holds the switches in LIST (comma-separated swap8, swap9, wp; empty = release all), reset
+//   presses and releases RESET.
+// --screen-at CYCLE (with --cycles; repeatable) prints the text screen at that cycle.
 #include "c64.h"
 #include "roms.h"
 #include "png.h"
@@ -91,6 +95,8 @@ int main(int argc, char** argv) {
     std::vector<int> freezePc;
     uint64_t freezeHold = 1, freezeRelease = 0;
     std::vector<std::pair<uint64_t, std::string>> typeAt;
+    std::vector<std::pair<uint64_t, std::string>> panelAt;
+    std::vector<uint64_t> screenAt;
     bool drive = false;
     std::string hdRom, hdDisk;
     std::string diskFile, saveDisk, tapeFile, saveTape;
@@ -140,6 +146,8 @@ int main(int argc, char** argv) {
         }
         else if (a == "--drive") drive = true;
         else if (a == "--hd" && i + 1 < argc) hdRom = argv[++i];
+        else if (a == "--hd-panel-at" && i + 2 < argc) { const uint64_t at = std::strtoull(argv[i + 1], nullptr, 10); panelAt.emplace_back(at, argv[i + 2]); i += 2; }
+        else if (a == "--screen-at" && i + 1 < argc) screenAt.push_back(std::strtoull(argv[++i], nullptr, 10));
         else if (a == "--hd-disk" && i + 1 < argc) hdDisk = argv[++i];
         else if (a == "--disk" && i + 1 < argc) { diskFile = argv[++i]; drive = true; }
         else if (a == "--blank-disk") { diskFile = "-"; drive = true; }
@@ -259,6 +267,29 @@ int main(int argc, char** argv) {
             if (pcEvery && machine.cycle() % pcEvery == 0)
                 std::printf("k64run: cycle %llu pc $%04x tape %s\n", static_cast<unsigned long long>(machine.cycle()),
                             static_cast<unsigned>(machine.cpuRegs().pc), machine.tapeMoving() ? "moving" : "still");
+            for (const auto& [at, act] : panelAt) {
+                if (machine.cycle() != at) continue;
+                if (act == "reset") machine.hardDrive().pressReset();
+                else if (act.rfind("hold:", 0) == 0)
+                    machine.hardDrive().setButtons(act.find("swap8") != std::string::npos, act.find("swap9") != std::string::npos,
+                                                   act.find("wp") != std::string::npos);
+                std::printf("k64run: HD panel %s at cycle %llu\n", act.c_str(), static_cast<unsigned long long>(at));
+            }
+            for (uint64_t at : screenAt) {
+                if (machine.cycle() != at) continue;
+                std::printf("k64run: screen at cycle %llu (%.1f s):\n", static_cast<unsigned long long>(at), static_cast<double>(at) / 985248.0);
+                for (int row = 0; row < 25; ++row) {
+                    std::string line;
+                    // Reverse-video characters (a cursor, a selected field) in lower case.
+                    for (int col = 0; col < 40; ++col) {
+                        const uint8_t sc = machine.ram()[0x0400 + row * 40 + col];
+                        const char ch = screenCodeToAscii(sc);
+                        line += (sc & 0x80) ? static_cast<char>(ch == ' ' ? '_' : std::tolower(static_cast<unsigned char>(ch))) : ch;
+                    }
+                    while (!line.empty() && line.back() == ' ') line.pop_back();
+                    if (!line.empty()) std::printf("| %s\n", line.c_str());
+                }
+            }
             for (const auto& [at, text] : typeAt) {
                 if (machine.cycle() != at) continue;
                 for (size_t n = 0; n < text.size(); ++n) machine.pokeRam(static_cast<uint16_t>(0x0277 + n), static_cast<uint8_t>(text[n]));

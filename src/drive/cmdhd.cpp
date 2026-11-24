@@ -88,9 +88,11 @@ void CmdHd::write(uint16_t a, uint8_t v) {
 
 Ppi8255::Pins CmdHd::ppiPins() const {
     Ppi8255::Pins p;
-    // Port B: PB1 SWAP 8, PB2 SWAP 9, PB3 WRITE PROTECT (active low); the parallel cable's
-    // lines (PB0, PB6, PB7) and port A read high with nothing connected.
-    p.b = static_cast<uint8_t>(0xFF & ~((swap8_ ? 2 : 0) | (swap9_ ? 4 : 0) | (wp_ ? 8 : 0)));
+    // Port B: PB1 SWAP 8, PB2 SWAP 9, PB3 WRITE PROTECT (active low). The parallel cable's
+    // lines come through inverting receivers: with nothing connected PB0, PB6 and PB7 read 0
+    // (the boot ROM takes PB7 = 1 as the cable's ATN, $C292; the DOS waits while PB6 is 1).
+    // Port A (the cable's data) reads high.
+    p.b = static_cast<uint8_t>(0x3E & ~((swap8_ ? 2 : 0) | (swap9_ ? 4 : 0) | (wp_ ? 8 : 0)));
     return p;
 }
 

@@ -2,7 +2,10 @@
 # The CMD HD (PLAN Phase 11b): its board runs the user's boot ROM, finds no system on a blank
 # disk and waits on the bus in install mode; a C64 then reads its status as device 30.
 #   tools/cmdhd.sh BUILD_DIR
-# Needs gitignore/bios/cmd_hd_bootrom_v280.bin (the user's file, never committed).
+# Needs gitignore/bios/cmd_hd_bootrom_v280.bin (the user's file, never committed) and, for the
+# third check, gitignore/external/cmdhd/part20.dhd: a 20 MB drive with the DOS installed by the
+# drive's own install program and one native partition made by its partition tool, both run
+# in this emulator from the user's utilities disk (a local script makes it, local-notes/cmdhd/).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${1:?build dir}"
@@ -22,4 +25,20 @@ out=$("$BUILD/k64run" "$ROOT/gitignore/bios" --hd "$ROM" --hd-disk "$TMP/blank.d
       --type-at $((T + 3 * C)) 'A;B$\r' --type-at $((T + 4 * C)) 'RUN\r' --expect '78 SYSTEM ERROR' 2>&1)
 if [ $? -eq 0 ]; then echo "ok   device 30 answers its status: 78 SYSTEM ERROR (no system on the disk)"
 else echo "FAIL device 30's status: $(echo "$out" | grep -v '^$' | tail -3 | tr '\n' ' ')"; fail=1; fi
+# 3. The installed drive: the drive's DOS boots from the disk as device 12; a program is saved, loaded,
+#    listed and run, and the directory shows it in partition 1.
+IMG="$ROOT/gitignore/external/cmdhd/part20.dhd"
+if [ ! -f "$IMG" ]; then echo "FAIL installed drive: $IMG missing (local-notes/cmdhd/make-image.sh)"; fail=1
+else
+    cp --sparse=always "$IMG" "$TMP/part.dhd"
+    T=$((C * 14))
+    out=$("$BUILD/k64run" "$ROOT/gitignore/bios" --hd "$ROM" --hd-disk "$TMP/part.dhd" --cycles $((T + C * 40)) \
+          --type-at $T '10?"HELLO ' --type-at $((T + C)) 'FROM HD"\r' --type-at $((T + 2 * C)) 'SAVE"TEST"' \
+          --type-at $((T + 3 * C)) ',12\r' --type-at $((T + 10 * C)) 'NEW\r' --type-at $((T + 11 * C)) 'LOAD"TEST"' \
+          --type-at $((T + 12 * C)) ',12\r' --type-at $((T + 19 * C)) 'LIST\r' --type-at $((T + 20 * C)) 'RUN\r' \
+          --type-at $((T + 22 * C)) 'LOAD"$",12' --type-at $((T + 23 * C)) '\r' --type-at $((T + 30 * C)) 'LIST\r' \
+          --expect '10 PRINT"HELLO FROM HD"' --expect 'HELLO FROM HD' --expect 'HD 1H' --expect '"TEST"             PRG' 2>&1)
+    if [ $? -eq 0 ]; then echo "ok   installed drive: device 12 saves, loads, lists and runs a program; directory shows it"
+    else echo "FAIL installed drive: $(echo "$out" | grep -v '^$' | tail -4 | tr '\n' ' ')"; fail=1; fi
+fi
 exit $fail
