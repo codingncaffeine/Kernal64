@@ -25,32 +25,32 @@ jobs:
           path: dist/kernal64_libretro-*.zip
 
   macos:
-    name: macOS core (${{ matrix.arch }})
+    name: macOS cores (arm64, x86_64)
     runs-on: macos-latest
-    strategy:
-      matrix:
-        arch: [arm64, x86_64]
     steps:
       - uses: actions/checkout@v5
-      - name: Build
+      - name: Build both
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DK64_CORE_ONLY=ON \
-            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
-          cmake --build build -j 3
-          strip -x build/kernal64_libretro.dylib
-          lipo -info build/kernal64_libretro.dylib
-          nm -gU build/kernal64_libretro.dylib | grep -E ' _(retro_run|kernal64_make_hard_drive)$'
-      - name: Load and run it (no system ROMs here; the core must still load and run frames)
-        if: matrix.arch == 'arm64'
-        run: build/k64host build/kernal64_libretro.dylib --frames 120
+          for arch in arm64 x86_64; do
+            cmake -S . -B build-$arch -DCMAKE_BUILD_TYPE=Release -DK64_CORE_ONLY=ON \
+              -DCMAKE_OSX_ARCHITECTURES=$arch -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+            cmake --build build-$arch -j 3
+            strip -x build-$arch/kernal64_libretro.dylib
+            lipo -info build-$arch/kernal64_libretro.dylib
+            nm -gU build-$arch/kernal64_libretro.dylib | grep -E ' _(retro_run|kernal64_make_hard_drive)$'
+          done
+      - name: Load and run the arm64 core (no system ROMs here; it must still load and run frames)
+        run: build-arm64/k64host build-arm64/kernal64_libretro.dylib --frames 120
       - name: Package
         run: |
-          mkdir pkg && cp build/kernal64_libretro.dylib packaging/kernal64_libretro.info LICENSE pkg/
-          cd pkg && zip -q -9 ../kernal64_libretro-macos-${{ matrix.arch }}.zip kernal64_libretro.dylib kernal64_libretro.info LICENSE
+          for arch in arm64 x86_64; do
+            mkdir pkg-$arch && cp build-$arch/kernal64_libretro.dylib packaging/kernal64_libretro.info LICENSE pkg-$arch/
+            (cd pkg-$arch && zip -q -9 ../kernal64_libretro-macos-$arch.zip kernal64_libretro.dylib kernal64_libretro.info LICENSE)
+          done
       - uses: actions/upload-artifact@v5
         with:
-          name: core-macos-${{ matrix.arch }}
-          path: kernal64_libretro-macos-${{ matrix.arch }}.zip
+          name: cores-macos
+          path: kernal64_libretro-macos-*.zip
 
   release:
     name: Draft release
