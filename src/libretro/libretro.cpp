@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdarg>
@@ -170,15 +171,30 @@ int portOf(int player) {
 
 k64lr::PadAction padMap[k64lr::kPadButtonCount];
 // Fast loading: what counts as loading (off, the tape, the tape and the 1541).
-enum class FastLoading { Off, Tape, TapeAndDisk };
-FastLoading fastLoading = FastLoading::TapeAndDisk;
-constexpr int kFastFactor = 4;
+// Fast loading (option kernal64_fast_loading): off (loading at the real speed, its music and timing as
+// on the machine), auto, 2x or 4x. Auto measures how long a frame of the machine takes on this
+// computer over the first second and then stays at 4x when four fit well inside a frame's time,
+// else 2x; the choice is part of the save state, so a state brings back the same speed.
+enum class FastLoading { Off, Auto, X2, X4 };
+FastLoading fastLoading = FastLoading::Auto;
+uint8_t autoFactor = 0;        // auto's choice (0: not yet; 2 is used meanwhile)
+int autoFrames = 0;
+double autoSeconds = 0.0;
+constexpr int kAutoFrames = 50;
+int fastFactor() {
+    switch (fastLoading) {
+    case FastLoading::Off: return 1;
+    case FastLoading::X2: return 2;
+    case FastLoading::X4: return 4;
+    case FastLoading::Auto: break;
+    }
+    return autoFactor ? autoFactor : 2;
+}
 double audioDue = 0.0;     // samples due since the content was loaded (frames shown x rate / fps)
 uint64_t audioSent = 0;    // samples handed over
+// Loading: the tape moves, the KERNAL pauses after FOUND, or the 1541's motor runs.
 bool loadingNow() {
-    if (fastLoading == FastLoading::Off) return false;
-    if (machine->tapeMoving() || machine->kernalTapePause()) return true;
-    return fastLoading == FastLoading::TapeAndDisk && machine->driveAttached() && machine->drive().motor();
+    return machine->tapeMoving() || machine->kernalTapePause() || (machine->driveAttached() && machine->drive().motor());
 }
 
 void readPadOptions() {
@@ -186,8 +202,9 @@ void readPadOptions() {
     {
         retro_variable var{"kernal64_fast_loading", nullptr};
         const bool got = envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value;
-        fastLoading = !got || !std::strcmp(var.value, "tape and disk") ? FastLoading::TapeAndDisk
-                    : !std::strcmp(var.value, "tape") ? FastLoading::Tape : FastLoading::Off;
+        fastLoading = !got || !std::strcmp(var.value, "auto") ? FastLoading::Auto
+                    : !std::strcmp(var.value, "2x") ? FastLoading::X2 : !std::strcmp(var.value, "4x") ? FastLoading::X4
+                    : FastLoading::Off;
     }
     for (int b = 0; b < k64lr::kPadButtonCount; ++b) {
         const std::string key = std::string("kernal64_pad_") + k64lr::kPadButtons[b].name;
@@ -859,6 +876,9 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
     contentName = info && info->path ? info->path : "";
     audioDue = 0.0;
     audioSent = 0;
+    autoFactor = 0;
+    autoFrames = 0;
+    autoSeconds = 0.0;
     machine = std::make_unique<k64::C64>(modelFromOptions());
     // The memory map for achievements and cheats: the 64 KB of RAM at its own addresses.
     static retro_memory_descriptor ramDesc{};
@@ -961,8 +981,19 @@ RETRO_API void retro_run(void) {
     // factor decided from the machine's own state, so rewind, run-ahead and netplay stay exact.
     bool fast = false;
     if (machine->hasSystemRoms()) {
+        const auto start = std::chrono::steady_clock::now();
         machine->runFrame();
-        for (int extra = 1; extra < kFastFactor && loadingNow(); ++extra) {
+        if (fastLoading == FastLoading::Auto && !autoFactor) {
+            autoSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            if (++autoFrames >= kAutoFrames) {
+                // Four frames of the machine within 85 % of a frame's time: 4x, else 2x.
+                const double perFrame = autoSeconds / autoFrames, frameTime = 1.0 / machine->timing().framesPerSecond();
+                autoFactor = 4 * perFrame < 0.85 * frameTime ? 4 : 2;
+                log(RETRO_LOG_INFO, "fast loading auto: %ux (a frame of the machine takes %.2f ms)", autoFactor, perFrame * 1000.0);
+            }
+        }
+        const int factor = fastFactor();
+        for (int extra = 1; extra < factor && loadingNow(); ++extra) {
             std::vector<float> drop(machine->audioAvailable());
             machine->readAudio(drop.data(), drop.size());
             machine->runFrame();
@@ -988,10 +1019,12 @@ RETRO_API void retro_run(void) {
     audioMono.resize(frames);
     machine->readAudio(audioMono.data(), frames);
     audioDue += kSampleRate / t.framesPerSecond();
-    if (fast) {
-        frames = audioDue > static_cast<double>(audioSent) ? static_cast<size_t>(audioDue - static_cast<double>(audioSent)) : 0;
-        audioMono.assign(frames, 0.0f);
-    }
+    // The count handed over always follows the schedule: after fast frames the machine's own count can be
+    // a sample or two off it, so the last one is repeated or dropped (silence while fast).
+    const size_t due = audioDue > static_cast<double>(audioSent) ? static_cast<size_t>(audioDue - static_cast<double>(audioSent)) : 0;
+    if (fast) audioMono.assign(due, 0.0f);
+    else audioMono.resize(due, audioMono.empty() ? 0.0f : audioMono.back());
+    frames = due;
     audioSent += frames;
     audioOut.resize(frames * 2);
     for (size_t i = 0; i < frames; ++i) {
@@ -1012,7 +1045,7 @@ RETRO_API void retro_run(void) {
 // whether the joystick ports are swapped (1), the 1351 mice's positions and movement still to
 // pass on (8 x 4), the RetroPad buttons as last seen (2 x 16), the on-screen keyboard's owner
 // (1) and state: what a replay needs to come out the same.
-constexpr size_t kDiskTailSize = 4 + 1 + 8 * 4 + 32 + 1 + k64lr::Osk::kStateSize;
+constexpr size_t kDiskTailSize = 4 + 1 + 8 * 4 + 32 + 1 + k64lr::Osk::kStateSize + 1;
 void putTail(uint8_t* out, uint32_t inDrive) {
     auto put32 = [&out](uint32_t v) { for (int b = 0; b < 4; ++b) *out++ = static_cast<uint8_t>(v >> (8 * b)); };
     put32(inDrive);
@@ -1023,6 +1056,7 @@ void putTail(uint8_t* out, uint32_t inDrive) {
         for (bool b : player) *out++ = b ? 1 : 0;
     *out++ = static_cast<uint8_t>(oskOwner);
     osk.saveState(out);
+    out[k64lr::Osk::kStateSize] = autoFactor;   // fast loading's auto choice
 }
 void getTailInput(const uint8_t* in) {
     auto get32 = [&in]() { const uint32_t v = static_cast<uint32_t>(in[0] | in[1] << 8 | in[2] << 16 | static_cast<uint32_t>(in[3]) << 24); in += 4; return v; };
@@ -1034,6 +1068,8 @@ void getTailInput(const uint8_t* in) {
         for (bool& b : player) b = *in++ != 0;
     oskOwner = *in++ & 1;
     osk.loadState(in);
+    const uint8_t f = in[k64lr::Osk::kStateSize];
+    if (f == 0 || f == 2 || f == 4) autoFactor = f;
 }
 constexpr uint32_t kNoDisk = 0xFFFFFFFFu;
 

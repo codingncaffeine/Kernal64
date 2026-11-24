@@ -104,19 +104,27 @@ TAPE=(--content "$OUT/blank.tap" --frames 1600 --option kernal64_pad_l=tape_play
 sbs_start core 0 "datasette RECORD through a mapped button" "${TAPE[@]}" --save "$OUT/tape1" --hold 400 402 0 r 1 --check
 sbs_start core 1 "datasette RECORD through a mapped button (control: no input)" "${TAPE[@]}" --save "$OUT/tape2"
 
-# Fast loading (option kernal64_fast_loading, default tape and disk, 4x): a KERNAL tape load (a
-# program the machine records first) is done by frame 600 (about 2000 at normal speed, the pause
-# after FOUND included); a disk program by frame 200 (about 275). Controls: the option off, the tape
-# only for the disk. The tape line replays from a state.
+# Fast loading (option kernal64_fast_loading: off, auto (the default), 2x, 4x). A KERNAL tape load (a
+# program the machine records first) takes about 2000 frames at the real speed, the pause after
+# FOUND included: done by frame 600 at 4x, by 1000 at 2x and with auto (2x or 4x, chosen after the
+# first second, kept in the state: the auto line replays from a state in a restarted core too);
+# off is not done by 1000. A disk program (about 275 frames): done by 200 at 4x, not with off.
 "$BIN/k64run" "$ROOT/gitignore/bios" --blank-tape --record --cycles 60000000 --type-at 3000000 $'10 ?4242\r' \
     --type-at 3300000 'SAVE"T"'$'\r' --save-tape "$OUT/fast.tap" >/dev/null 2>&1
-rm -rf "$OUT/fast1" "$OUT/fast2"; mkdir -p "$OUT/fast1" "$OUT/fast2"
-sbs_start core 0 "fast loading: a tape" --content "$OUT/fast.tap" --save "$OUT/fast1" --frames 600 --check --expect-screen ' 4242'
-sbs_start core 1 "fast loading: a tape (control: off)" --content "$OUT/fast.tap" --save "$OUT/fast2" --frames 600 \
-    --option kernal64_fast_loading=off --expect-screen ' 4242'
-sbs_start core 0 "fast loading: a disk" --content "$ROOT/gitignore/external/testprogs/vdrive/test.d64" --frames 200 --expect-screen 'ROM:  254'
-sbs_start core 1 "fast loading: a disk (control: tape only)" --content "$ROOT/gitignore/external/testprogs/vdrive/test.d64" \
-    --frames 200 --option kernal64_fast_loading=tape --expect-screen 'ROM:  254'
+fast() {   # fast NAME WANT FRAMES VALUE [MORE...]
+    local name="$1" want="$2" frames="$3" value="$4"; shift 4
+    rm -rf "$OUT/fast-$name"; mkdir -p "$OUT/fast-$name"
+    core "$want" "fast loading: $name" --content "$OUT/fast.tap" --save "$OUT/fast-$name" --frames "$frames" \
+        --option "kernal64_fast_loading=$value" --expect-screen ' 4242' "$@"
+}
+sbs_start fast "a tape at 4x" 0 600 4x --check
+sbs_start fast "a tape at 2x" 0 1000 2x
+sbs_start fast "a tape with auto" 0 1000 auto --check
+sbs_start fast "a tape (control: off)" 1 1000 off
+sbs_start core 0 "fast loading: a disk at 4x" --content "$ROOT/gitignore/external/testprogs/vdrive/test.d64" --frames 200 \
+    --option kernal64_fast_loading=4x --expect-screen 'ROM:  254'
+sbs_start core 1 "fast loading: a disk (control: off)" --content "$ROOT/gitignore/external/testprogs/vdrive/test.d64" \
+    --frames 200 --option kernal64_fast_loading=off --expect-screen 'ROM:  254'
 
 # The keyboard (option kernal64_keyboard). Symbolic, the default: keys type what a US keyboard
 # prints (k64host types that way: SHIFT+8 is *, SHIFT+= is +, SHIFT+; is :, SHIFT+' is "); the
