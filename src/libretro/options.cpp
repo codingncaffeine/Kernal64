@@ -62,10 +62,10 @@ std::vector<Def>& defs() {
     d.push_back({"kernal64_border", "Border", "How much of the border is shown: all the chip draws, a frame around the "
                  "screen, or the 320x200 screen alone.", "video",
                  {{"full", "Full"}, {"small", "Small"}, {"none", "None"}}, "full"});
-    d.push_back({"kernal64_fast_loading", "Fast loading", "While a tape or the 1541 loads and the sound chip's volume is 0, "
-                 "the machine runs faster; the real speed again as soon as the loading stops or a program turns the "
-                 "volume up (music while it loads plays at its own speed). Off: loading as on the machine. Auto: 4x when "
-                 "this computer has the room for it, else 2x.", "media",
+    d.push_back({"kernal64_fast_loading", "Fast loading", "While a tape loads, the machine runs faster, sound muted. While "
+                 "the 1541 loads, the same when no sound plays (a program with music while it loads from disk plays at "
+                 "its own speed). The real speed again as soon as the loading stops. Off: loading as on the machine. Auto: "
+                 "4x when this computer has the room for it, else 2x.", "media",
                  {{"auto", "Auto"}, {"off", "Off"}, {"2x", "2x"}, {"4x", "4x"}}, "auto"});
     d.push_back({"kernal64_drive8", "Drive 8 (1541)", "The 1541 on the serial bus. Needs its ROMs in the system folder.",
                  "media", {{"on", "On"}, {"off", "Off"}}, "on"});

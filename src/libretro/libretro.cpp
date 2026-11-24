@@ -202,12 +202,13 @@ int fastFactor() {
 }
 double audioDue = 0.0;     // samples due since the content was loaded (frames shown x rate / fps)
 uint64_t audioSent = 0;    // samples handed over
-// Loading: the tape moves, the KERNAL pauses after FOUND, or the 1541's motor runs, and the SID's
-// volume is 0 (nothing can be heard). A program that plays music while it loads (a demo, a loader tune) runs at its own
-// speed: speeding it up would cut its music and hurry its pictures.
+// Loading (D31): the tape moves or the KERNAL pauses after FOUND, always; the 1541's motor runs and
+// the SID's volume is 0. A tape takes minutes, and its loading tune is filler: it is sped up (and
+// muted) all the same. A disk loads in seconds, and a program that plays music while it loads from
+// disk (a demo) runs at its own speed: speeding it up would cut its music and hurry its pictures.
 bool loadingNow() {
-    const bool busy = machine->tapeMoving() || machine->kernalTapePause() || (machine->driveAttached() && machine->drive().motor());
-    return busy && !machine->sid().audible();
+    if (machine->tapeMoving() || machine->kernalTapePause()) return true;
+    return machine->driveAttached() && machine->drive().motor() && !machine->sid().audible();
 }
 
 void readPadOptions() {
@@ -1211,7 +1212,7 @@ RETRO_API void retro_run(void) {
     applyInput();   // once per frame, at the frame boundary (D9)
 
     // Fast loading (option kernal64_fast_loading): while the tape moves or the KERNAL pauses after
-    // FOUND (or, with disks, the 1541's motor runs) and the SID's volume is 0, each frame shown is up
+    // FOUND, or the 1541's motor runs and the SID's volume is 0 (loadingNow), each frame shown is up
     // to kFastFactor frames of the machine. A fixed
     // factor decided from the machine's own state, so rewind, run-ahead and netplay stay exact.
     bool fast = false;

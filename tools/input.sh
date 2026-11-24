@@ -137,6 +137,16 @@ sbs_start fast "a tape at 4x" 0 600 4x --check
 sbs_start fast "a tape at 2x" 0 1000 2x
 sbs_start fast "a tape with auto" 0 1000 auto --check
 sbs_start fast "a tape (control: off)" 1 1000 off
+# A tape is sped up whatever the volume (D31: a tape's loading tune is filler, the load takes
+# minutes): B turns the volume up and loads C from the tape, which prints 4242. Done by frame 1000 at
+# 4x (with the disk rule for tapes too it took about 1400); not with fast loading off.
+"$BIN/k64run" "$ROOT/gitignore/bios" --blank-tape --record --cycles 60000000 --type-at 3000000 '10 POKE542' \
+    --type-at 3200000 '96,15:LOAD' --type-at 3400000 $'\r' --type-at 3700000 'SAVE"B"'$'\r' --type-at 25000000 $'NEW\r' \
+    --type-at 25300000 $'10 ?4242\r' --type-at 25600000 'SAVE"C"'$'\r' --save-tape "$OUT/vol.tap" >/dev/null 2>&1
+sbs_start core 0 "fast loading: a tape with the volume up is still fast" --content "$OUT/vol.tap" --frames 1000 \
+    --option kernal64_fast_loading=4x --expect-screen ' 4242'
+sbs_start core 1 "fast loading: a tape with the volume up (control: off)" --content "$OUT/vol.tap" --frames 1000 \
+    --option kernal64_fast_loading=off --expect-screen ' 4242'
 # Fast loading only while the SID's volume is 0: a program that plays music while it loads runs at
 # its own speed (its music would be cut and its pictures hurried). BOOT sets the volume, then loads
 # BIG (15000 bytes, about 38 s at the KERNAL's speed); "DONE" in 900 frames only when loaded fast.
