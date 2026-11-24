@@ -42,7 +42,18 @@
 // core exposes.
 #include "libretro.h"
 
+#ifdef _WIN32
+// The same loading on Windows (checking the Windows build of the core under Wine or on Windows).
+#include <windows.h>
+#define RTLD_NOW 0
+#define RTLD_LOCAL 0
+static void* dlopen(const char* path, int) { return reinterpret_cast<void*>(LoadLibraryA(path)); }
+static void* dlsym(void* h, const char* name) { return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(h), name)); }
+static int dlclose(void* h) { return FreeLibrary(static_cast<HMODULE>(h)) ? 0 : 1; }
+static const char* dlerror() { return "LoadLibrary failed"; }
+#else
 #include <dlfcn.h>
+#endif
 
 #include <cmath>
 #include <cstdarg>

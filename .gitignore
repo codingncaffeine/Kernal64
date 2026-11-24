@@ -38,3 +38,4 @@
 *.a
 compile_commands.json
 .cache/
+dist/

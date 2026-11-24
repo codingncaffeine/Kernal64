@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Kernal64 VERSION 0.0.0 LANGUAGES C CXX)
+project(Kernal64 VERSION 0.0.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -63,12 +63,27 @@ set_target_properties(kernal64_libretro PROPERTIES PREFIX "" CXX_VISIBILITY_PRES
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_options(kernal64_libretro PRIVATE -Wl,--no-undefined -Wl,--version-script=${CMAKE_SOURCE_DIR}/src/libretro/link.T)
 endif()
+# Windows (MinGW): the C and C++ runtimes linked in, so the DLL needs nothing beside it.
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_link_options(kernal64_libretro PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 
 # A minimal libretro host that loads the built core and checks it through the API.
 add_executable(k64host tools/k64host/main.cpp)
 target_include_directories(k64host PRIVATE include)
 target_compile_options(k64host PRIVATE ${K64_WARNINGS})
 target_link_libraries(k64host PRIVATE ${CMAKE_DL_LIBS})
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_link_options(k64host PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
+# Release builds for other systems need only the core and k64host, which checks it there
+# (tools/release/build-cores.sh, the release workflow); the other test tools are built on Linux.
+option(K64_CORE_ONLY "Build only the libretro core and k64host" OFF)
+if(K64_CORE_ONLY)
+  return()
+endif()
 
 # The per-opcode CPU suite runner.
 add_executable(cputest tools/cputest/main.cpp)

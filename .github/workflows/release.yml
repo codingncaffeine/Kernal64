@@ -1,0 +1,70 @@
+name: Release
+
+# A tag v* builds the core for every system and makes a DRAFT release with the zips and their
+# checksums; the draft is checked and published by hand. Run by hand (workflow_dispatch) it only
+# builds, to try the builds before a tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux-windows:
+    name: Linux (glibc, musl) and Windows cores
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build in containers
+        run: K64_JOBS=4 tools/release/build-cores.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cores-linux-windows
+          path: dist/kernal64_libretro-*.zip
+
+  macos:
+    name: macOS core (${{ matrix.arch }})
+    runs-on: macos-14
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DK64_CORE_ONLY=ON \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          cmake --build build -j 3
+          strip -x build/kernal64_libretro.dylib
+          lipo -info build/kernal64_libretro.dylib
+          nm -gU build/kernal64_libretro.dylib | grep -E ' _(retro_run|kernal64_make_hard_drive)$'
+      - name: Load and run it (no system ROMs here; the core must still load and run frames)
+        if: matrix.arch == 'arm64'
+        run: build/k64host build/kernal64_libretro.dylib --frames 120
+      - name: Package
+        run: |
+          mkdir pkg && cp build/kernal64_libretro.dylib packaging/kernal64_libretro.info LICENSE pkg/
+          cd pkg && zip -q -9 ../kernal64_libretro-macos-${{ matrix.arch }}.zip kernal64_libretro.dylib kernal64_libretro.info LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-macos-${{ matrix.arch }}
+          path: kernal64_libretro-macos-${{ matrix.arch }}.zip
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-windows, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum *.zip > SHA256SUMS
+      - name: Draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --draft --title "Kernal64 $GITHUB_REF_NAME" --notes "Release notes to be written before publishing."
