@@ -470,7 +470,7 @@ void FolderDrive::loadState(const uint8_t* in) {
     State s;
     std::memcpy(&s, in, sizeof s);
     in += sizeof s;
-    if (s.mode > NoData || s.rx > RxWaitClk || s.tx > TxWaitAck) s = State{};   // not ours: power-on
+    if (s.mode > AtnIgnore || s.rx > RxWaitClk || s.tx > TxWaitAck) s = State{};   // not ours: power-on (AtnIgnore is the last mode)
     for (auto& c : s.ch)
         if (c.slot != 0xFF && c.slot >= kSlots) c = Channel{};
     s.status[sizeof s.status - 1] = 0;
