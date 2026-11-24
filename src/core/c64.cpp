@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 16;
+constexpr uint32_t kStateVersion = 17;
 
 // The 1541 runs on its own 16 MHz crystal divided by 16 (hw/drive.md D1): 1 MHz. Against the
 // machine's clock that is exactly 18,000,000 / 17,734,475 drive cycles per machine cycle on
@@ -500,7 +500,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot) + C1541::stateSize() + sizeof(Datasette::State);
+    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot) + C1541::stateSize() + sizeof(Datasette::State) + 4;
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -533,10 +533,14 @@ void C64::saveState(uint8_t* out) const {
     out += C1541::stateSize();
     const Datasette::State ts = tape_.state();
     put(&ts, sizeof ts);
+    const uint32_t tapeLength = tape_.tapeLength();
+    put(&tapeLength, 4);
     cart_.saveContent(out);
 }
 
-bool C64::loadState(const uint8_t* in, size_t size) {
+// The checks a state passes before anything is changed: its header and the values whose
+// range the machine depends on.
+bool C64::stateFits(const uint8_t* in, size_t size) const {
     if (size < stateSize()) return false;
     auto get = [&in](void* p, size_t n) { std::memcpy(p, in, n); in += n; };
     uint32_t magic = 0, version = 0;
@@ -549,6 +553,26 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     if (magic != kStateMagic || version != kStateVersion || model != static_cast<uint8_t>(timing_->model) ||
         cia != static_cast<uint8_t>(ciaModel()) || sidModelByte != static_cast<uint8_t>(sidModel()))
         return false;
+    in += sizeof(State);
+    Vic2::State vs;
+    get(&vs, sizeof vs);
+    in += 2 * sizeof(Cia6526::State) + sizeof(Sid::State);
+    Cartridge::State cs;
+    get(&cs, sizeof cs);
+    return vs.cycle >= 1 && vs.cycle <= timing_->cyclesPerLine && vs.line >= 0 && vs.line < timing_->linesPerFrame && vs.vmli < 40 &&
+           vs.dmli <= 40 && vs.xscrollPipe <= 7 && cart_.stateFits(cs);
+}
+
+bool C64::loadState(const uint8_t* in, size_t size) {
+    if (!stateFits(in, size)) return false;
+    auto get = [&in](void* p, size_t n) { std::memcpy(p, in, n); in += n; };
+    uint32_t magic = 0, version = 0;
+    uint8_t model = 0, cia = 0, sidModelByte = 0;
+    get(&magic, 4);
+    get(&version, 4);
+    get(&model, 1);
+    get(&cia, 1);
+    get(&sidModelByte, 1);
     State s;
     get(&s, sizeof s);
     Vic2::State vs;
@@ -562,10 +586,7 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     get(&cs, sizeof cs);
     BoardFilter::State bs;
     get(&bs, sizeof bs);
-    if (vs.cycle < 1 || vs.cycle > timing_->cyclesPerLine || vs.line < 0 || vs.line >= timing_->linesPerFrame ||
-        vs.vmli >= 40 || vs.dmli > 40 || vs.xscrollPipe > 7)
-        return false;
-    if (!cart_.setState(cs)) return false;   // a state of another cartridge
+    cart_.setState(cs);
     s_ = s;
     vic_.setState(vs);
     cia1_.setState(c1);
@@ -583,6 +604,9 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     Datasette::State ts;
     get(&ts, sizeof ts);
     tape_.setState(ts);
+    uint32_t tapeLength = 0;
+    get(&tapeLength, 4);
+    tape_.cutTape(tapeLength);
     cart_.loadContent(in);
     return true;
 }

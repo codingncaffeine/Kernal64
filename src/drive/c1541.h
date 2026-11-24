@@ -51,7 +51,12 @@ public:
     int halfTrack() const { return m_.halfTrack; }
 
     // Save states: everything the board holds, constant size. The ROMs and the jumpers are
-    // settings, not state.
+    // settings, not state. The surface of the disk in the drive is part of it (PLAN D26), so
+    // rewind and run-ahead across a write give the same disk: each half-track in a slot of
+    // kSurfaceTrackBytes with its length (a longer track, which no drive records, is not
+    // kept: kTrackNotKept).
+    static constexpr size_t kSurfaceTrackBytes = 8192;
+    static constexpr uint16_t kTrackNotKept = 0xFFFF;
     static size_t stateSize();
     void saveState(uint8_t* out) const;
     void loadState(const uint8_t* in);

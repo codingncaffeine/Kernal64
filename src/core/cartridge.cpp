@@ -146,10 +146,15 @@ void Cartridge::reset() {
     for (size_t i = 0; i < ram_.size(); ++i) ram_[i] = (i & 0x40) ? 0xFF : 0x00;
 }
 
-bool Cartridge::setState(const State& s) {
+bool Cartridge::stateFits(const State& s) const {
     if (s.type != type_ || s.bank >= banks_ || s.bankH >= banks_ || s.writes > 7 || s.select > 7) return false;
     for (const Flash& f : s.flash)
         if (f.seq > EraseUnlock2 || f.op > ChipErasing || (type_ != 32 && (f.op || f.autoselect || f.suspended))) return false;
+    return true;
+}
+
+bool Cartridge::setState(const State& s) {
+    if (!stateFits(s)) return false;
     s_ = s;
     return true;
 }

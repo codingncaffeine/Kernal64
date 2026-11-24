@@ -148,6 +148,7 @@ public:
 #pragma pack(pop)
     const State& state() const { return s_; }
     // False when the state belongs to another hardware type than the one attached.
+    bool stateFits(const State& s) const;   // a state of this cartridge, with values it can hold
     bool setState(const State& s);
 
 private:

@@ -110,6 +110,19 @@ printf '%s\n' "$EXT/testprogs/vdrive/test.d64" "$EXT/testprogs/drive/scanner/sca
 "$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves" --content "$BUILD/two.m3u" --frames 2600 --swap-at 1100 1 \
     --type-at 1200 --type 'LOAD"$",8\n' --type-at 2300 --type 'LIST\n' --expect-screen '"SCANNER35"' >"$BUILD/host-swap.log" 2>&1 \
     || { tail -5 "$BUILD/host-swap.log"; bad "disk swap through the frontend's disk control"; }
+# Save states hold the disk (PLAN D26): a SAVE after the half-way state, then the state restored
+# and the second half replayed, in the same core and in a restarted one that loads the written
+# copy, must give the same frames and the same state.
+python3 -I tools/mkd64.py "$BUILD/states.d64"
+mkdir -p "$BUILD/saves-states"
+"$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves-states" --content "$BUILD/states.d64" --frames 900 --check \
+    --type-at 380 --type 'SAVE"KEPT",8\n' --expect-screen 'SAVING KEPT' >"$BUILD/host-state-write.log" 2>&1 \
+    || { grep FAIL "$BUILD/host-state-write.log" | head -3; bad "a disk write between a state and its replay"; }
+# ... and which disk of a list is in the drive: a restarted core starts with the first, the
+# state puts the second back.
+"$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves-states" --content "$BUILD/two.m3u" --frames 1000 --check \
+    --swap-at 300 1 --type-at 600 --type 'LOAD"$",8\n' --type-at 900 --type 'LIST\n' --expect-screen '"SCANNER35"' \
+    >"$BUILD/host-state-swap.log" 2>&1 || { grep FAIL "$BUILD/host-state-swap.log" | head -3; bad "a state with the list's second disk in the drive"; }
 grep -q "missing system files" "$BUILD"/host-*.log && bad "system ROMs not found in $ROMS"
 grep -q "no 1541 ROMs" "$BUILD"/host-*.log && bad "1541 ROMs not found in $ROMS"
 # The border option: the picture handed to the frontend has the size asked for.

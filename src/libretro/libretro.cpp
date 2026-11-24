@@ -644,18 +644,48 @@ RETRO_API void retro_run(void) {
     if (tape && tape->changed && machine->datasette().button() == k64::Datasette::Button::None) saveTape();
 }
 
-RETRO_API size_t retro_serialize_size(void) { return machine ? machine->stateSize() : 0; }
+// A state = the machine's state, which holds the surface of the disk in the drive, then which
+// disk of the list that is (4 bytes, little-endian; 0xFFFFFFFF = the drive is empty).
+constexpr size_t kDiskTailSize = 4;
+constexpr uint32_t kNoDisk = 0xFFFFFFFFu;
+
+RETRO_API size_t retro_serialize_size(void) { return machine ? kDiskTailSize + machine->stateSize() : 0; }
 
 RETRO_API bool retro_serialize(void* data, size_t size) {
     if (!machine || size < retro_serialize_size()) return false;
     auto* out = static_cast<uint8_t*>(data);
+    const uint32_t inDrive = disk ? static_cast<uint32_t>(slotIndex) : kNoDisk;
     machine->saveState(out);
+    out += machine->stateSize();
+    for (int b = 0; b < 4; ++b) out[b] = static_cast<uint8_t>(inDrive >> (8 * b));
     return true;
 }
 
 RETRO_API bool retro_unserialize(const void* data, size_t size) {
     if (!machine || size < retro_serialize_size()) return false;
     const auto* in = static_cast<const uint8_t*>(data);
+    const uint8_t* tail = in + machine->stateSize();
+    const uint32_t inDrive = static_cast<uint32_t>(tail[0] | tail[1] << 8 | tail[2] << 16 | static_cast<uint32_t>(tail[3]) << 24);
+    if (inDrive != kNoDisk && inDrive >= slots.size()) return false;   // a state of other content
+    if (!machine->stateFits(in, machine->stateSize())) return false;   // refused before anything changes
+    // The state's disk goes into the drive first (the machine state then restores its surface
+    // and the drive's own view of the swap).
+    const bool same = inDrive == kNoDisk ? !disk : (disk && slotIndex == inDrive);
+    if (!same) {
+        std::string error;
+        if (inDrive != kNoDisk && !loadSlot(slots[inDrive], error)) return false;
+        saveDisks();
+        if (inDrive == kNoDisk) {
+            machine->ejectDisk();
+            disk.reset();
+            diskEjected = true;
+        } else {
+            slotIndex = inDrive;
+            disk = slots[inDrive].disk;
+            machine->insertDisk(disk);
+            diskEjected = false;
+        }
+    }
     return machine->loadState(in, machine->stateSize());
 }
 

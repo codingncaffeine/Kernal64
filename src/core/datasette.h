@@ -42,6 +42,17 @@ public:
 #pragma pack(pop)
     const State& state() const { return s_; }
     void setState(const State& s) { s_ = s; }
+    // The tape's length goes into save states with the head: recording only ever replaces what
+    // follows the head, so cutting the tape back to a state's length undoes what was recorded
+    // after it (rewind and run-ahead while recording). Recording over the middle of a tape and
+    // then going back to a state from before that is the one case it cannot undo.
+    uint32_t tapeLength() const { return tape_ ? static_cast<uint32_t>(tape_->pulses.size()) : 0; }
+    void cutTape(uint32_t length) {
+        if (tape_ && tape_->pulses.size() > length) {
+            tape_->pulses.resize(length);
+            tape_->changed = true;
+        }
+    }
 
 private:
     std::shared_ptr<Tape> tape_;

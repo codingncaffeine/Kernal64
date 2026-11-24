@@ -212,7 +212,8 @@ void C1541::writeBit(bool one, uint8_t zone) {
 // ---- save states ------------------------------------------------------------------
 
 size_t C1541::stateSize() {
-    return 2048 + sizeof(uint64_t) + 3 + 2 * sizeof(Via6522::State) + sizeof(Cpu6502<Bus>::Snapshot) + sizeof(Mech) + 1;
+    return 2048 + sizeof(uint64_t) + 3 + 2 * sizeof(Via6522::State) + sizeof(Cpu6502<Bus>::Snapshot) + sizeof(Mech) + 1 +
+           1 + static_cast<size_t>(GcrDisk::kHalfTracks) * (4 + kSurfaceTrackBytes);
 }
 
 void C1541::saveState(uint8_t* out) const {
@@ -227,6 +228,21 @@ void C1541::saveState(uint8_t* out) const {
     put(&snap, sizeof snap);
     put(&m_, sizeof m_);
     put(&bus_last_, 1);
+    // The disk's surface: per half-track its length, zone, written flag, then its slot.
+    const uint8_t present = disk_ ? 1 : 0;
+    put(&present, 1);
+    for (size_t i = 0; i < static_cast<size_t>(GcrDisk::kHalfTracks); ++i) {
+        const std::vector<uint8_t>* t = disk_ ? &disk_->tracks[i] : nullptr;
+        const bool kept = t && t->size() <= kSurfaceTrackBytes;
+        const uint16_t len = !t ? 0 : kept ? static_cast<uint16_t>(t->size()) : kTrackNotKept;
+        const uint8_t meta[4] = {static_cast<uint8_t>(len), static_cast<uint8_t>(len >> 8), disk_ ? disk_->zone[i] : uint8_t{0},
+                                 static_cast<uint8_t>(disk_ && disk_->written[i])};
+        put(meta, 4);
+        if (kept && !t->empty()) std::memcpy(out, t->data(), t->size());
+        if (kept) std::memset(out + t->size(), 0, kSurfaceTrackBytes - t->size());
+        else std::memset(out, 0, kSurfaceTrackBytes);
+        out += kSurfaceTrackBytes;
+    }
 }
 
 void C1541::loadState(const uint8_t* in) {
@@ -248,6 +264,26 @@ void C1541::loadState(const uint8_t* in) {
     cpu_.restore(snap);
     get(&m_, sizeof m_);
     get(&bus_last_, 1);
+    uint8_t present = 0;
+    get(&present, 1);
+    // A surface goes onto the disk in the drive (the frontend's disk control put the state's
+    // disk there first). Restoring it marks the disk changed when it differs, so the kept copy
+    // follows what is in the drive again.
+    for (size_t i = 0; i < static_cast<size_t>(GcrDisk::kHalfTracks); ++i) {
+        uint8_t meta[4];
+        get(meta, 4);
+        const uint16_t len = static_cast<uint16_t>(meta[0] | meta[1] << 8);
+        if (present && disk_ && len != kTrackNotKept) {
+            auto& t = disk_->tracks[i];
+            if (t.size() != len || (len && std::memcmp(t.data(), in, len) != 0)) {
+                t.assign(in, in + len);
+                disk_->changed = true;
+            }
+            disk_->zone[i] = meta[2];
+            disk_->written[i] = meta[3] != 0;
+        }
+        in += kSurfaceTrackBytes;
+    }
 }
 
 void C1541::tick() {

@@ -129,6 +129,7 @@ public:
     size_t stateSize() const;
     void saveState(uint8_t* out) const;
     bool loadState(const uint8_t* in, size_t size);
+    bool stateFits(const uint8_t* in, size_t size) const;   // loadState would take it
 
 private:
     struct CpuBus {
