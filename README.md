@@ -58,7 +58,8 @@ In the [wiki](https://github.com/codingncaffeine/Kernal64/wiki):
 
 The [releases](https://github.com/codingncaffeine/Kernal64/releases) have the core for Linux
 (x86-64, glibc and musl), Windows (x86-64) and macOS (arm64 and x86-64). Put it in your
-frontend's cores folder; Emutastic downloads it by itself.
+frontend's cores folder (for RetroArch, see
+[RetroArch](https://github.com/codingncaffeine/Kernal64/wiki/RetroArch)); Emutastic downloads it by itself.
 
 ## System files
 
