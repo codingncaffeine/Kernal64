@@ -33,6 +33,9 @@
 // an analog axis (lx ly rx ry), the mouse (mx my = movement per frame, mleft mright) or the
 // light gun (gx gy = position -32767..32767, gtrigger, goffscreen).
 // --expect-led N: the core's LED 0 must have been switched on at least N times.
+// Files: the host offers a VFS (version 1, plain files underneath) as RetroArch does and
+// counts its use; --no-vfs offers none; --expect-vfs fails the run unless the core used it. --check: a declared memory map must be the RAM the
+// core exposes.
 #include "libretro.h"
 
 #include <dlfcn.h>
@@ -74,6 +77,46 @@ void ledSet(int led, int state) {
     if (led == 0) ledNow = state;
 }
 retro_led_interface ledInterface{ledSet};
+// A VFS over the C library, as a frontend offers one.
+bool offerVfs = true;
+unsigned vfsCalls = 0;
+struct VfsFile { FILE* f; std::string path; };
+VfsFile* vf(retro_vfs_file_handle* h) { return reinterpret_cast<VfsFile*>(h); }
+const char* vfsGetPath(retro_vfs_file_handle* h) { return vf(h)->path.c_str(); }
+retro_vfs_file_handle* vfsOpen(const char* path, unsigned mode, unsigned) {
+    ++vfsCalls;
+    FILE* f = std::fopen(path, mode & RETRO_VFS_FILE_ACCESS_WRITE ? "wb" : "rb");
+    return f ? reinterpret_cast<retro_vfs_file_handle*>(new VfsFile{f, path}) : nullptr;
+}
+int vfsClose(retro_vfs_file_handle* h) { const int r = std::fclose(vf(h)->f); delete vf(h); return r == 0 ? 0 : -1; }
+int64_t vfsSize(retro_vfs_file_handle* h) {
+    FILE* f = vf(h)->f;
+    const long at = std::ftell(f);
+    std::fseek(f, 0, SEEK_END);
+    const long n = std::ftell(f);
+    std::fseek(f, at, SEEK_SET);
+    return n;
+}
+int64_t vfsTell(retro_vfs_file_handle* h) { return std::ftell(vf(h)->f); }
+int64_t vfsSeek(retro_vfs_file_handle* h, int64_t off, int whence) {
+    FILE* f = vf(h)->f;
+    return std::fseek(f, static_cast<long>(off), whence == RETRO_VFS_SEEK_POSITION_START ? SEEK_SET : whence == RETRO_VFS_SEEK_POSITION_CURRENT ? SEEK_CUR : SEEK_END) == 0 ? std::ftell(f) : -1;
+}
+int64_t vfsRead(retro_vfs_file_handle* h, void* p, uint64_t n) { return static_cast<int64_t>(std::fread(p, 1, n, vf(h)->f)); }
+int64_t vfsWrite(retro_vfs_file_handle* h, const void* p, uint64_t n) { return static_cast<int64_t>(std::fwrite(p, 1, n, vf(h)->f)); }
+int vfsFlush(retro_vfs_file_handle* h) { return std::fflush(vf(h)->f) == 0 ? 0 : -1; }
+int vfsRemove(const char* path) { return std::remove(path) == 0 ? 0 : -1; }
+int vfsRename(const char* a, const char* b) { ++vfsCalls; return std::rename(a, b) == 0 ? 0 : -1; }
+retro_vfs_interface makeVfs() {
+    retro_vfs_interface v{};
+    v.get_path = vfsGetPath; v.open = vfsOpen; v.close = vfsClose; v.size = vfsSize; v.tell = vfsTell; v.seek = vfsSeek;
+    v.read = vfsRead; v.write = vfsWrite; v.flush = vfsFlush; v.remove = vfsRemove; v.rename = vfsRename;
+    return v;
+}
+retro_vfs_interface vfsInterface = makeVfs();
+retro_memory_descriptor mapRam{};
+bool mapSet = false;
+
 struct Hold { unsigned from, to, port, device, index, id; int value; };
 std::vector<Hold> holds;
 std::vector<std::pair<unsigned, unsigned>> devices;   // player port, device
@@ -158,6 +201,19 @@ bool environment(unsigned cmd, void* data) {
     case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
     case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
         return true;
+    case RETRO_ENVIRONMENT_GET_VFS_INTERFACE: {
+        auto* info = static_cast<retro_vfs_interface_info*>(data);
+        if (!offerVfs || info->required_interface_version > 1) return false;
+        info->iface = &vfsInterface;
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_MEMORY_MAPS: {
+        const auto* m = static_cast<const retro_memory_map*>(data);
+        mapSet = false;
+        for (unsigned i = 0; i < m->num_descriptors; ++i)
+            if (m->descriptors[i].flags & RETRO_MEMDESC_SYSTEM_RAM) { mapRam = m->descriptors[i]; mapSet = true; }
+        return true;
+    }
     case RETRO_ENVIRONMENT_GET_LED_INTERFACE:
         *static_cast<retro_led_interface*>(data) = ledInterface;
         return true;
@@ -346,6 +402,7 @@ int main(int argc, char** argv) {
     double expectHz = 0.0, expectDbMin = 0.0, expectDbMax = 0.0;
     bool expectSilence = false, expectLevel = false, expectLoadFailure = false;
     unsigned expectLed = 0;
+    bool expectVfs = false;
     double levelMin = 0.0, levelMax = 0.0;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -379,6 +436,8 @@ int main(int argc, char** argv) {
         }
         else if (a == "--expect-level") { expectLevel = true; levelMin = std::stod(next()); levelMax = std::stod(next()); }
         else if (a == "--options-version") optionsVersion = static_cast<unsigned>(std::stoul(next()));
+        else if (a == "--no-vfs") offerVfs = false;
+        else if (a == "--expect-vfs") expectVfs = true;
         else if (a == "--expect-led") expectLed = static_cast<unsigned>(std::stoul(next()));
         else if (a == "--device") {
             const unsigned port = static_cast<unsigned>(std::stoul(next()));
@@ -483,6 +542,11 @@ int main(int argc, char** argv) {
     for (const auto& [port, dev] : devices) c.retro_set_controller_port_device(port, dev);
     c.retro_get_system_av_info(&av);
     if (check && !pixelFormatSet) fail("core never set a pixel format");
+    if (check && mapSet) {
+        if (mapRam.ptr != c.retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM) || mapRam.len != c.retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM) ||
+            mapRam.start != 0 || mapRam.offset != 0)
+            fail("the memory map's RAM is not the RAM the core exposes at address 0");
+    }
     std::printf("av: %ux%u (max %ux%u) aspect %.4f fps %.4f rate %.0f\n", av.geometry.base_width,
                 av.geometry.base_height, av.geometry.max_width, av.geometry.max_height, av.geometry.aspect_ratio,
                 av.timing.fps, av.timing.sample_rate);
@@ -602,6 +666,11 @@ int main(int argc, char** argv) {
         const Tone t = measureTone(av.timing.sample_rate);
         std::printf("audio: level %.1f dB\n", t.db);
         if (t.db < levelMin || t.db > levelMax) fail("level %.1f dB, expected %.1f .. %.1f", t.db, levelMin, levelMax);
+    }
+    if (expectVfs) {
+        c.retro_unload_game();   // what the core keeps is written by now
+        if (!vfsCalls) fail("the core never used the frontend's VFS");
+        c.retro_load_game(content.empty() ? nullptr : &gi);
     }
     if (ledOnCount < expectLed) fail("LED 0 was switched on %u time(s), expected at least %u", ledOnCount, expectLed);
     if (expectSilence) {

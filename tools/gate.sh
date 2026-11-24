@@ -79,6 +79,16 @@ ROMS="$ROOT/gitignore"
 EXT="$ROOT/gitignore/external"
 
 step "libretro conformance"
+# The .info file says what the core does: its extensions and version are the built core's, its
+# firmware names the ROM table's.
+INFO="$ROOT/packaging/kernal64_libretro.info"
+info() { sed -n "s/^$1 = \"\(.*\)\"$/\1/p" "$INFO"; }
+core_ext="$("$BUILD/k64host" "$CORE" --frames 1 2>/dev/null | sed -n 's/^core: .*(extensions \(.*\))$/\1/p')"
+[ -n "$core_ext" ] && [ "$(info supported_extensions)" = "$core_ext" ] || bad ".info extensions differ from the core's ($core_ext)"
+[ "$(info display_version)" = "$(sed -n 's/^project(Kernal64 VERSION \([0-9.]*\).*/\1/p' "$ROOT/CMakeLists.txt")" ] || bad ".info version differs from CMakeLists.txt"
+for rom in $(grep -o '"[a-z0-9.-]*\.bin"' "$ROOT/src/core/roms.h" | tr -d '"'); do
+    grep -q "_path = \"$rom\"" "$INFO" || bad ".info has no firmware entry for $rom"
+done
 for model in pal ntsc ntsc-old pal-new ntsc-new pal-old; do
     # Typing at the READY prompt through the API: BASIC must answer. Nothing has touched the
     # SID: every audio sample is zero.
@@ -100,11 +110,12 @@ side "disk as content, started by itself" "$BUILD/host-disk.log" "$BUILD/k64host
     --content "$EXT/testprogs/vdrive/test.d64" --frames 900 --check --expect-led 2 --expect-screen 'ROM:  254' --expect-screen 'ROM:  103'
 sides
 # What the drive writes is kept (PLAN D10): SAVE to a disk, unload; loaded again, the copy in
-# the save folder has the program.
+# the save folder has the program. The copy is written through the frontend's VFS and read back
+# without one (the C library's files), so both ways are used.
 mkdir -p "$BUILD/saves"
-"$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves" --content "$EXT/testprogs/vdrive/test.d64" --frames 2600 \
+"$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves" --content "$EXT/testprogs/vdrive/test.d64" --frames 2600 --expect-vfs \
     --type-at 1300 --type 'NEW\n10 ?42\nSAVE"KEPT",8\n' >"$BUILD/host-save1.log" 2>&1 || bad "disk save: the first run failed"
-"$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves" --content "$EXT/testprogs/vdrive/test.d64" --frames 3200 --check \
+"$BUILD/k64host" "$CORE" --system "$ROMS" --save "$BUILD/saves" --content "$EXT/testprogs/vdrive/test.d64" --frames 3200 --check --no-vfs \
     --type-at 1300 --type 'LOAD"KEPT",8\n' --type-at 2700 --type 'RUN\n' --expect-screen ' 42' >"$BUILD/host-save2.log" 2>&1 \
     || { tail -5 "$BUILD/host-save2.log"; bad "a disk written through the core was not kept"; }
 # A disk list (.m3u) and the frontend's disk control: the second disk, swapped in, lists.

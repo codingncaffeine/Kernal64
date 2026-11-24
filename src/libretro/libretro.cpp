@@ -406,26 +406,52 @@ void notify(const std::string& line) {
     envCb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
 }
 
-// The content: a cartridge file, or a single-file program that is put into memory and
-// started once the machine has booted. Told apart by what is in it, not by its name.
+// Files go through the frontend's file system when it offers one (VFS: on some platforms
+// paths are not plain files), else through the C library. Nothing larger than 64 MB is read.
+retro_vfs_interface* vfs = nullptr;
+constexpr size_t kMaxFile = 64u << 20;
+
 bool readWhole(const std::string& path, std::vector<uint8_t>& bytes) {
+    if (vfs) {
+        retro_vfs_file_handle* h = vfs->open(path.c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+        if (!h) return false;
+        const int64_t size = vfs->size(h);
+        bool ok = size >= 0 && static_cast<uint64_t>(size) <= kMaxFile;
+        if (ok) {
+            bytes.resize(static_cast<size_t>(size));
+            ok = size == 0 || vfs->read(h, bytes.data(), static_cast<uint64_t>(size)) == size;
+        }
+        vfs->close(h);
+        return ok;
+    }
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return false;
     uint8_t chunk[65536];
     size_t n;
-    while ((n = std::fread(chunk, 1, sizeof chunk, f)) > 0) bytes.insert(bytes.end(), chunk, chunk + n);
+    while ((n = std::fread(chunk, 1, sizeof chunk, f)) > 0 && bytes.size() < kMaxFile) bytes.insert(bytes.end(), chunk, chunk + n);
     std::fclose(f);
     return true;
 }
 
+// Written to "<path>.tmp" first and renamed over `path`, so a crash never leaves half a file.
+bool writeWhole(const std::string& path, const std::vector<uint8_t>& data) {
+    const std::string tmp = path + ".tmp";
+    if (vfs) {
+        retro_vfs_file_handle* h = vfs->open(tmp.c_str(), RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+        if (!h) return false;
+        const bool ok = vfs->write(h, data.data(), data.size()) == static_cast<int64_t>(data.size());
+        if (vfs->close(h) != 0 || !ok) return false;
+        return vfs->rename(tmp.c_str(), path.c_str()) == 0;
+    }
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    const bool ok = f && std::fwrite(data.data(), 1, data.size(), f) == data.size();
+    if (f && std::fclose(f) != 0) return false;
+    return ok && std::rename(tmp.c_str(), path.c_str()) == 0;
+}
+
 void saveDisk(DiskSlot& slot) {
     if (!slot.disk || !slot.disk->changed || slot.savePath.empty()) return;
-    const auto g = k64::writeG64(*slot.disk);
-    const std::string tmp = slot.savePath + ".tmp";
-    FILE* f = std::fopen(tmp.c_str(), "wb");
-    const bool ok = f && std::fwrite(g.data(), 1, g.size(), f) == g.size();
-    if (f) std::fclose(f);
-    if (ok && std::rename(tmp.c_str(), slot.savePath.c_str()) == 0) slot.disk->changed = false;
+    if (writeWhole(slot.savePath, k64::writeG64(*slot.disk))) slot.disk->changed = false;
     else log(RETRO_LOG_ERROR, "could not save the written disk to %s", slot.savePath.c_str());
 }
 
@@ -433,12 +459,7 @@ void saveDisks() { for (DiskSlot& slot : slots) saveDisk(slot); }
 
 void saveTape() {
     if (!tape || !tape->changed || tapeSavePath.empty() || !machine) return;
-    const auto t = k64::writeTap(*tape, machine->timing().pal ? 0 : 1);
-    const std::string tmp = tapeSavePath + ".tmp";
-    FILE* f = std::fopen(tmp.c_str(), "wb");
-    const bool ok = f && std::fwrite(t.data(), 1, t.size(), f) == t.size();
-    if (f) std::fclose(f);
-    if (ok && std::rename(tmp.c_str(), tapeSavePath.c_str()) == 0) tape->changed = false;
+    if (writeWhole(tapeSavePath, k64::writeTap(*tape, machine->timing().pal ? 0 : 1))) tape->changed = false;
     else log(RETRO_LOG_ERROR, "could not save the recorded tape to %s", tapeSavePath.c_str());
 }
 
@@ -573,13 +594,7 @@ bool loadContent(const retro_game_info* info) {
         const auto* p = static_cast<const uint8_t*>(info->data);
         bytes.assign(p, p + info->size);
     } else if (info->path) {
-        FILE* f = std::fopen(info->path, "rb");
-        if (f) {
-            uint8_t chunk[65536];
-            size_t n;
-            while ((n = std::fread(chunk, 1, sizeof chunk, f)) > 0 && bytes.size() < (64u << 20)) bytes.insert(bytes.end(), chunk, chunk + n);
-            std::fclose(f);
-        }
+        readWhole(info->path, bytes);
     }
     std::string error;
     if (bytes.empty()) {
@@ -684,6 +699,9 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
     static const retro_controller_info kPorts[] = {{kTypes, 5}, {kTypes, 5}, {nullptr, 0}};
     cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, const_cast<retro_controller_info*>(kPorts));
     if (!cb(RETRO_ENVIRONMENT_GET_LED_INTERFACE, &ledCb)) ledCb = {};
+    // VFS version 1 has everything used here (open, size, read, write, rename).
+    retro_vfs_interface_info vfsInfo{1, nullptr};
+    vfs = cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &vfsInfo) ? vfsInfo.iface : nullptr;
     retro_log_callback logging{};
     logCb = cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging) ? logging.log : nullptr;
 }
@@ -734,6 +752,16 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
     }
     contentName = info && info->path ? info->path : "";
     machine = std::make_unique<k64::C64>(modelFromOptions());
+    // The memory map for achievements and cheats: the 64 KB of RAM at its own addresses.
+    static retro_memory_descriptor ramDesc{};
+    ramDesc = {};
+    ramDesc.flags = RETRO_MEMDESC_SYSTEM_RAM;
+    ramDesc.ptr = machine->ramData();
+    ramDesc.len = 65536;
+    ramDesc.addrspace = "RAM";
+    static retro_memory_map map{};
+    map = {&ramDesc, 1};
+    envCb(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &map);
     readPadOptions();
     setDescriptors();
     osk.setOpen(false);

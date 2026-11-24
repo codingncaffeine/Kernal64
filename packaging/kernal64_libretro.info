@@ -1,0 +1,57 @@
+# Kernal64: RetroArch core information. Goes in RetroArch's "info" directory beside the other cores' .info files.
+
+# Software Information
+display_name = "Commodore - C64 (Kernal64)"
+authors = "codingncaffeine"
+supported_extensions = "crt|prg|p00|t64|d64|g64|nib|m3u|tap"
+corename = "Kernal64"
+categories = "Emulator"
+license = "GPLv3"
+permissions = ""
+display_version = "0.0.0"
+
+# Hardware Information
+manufacturer = "Commodore"
+systemname = "C64"
+systemid = "commodore_c64"
+
+# Libretro Features
+database = "Commodore - 64"
+supports_no_game = "true"
+hw_render = "false"
+needs_fullpath = "false"
+savestate = "true"
+savestate_features = "deterministic"
+cheats = "false"
+input_descriptors = "true"
+memory_descriptors = "true"
+libretro_saves = "false"
+core_options = "true"
+core_options_version = "2.0"
+load_subsystem = "false"
+disk_control = "true"
+is_experimental = "true"
+
+# BIOS / Firmware
+# The core finds the ROMs by their contents, whatever they are named (also in a "kernal64"
+# folder inside the system folder, and as the two halves of a combined 16 KB C64C image);
+# these are the usual names.
+firmware_count = 5
+firmware0_desc = "basic.901226-01.bin (BASIC ROM, 8 KB)"
+firmware0_path = "basic.901226-01.bin"
+firmware0_opt = "false"
+firmware1_desc = "kernal.901227-03.bin (KERNAL ROM, 8 KB)"
+firmware1_path = "kernal.901227-03.bin"
+firmware1_opt = "false"
+firmware2_desc = "characters.901225-01.bin (character ROM, 4 KB)"
+firmware2_path = "characters.901225-01.bin"
+firmware2_opt = "false"
+firmware3_desc = "1541-c000.325302-01.bin (1541 DOS ROM, lower half, 8 KB)"
+firmware3_path = "1541-c000.325302-01.bin"
+firmware3_opt = "true"
+firmware4_desc = "1541-e000.901229-05.bin (1541 DOS ROM, upper half, 8 KB)"
+firmware4_path = "1541-e000.901229-05.bin"
+firmware4_opt = "true"
+notes = "(!) The C64's BASIC, KERNAL and character ROMs go in the system folder (any file names: they are found by their contents).|(!) Disk images need the two 1541 ROMs as well; without them drive 8 is off.|(!) What the drive or the datasette writes is kept in the save folder (name.g64, name.tap); your own image files are never written.|(!) Select opens the on-screen keyboard; every RetroPad button can be mapped to a C64 key in the core options."
+
+description = "A cycle-exact Commodore 64 built from the chips' documentation: the 6510, the VIC-II (six models), both CIA generations, the 6581 and 8580 SID with its filter, and a 1541 drive emulated down to its read circuit running its own DOS. Cartridges of many hardware types, disk images (D64, G64 and NIB read directly), tapes, programs; joystick, paddles, the 1351 mouse and a light pen."
