@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 18;
+constexpr uint32_t kStateVersion = 19;
 
 // The 1541 runs on its own 16 MHz crystal divided by 16 (hw/drive.md D1): 1 MHz. Against the
 // machine's clock that is exactly 18,000,000 / 17,734,475 drive cycles per machine cycle on
@@ -56,6 +56,7 @@ void C64::setAudioRate(double sampleRate) {
 
 void C64::reset() {
     s_ = State{};
+    armAutotype();
     // DRAM at power on: the common pattern of the C64's RAM chips, $00 and $FF alternating
     // in blocks of 64 bytes. (Software must not depend on it; a fixed pattern keeps runs
     // reproducible.)
@@ -474,10 +475,10 @@ void C64::tick() {
     ++s_.cycle;
     if (vic_.line() == 0 && vic_.cycleInLine() == 1) ++s_.frame;
     // The KERNAL's input loop polls the keyboard buffer at $E5CD: from there on it is ready.
-    if (s_.autotypePos < autotype_.size() && cpu_.regs().pc == 0xE5CD && ram_[0xC6] == 0) {
+    if (s_.autotypePos < s_.autotypeLen && cpu_.regs().pc == 0xE5CD && ram_[0xC6] == 0) {
         size_t n = 0;
-        while (n < 10 && s_.autotypePos < autotype_.size()) {
-            const char c = autotype_[s_.autotypePos++];
+        while (n < 10 && s_.autotypePos < s_.autotypeLen) {
+            const char c = s_.autotype[s_.autotypePos++];
             ram_[0x0277 + n++] = static_cast<uint8_t>(c);
             if (c == '\r') break;   // one line at a time: what follows waits for the next prompt
         }

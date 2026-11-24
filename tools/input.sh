@@ -81,15 +81,27 @@ sbs_start core 1 "light pen in port 2 sees nothing" --frames 600 --device 0 ligh
 pair "on-screen keyboard types" "--hold 250 255 0 b 1" --frames 400 --hold 200 202 0 select 1 --hold 300 305 0 start 1 \
     --expect-screen '?SYNTAX' --check
 
-# The datasette's buttons as mapped actions: a blank tape as content (PLAY down, LOAD typed);
-# RUN/STOP breaks the search, L (PLAY / STOP) stops the tape, SAVE asks for RECORD, R presses
-# it and the KERNAL records; a state is taken in the middle of the recording.
+# Blank media (what a frontend's "new blank tape / floppy" makes): a blank tape goes in with RECORD
+# and PLAY down, so SAVE records at once (no "PRESS RECORD & PLAY"); started again, the recorded copy
+# loads and runs. An empty formatted disk starts at READY with nothing typed.
+python3 -I "$ROOT/tools/mkd64.py" "$OUT/blank.d64"
 printf 'C64-TAPE-RAW\x01\x00\x00\x00\x00\x00\x00\x00' >"$OUT/blank.tap"
-rm -rf "$OUT/tape1" "$OUT/tape2"
-mkdir -p "$OUT/tape1" "$OUT/tape2"
-TAPE=(--content "$OUT/blank.tap" --frames 1800 --option kernal64_pad_l=tape_play --option kernal64_pad_r=tape_record
-      --hold 300 305 0 l2 1 --hold 400 402 0 l 1 --type-at 450 --type '10 ?42\nSAVE\n' --expect-screen 'SAVING')
-sbs_start core 0 "datasette RECORD through a mapped button" "${TAPE[@]}" --save "$OUT/tape1" --hold 600 602 0 r 1 --check
+rm -rf "$OUT/tape1" "$OUT/tape2" "$OUT/tape3"
+mkdir -p "$OUT/tape1" "$OUT/tape2" "$OUT/tape3"
+blank_tape() {
+    core 0 "blank tape: SAVE records at once" --content "$OUT/blank.tap" --save "$OUT/tape3" --frames 1500 \
+        --type-at 150 --type '10 ?4242\nSAVE\n' --expect-screen 'SAVING' --check || return
+    core 0 "blank tape: started again, the recording loads and runs" --content "$OUT/blank.tap" --save "$OUT/tape3" \
+        --frames 2600 --expect-screen ' 4242'
+}
+sbs_start blank_tape
+sbs_start core 0 "empty disk: READY, nothing typed" --content "$OUT/blank.d64" --frames 300 --expect-screen 'READY.'
+sbs_start core 1 "empty disk (control: something typed)" --content "$OUT/blank.d64" --frames 300 --expect-screen 'LOAD'
+# The datasette's buttons as mapped actions: the blank tape starts in RECORD; L (PLAY / STOP)
+# stops it, SAVE asks for RECORD, R presses it and the KERNAL records; a state is taken in the middle.
+TAPE=(--content "$OUT/blank.tap" --frames 1600 --option kernal64_pad_l=tape_play --option kernal64_pad_r=tape_record
+      --hold 120 122 0 l 1 --type-at 150 --type '10 ?42\nSAVE\n' --expect-screen 'SAVING')
+sbs_start core 0 "datasette RECORD through a mapped button" "${TAPE[@]}" --save "$OUT/tape1" --hold 400 402 0 r 1 --check
 sbs_start core 1 "datasette RECORD through a mapped button (control: no input)" "${TAPE[@]}" --save "$OUT/tape2"
 
 # The keyboard (option kernal64_keyboard). Symbolic, the default: keys type what a US keyboard

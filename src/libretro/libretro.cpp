@@ -587,6 +587,28 @@ bool isDiskImage(const std::vector<uint8_t>& b) {
            n == 197376 || n == 205312 || n == 206114;
 }
 
+// A D64 whose directory (track 18 from sector 1 on, the chain the BAM names) holds no file entry.
+// False for anything that is not a D64, or whose directory cannot be read: those are started as usual.
+bool d64DirectoryEmpty(const std::vector<uint8_t>& b) {
+    if (b.size() != 174848 && b.size() != 175531 && b.size() != 196608 && b.size() != 197376 && b.size() != 205312 && b.size() != 206114)
+        return false;
+    auto offset = [](int track, int sector) {
+        size_t o = 0;
+        for (int t = 1; t < track; ++t) o += static_cast<size_t>(k64::sectorsOnTrack(t)) * 256;
+        return o + static_cast<size_t>(sector) * 256;
+    };
+    int t = b[offset(18, 0)], s = b[offset(18, 0) + 1];
+    for (int hops = 0; t == 18 && hops < 19; ++hops) {
+        const size_t o = offset(t, s);
+        if (s >= k64::sectorsOnTrack(18) || o + 256 > b.size()) return false;
+        for (int e = 0; e < 8; ++e)
+            if (b[o + static_cast<size_t>(e) * 32 + 2] != 0) return false;   // a file type: a file
+        t = b[o];
+        s = b[o + 1];
+    }
+    return t == 0;
+}
+
 // --- disk control (the frontend's eject / pick / insert) ---------------------------------
 bool RETRO_CALLCONV dcSetEject(bool ejected) {
     if (!machine || ejected == diskEjected) return true;
@@ -670,6 +692,13 @@ bool loadContent(const retro_game_info* info) {
         if (haveCopy || k64::parseTap(bytes.data(), bytes.size(), *tape, error)) {
             if (haveCopy) log(RETRO_LOG_INFO, "tape: the recorded copy %s", tapeSavePath.c_str());
             machine->datasette().insert(tape);
+            if (tape->pulses.empty()) {
+                // A blank tape (nothing on it, nothing recorded yet): in with RECORD and PLAY down, so a SAVE
+                // records at once; LOAD would only search forever.
+                machine->datasette().press(k64::Datasette::Button::Record);
+                log(RETRO_LOG_INFO, "blank tape in the datasette, RECORD and PLAY down");
+                return true;
+            }
             machine->datasette().press(k64::Datasette::Button::Play);
             machine->setAutotype("LOAD\rRUN\r");
             log(RETRO_LOG_INFO, "tape in the datasette, started with PLAY, LOAD and RUN");
@@ -698,6 +727,13 @@ bool loadContent(const retro_game_info* info) {
             // error says why
         } else {
             insertSlot();
+            std::vector<uint8_t> kept;
+            const bool written = !slots[slotIndex].savePath.empty() && readWhole(slots[slotIndex].savePath, kept);
+            if (isDiskImage(bytes) && !written && d64DirectoryEmpty(bytes)) {
+                // A disk with no files (a new, formatted one): nothing to start, the READY prompt.
+                log(RETRO_LOG_INFO, "empty disk in drive 8");
+                return true;
+            }
             machine->setAutotype("LOAD\"*\",8,1\rRUN\r");
             log(RETRO_LOG_INFO, "disk in drive 8, started with LOAD\"*\",8,1 and RUN");
             return true;

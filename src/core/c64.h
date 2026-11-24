@@ -17,7 +17,9 @@
 #include "c1541.h"
 #include "datasette.h"
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -77,7 +79,7 @@ public:
     // Text typed after this and every later reset(), as the KERNAL asks for keys: put into its
     // keyboard buffer ten keys at a time whenever it waits with the buffer empty ("\r" =
     // RETURN). A disk starts with LOAD"*",8,1 and RUN, as on the real machine. Empty: none.
-    void setAutotype(const std::string& text) { autotype_ = text; s_.autotypePos = 0; }
+    void setAutotype(const std::string& text) { autotype_ = text; armAutotype(); }
 
     // Audio: produced once a sample rate is set (the test tools run without it). Mono,
     // about -1 .. 1; whatever a frame produced is read after it.
@@ -186,6 +188,10 @@ private:
         uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
         uint32_t drivePhase = 0;
         uint16_t autotypePos = 0;
+        // The text being typed, in the state: a state loaded later types what was waiting when it was
+        // saved, not what the content of the new session would start with.
+        uint8_t autotypeLen = 0;
+        char autotype[48] = {};
         int16_t penLine = -1, penCycle = 0;   // where a light pen points (raster line, cycle); -1 = nowhere
         uint8_t penLow = 0;               // the pen pulls LP low in this cycle (hw/input.md L3)
         uint8_t busOut = 0x3F;            // CIA 2's bus outputs before its last access (S5)         // keys of the autotype text already typed          // the drive's clock against ours: += driveNum_ per cycle, a drive cycle per driveDen_
@@ -197,7 +203,12 @@ private:
     Cartridge cart_;
     ProgramFile autostart_;      // settings, like the ROMs: not part of the state
     uint64_t autostartDelay_ = 0;
-    std::string autotype_;
+    std::string autotype_;       // the setting: copied into the state at reset (armAutotype)
+    void armAutotype() {
+        s_.autotypeLen = static_cast<uint8_t>(std::min(autotype_.size(), sizeof s_.autotype));
+        std::memcpy(s_.autotype, autotype_.data(), s_.autotypeLen);
+        s_.autotypePos = 0;
+    }
     std::array<uint8_t, 65536> ram_{};
     std::array<uint8_t, 1024> colorRam_{};
     std::array<uint8_t, 8192> basic_{}, kernal_{};
