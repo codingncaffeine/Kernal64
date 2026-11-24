@@ -180,6 +180,17 @@ sbs_start core 1 "symbolic keyboard (control: the positional map)" --frames 450 
     --type "$SYMS" --expect-screen ' 43 A:B 2'
 pair "positional keyboard: the C64's * key" "--hold 300 302 0 key:93 1" --frames 450 --option kernal64_keyboard=positional \
     --type-at 200 --type 'PRINT 6' --type-at 320 --type '7\n' --expect-screen ' 42'
+# A symbol key keeps the meaning it had when it went down: SHIFT let go a frame before the 8 still
+# types * alone (the control: an 8 after the * would show the key read again without SHIFT), and
+# SHIFT pressed while 8 is held does not turn it into *.
+AFTER_READY="READY.$(printf '%34s')"$'\n'
+SHIFT_UP_FIRST="--hold 300 320 0 key:304 1 --hold 305 330 0 key:56 1"
+# shellcheck disable=SC2086
+sbs_start core 0 "symbolic keyboard: SHIFT up before 8 types *" --frames 400 $SHIFT_UP_FIRST --expect-screen "$AFTER_READY* "
+# shellcheck disable=SC2086
+sbs_start core 1 "symbolic keyboard: SHIFT up before 8 (control: no 8 after it)" --frames 400 $SHIFT_UP_FIRST --expect-screen '*8'
+sbs_start core 0 "symbolic keyboard: SHIFT down while 8 is held types 8" --frames 400 \
+    --hold 310 340 0 key:304 1 --hold 300 330 0 key:56 1 --expect-screen "${AFTER_READY}8 "
 
 # The machine options through the core, each with what it changes: the CIA generation (the
 # serial-port interrupt probe takes its interrupt two timer counts later on the 8521, as in

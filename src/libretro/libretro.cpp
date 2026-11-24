@@ -145,6 +145,12 @@ constexpr SymbolKey kSymbols[] = {
     {RETROK_SLASH,     6, 7, false,                   6, 7, true},    // /  ?
 };
 
+// What each symbol key meant when it went down (-1: up, 0: unshifted, 1: shifted). A key keeps that
+// meaning until it is released: typists often let go of SHIFT a frame before the key, and reading
+// SHIFT every frame would then turn a held SHIFT+8 (*) into 8 and type it as a second character.
+int8_t symbolMeant[std::size(kSymbols)];
+void forgetSymbolKeys() { std::fill(std::begin(symbolMeant), std::end(symbolMeant), int8_t(-1)); }
+
 bool symbolicKeyboard() {
     retro_variable var{"kernal64_keyboard", nullptr};
     return !(envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "positional"));
@@ -249,10 +255,13 @@ void applyInput() {
     const bool hostShift = hostKey(RETROK_LSHIFT) || hostKey(RETROK_RSHIFT);
     int symbolShift = -1;   // a symbol key is down: the C64's SHIFT as its symbol needs (0 / 1)
     if (symbolicKeys) {
-        for (const SymbolKey& k : kSymbols) {
-            if (!hostKey(k.key)) continue;
-            machine->setKey(hostShift ? k.scol : k.col, hostShift ? k.srow : k.row, true);
-            symbolShift = (hostShift ? k.sshift : k.shift) ? 1 : 0;
+        for (size_t i = 0; i < std::size(kSymbols); ++i) {
+            const SymbolKey& k = kSymbols[i];
+            if (!hostKey(k.key)) { symbolMeant[i] = -1; continue; }
+            if (symbolMeant[i] < 0) symbolMeant[i] = hostShift ? 1 : 0;
+            const bool shifted = symbolMeant[i] == 1;
+            machine->setKey(shifted ? k.scol : k.col, shifted ? k.srow : k.row, true);
+            symbolShift = (shifted ? k.sshift : k.shift) ? 1 : 0;
         }
     }
     for (const auto& k : kKeys) {
@@ -1048,6 +1057,7 @@ RETRO_API void retro_reset(void) {
 }
 
 RETRO_API bool retro_load_game(const retro_game_info* info) {
+    forgetSymbolKeys();
     retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
     if (!envCb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt)) {
         log(RETRO_LOG_ERROR, "frontend does not accept XRGB8888");
