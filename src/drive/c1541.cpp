@@ -112,15 +112,21 @@ namespace {
 constexpr uint32_t kTicksPerRev = 3'200'000;   // R1: 16 MHz at 300 rpm
 }
 
-// R2: the stepper's two lines count through four phases; one phase up moves the head a
-// half-track in (to higher tracks), one down moves it out. The disk keeps turning under it.
+// R2: PB0-PB1 select which of the stepper's four coils is energized, and the coils hold the
+// rotor at absolute positions: track 1 (half-track 2) is coil 0, track 1.5 coil 1, ... so the head's
+// own phase is (half-track - 2) & 3, track 18 = coil 2 (R2a). The coils are powered only while the
+// spindle motor runs (PB2), so switching the motor on can move the head too. The coil one above
+// the head's phase pulls it a half-track in (to higher tracks), one below pulls it out, the
+// opposite one leaves it. The disk keeps turning under it.
 void C1541::viaOutputs(int via) {
     if (via != 1) return;
-    const uint8_t phase = static_cast<uint8_t>((via2_.outB() | ~via2_.ddrB()) & 3);
-    const int step = (phase - m_.phase) & 3;
+    const uint8_t pins = static_cast<uint8_t>(via2_.outB() | ~via2_.ddrB());
+    const uint8_t coil = pins & 3;
+    m_.phase = coil;
+    if (!(pins & 0x04)) return;   // motor off: the coils are not powered
+    const int step = (coil - ((m_.halfTrack - 2) & 3)) & 3;
     if (step == 1 && m_.halfTrack < 2 + GcrDisk::kHalfTracks - 1) ++m_.halfTrack;
     else if (step == 3 && m_.halfTrack > 2) --m_.halfTrack;
-    m_.phase = phase;
 }
 
 // One drive cycle = 16 ticks of the 16 MHz clock (R1-R4).

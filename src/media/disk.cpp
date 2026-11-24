@@ -190,8 +190,10 @@ struct TrackScan {
     uint64_t sectors = 0;           // the sector numbers of good headers (bit per sector, up to 63)
 };
 
-// 5 GCR bytes -> 4 bytes; false if a 5-bit group is no GCR code.
-bool gcrDecode5(const uint8_t* in, uint8_t out[4]) {
+// 5 GCR bytes -> 4 bytes; false if a 5-bit group of the first `check` bytes is no GCR code (the
+// bytes after a block's checksum are padding the DOS does not look at, and some disks have other
+// values there).
+bool gcrDecode5(const uint8_t* in, uint8_t out[4], int check = 4) {
     static int8_t inv[32];
     static bool ready = false;
     if (!ready) { std::fill(std::begin(inv), std::end(inv), int8_t(-1)); for (int i = 0; i < 16; ++i) inv[kGcr[i]] = int8_t(i); ready = true; }
@@ -200,7 +202,7 @@ bool gcrDecode5(const uint8_t* in, uint8_t out[4]) {
     bool ok = true;
     for (int i = 0; i < 4; ++i) {
         const int hi = inv[(bits >> (35 - 10 * i)) & 31], lo = inv[(bits >> (30 - 10 * i)) & 31];
-        ok = ok && hi >= 0 && lo >= 0;
+        if (i < check) ok = ok && hi >= 0 && lo >= 0;
         out[i] = static_cast<uint8_t>(((hi & 15) << 4) | (lo & 15));
     }
     return ok;
@@ -216,12 +218,12 @@ int blockKind(const uint8_t* b) {
 bool blockGood(const uint8_t* b, int kind) {
     if (kind == 8) {
         uint8_t h[8];
-        const bool codes = gcrDecode5(b, h) && gcrDecode5(b + 5, h + 4);
+        const bool codes = gcrDecode5(b, h) && gcrDecode5(b + 5, h + 4, 2);   // bytes 0-5
         return codes && h[1] == static_cast<uint8_t>(h[2] ^ h[3] ^ h[4] ^ h[5]);
     }
     uint8_t d[260];
     bool codes = true;
-    for (int g = 0; g < 65; ++g) codes = gcrDecode5(b + 5 * g, d + 4 * g) && codes;
+    for (int g = 0; g < 65; ++g) codes = gcrDecode5(b + 5 * g, d + 4 * g, g == 64 ? 2 : 4) && codes;   // bytes 0-257
     uint8_t x = 0;
     for (int k = 1; k <= 256; ++k) x ^= d[k];
     return codes && x == d[257];
@@ -238,25 +240,19 @@ TrackScan scanTrack(const std::vector<uint8_t>& t, int track) {
         ++r.syncs;
         uint8_t raw[325];
         for (size_t k = 0; k < 325; ++k) raw[k] = at(i + k);
-        uint8_t first[4];
-        gcrDecode5(raw, first);
-        if (first[0] == 0x08) {
-            uint8_t h[8];
-            const bool codes = gcrDecode5(raw, h) && gcrDecode5(raw + 5, h + 4);
-            if (codes && h[1] == static_cast<uint8_t>(h[2] ^ h[3] ^ h[4] ^ h[5])) {
+        const int kind = blockKind(raw);
+        if (kind == 8) {
+            if (blockGood(raw, 8)) {
+                uint8_t h[4];
+                gcrDecode5(raw, h);
                 ++r.headersGood;
                 if (h[2] < 64) r.sectors |= uint64_t(1) << h[2];
                 if (h[3] != track) r.otherTrack = h[3];
             } else {
                 ++r.headersBad;
             }
-        } else if (first[0] == 0x07) {
-            uint8_t d[260];
-            bool codes = true;
-            for (int g = 0; g < 65; ++g) codes = gcrDecode5(raw + 5 * g, d + 4 * g) && codes;
-            uint8_t x = 0;
-            for (int k = 1; k <= 256; ++k) x ^= d[k];
-            if (codes && x == d[257]) ++r.dataGood; else ++r.dataBad;
+        } else if (kind == 7) {
+            if (blockGood(raw, 7)) ++r.dataGood; else ++r.dataBad;
         }
     }
     return r;

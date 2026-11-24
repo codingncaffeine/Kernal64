@@ -68,6 +68,8 @@ public:
     const uint8_t* ram() const { return ram_.data(); }
     const Via6522& via1() const { return via1_; }
     const Via6522& via2() const { return via2_; }
+    // For tools and tests: a write to the drive's address space as its CPU would make it.
+    void busWrite(uint16_t a, uint8_t v) { write(a, v); }
 
 private:
     struct Bus {
@@ -88,7 +90,7 @@ private:
 #pragma pack(push, 1)
     struct Mech {
         uint8_t halfTrack = 36;     // 2 = track 1 (the head starts over the directory track)
-        uint8_t phase = 0;          // the stepper's phase as last driven (PB0-PB1)
+        uint8_t phase = 0;          // the coil last selected (PB0-PB1); the head's own phase follows from halfTrack
         uint32_t angle = 0;         // the disk's position: 16 MHz ticks into the revolution
         uint8_t ue7 = 0, uf4 = 0;   // zone clock divider and bit-cell counter
         uint16_t shift = 0;         // the last ten bits read

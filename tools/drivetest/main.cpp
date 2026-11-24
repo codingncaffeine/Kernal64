@@ -89,6 +89,35 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 2500000; ++i) drive.tick();
         check(drive.ram()[0x77] == number + 0x20 && drive.ram()[0x78] == number + 0x40, "the device number from the jumpers");
     }
+    // The stepper (hw/drive.md R2, R2a): the coils hold the head at absolute positions, track 1 =
+    // coil 0, so track 18 (half-track 36) is coil 2; they are powered only with the motor on.
+    {
+        drive.setDeviceNumber(8);
+        drive.reset();
+        for (int i = 0; i < 2500000; ++i) drive.tick();
+        // The ROM writes $F7 to port B while its lines are still inputs (floating high): coil 3 with
+        // the motor on pulls the head from track 18 a half-track in, as the reference does and as
+        // real drives can (its note); the DOS's first read finds the track and seeks back.
+        check(drive.halfTrack() == 37, "after power on the head is at 18.5, pulled by the port's set-up");
+        const uint8_t keep = drive.via2().outB() & 0x98;    // the bits other than coils, motor, zone
+        auto coils = [&](int coil, bool motor) { drive.busWrite(0x1C00, static_cast<uint8_t>(keep | 0x40 | (motor ? 4 : 0) | coil)); };
+        coils(2, true);
+        check(drive.halfTrack() == 36, "coil 2 with the motor on: back over track 18");
+        coils(1, true);
+        check(drive.halfTrack() == 35, "coil 1: a half-track out, to 17.5");
+        coils(2, true);
+        check(drive.halfTrack() == 36, "coil 2 again: back on track 18 (a loader writing coils 1 then 2 there stays on 18)");
+        coils(3, true);
+        coils(0, true);
+        check(drive.halfTrack() == 38, "coils 3 then 0: in to track 19");
+        coils(2, true);
+        check(drive.halfTrack() == 38, "the opposite coil leaves the head where it is");
+        coils(1, false);
+        check(drive.halfTrack() == 38, "with the motor off the coils do not move the head");
+        coils(1, true);
+        check(drive.halfTrack() == 39, "and switching the motor on with coil 1 selected pulls it in to 19.5");
+    }
+
     std::printf("drivetest: %d checks, %d failure(s)\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -25,7 +25,8 @@
 //   that result (0 = passed), or 124 when --cycles runs out first.
 // --cycles N runs N cycles from power on instead of --frames.
 // --hash prints an FNV-1a hash of the last frame's visible palette indices.
-// --pc-every N (with --cycles) prints the CPU's program counter, and whether the tape moves, every
+// --pc-every N (with --cycles) prints the CPU's program counter, whether the tape moves, and the
+// 1541's program counter, head track and motor when a drive is on, every
 //   N cycles: where a program spends its time.
 // --where ADDR (hex; with --cycles) prints the raster line and cycle of the opcode fetch each
 //   time the CPU starts the instruction at ADDR (the first 32 times): where on the screen
@@ -45,6 +46,7 @@
 //   its buttons down from the start; --save-tape FILE.tap writes the tape at the end.
 // --save-disk FILE.g64 writes the disk in drive 8, as it is at the end, as a G64.
 // --dump START:LEN prints LEN bytes of RAM from START (hex) at the end, 16 per line.
+// --drive-dump START:LEN the same for the 1541's 2K of RAM.
 // --hd ROM puts a CMD HD on the serial bus with that boot ROM; --hd-disk FILE.dhd is its disk
 //   (a raw image of 512-byte blocks; a blank one = an empty or sparse file of the size wanted).
 //   Its clock starts at 2026-11-24 12:00:00, so runs repeat exactly.
@@ -94,7 +96,7 @@ int main(int argc, char** argv) {
     int where = -1, whereLeft = 32;
     uint64_t pcEvery = 0;
     bool whereSeen = false;
-    std::vector<std::pair<unsigned, unsigned>> dumps;
+    std::vector<std::pair<unsigned, unsigned>> dumps, driveDumps;
     std::vector<uint64_t> freezeAt;
     std::vector<int> freezePc;
     uint64_t freezeHold = 1, freezeRelease = 0;
@@ -169,6 +171,12 @@ int main(int argc, char** argv) {
             const unsigned start = static_cast<unsigned>(std::strtoul(argv[++i], &end, 16));
             const unsigned len = (end && *end == ':') ? static_cast<unsigned>(std::strtoul(end + 1, nullptr, 16)) : 0x100;
             dumps.emplace_back(start, len);
+        }
+        else if (a == "--drive-dump" && i + 1 < argc) {
+            char* end = nullptr;
+            const unsigned start = static_cast<unsigned>(std::strtoul(argv[++i], &end, 16));
+            const unsigned len = (end && *end == ':') ? static_cast<unsigned>(std::strtoul(end + 1, nullptr, 16)) : 0x100;
+            driveDumps.emplace_back(start & 0x7FF, len);
         }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
@@ -292,9 +300,15 @@ int main(int argc, char** argv) {
                 }
                 whereSeen = at;
             }
-            if (pcEvery && machine.cycle() % pcEvery == 0)
-                std::printf("k64run: cycle %llu pc $%04x tape %s\n", static_cast<unsigned long long>(machine.cycle()),
+            if (pcEvery && machine.cycle() % pcEvery == 0) {
+                std::printf("k64run: cycle %llu pc $%04x tape %s", static_cast<unsigned long long>(machine.cycle()),
                             static_cast<unsigned>(machine.cpuRegs().pc), machine.tapeMoving() ? "moving" : "still");
+                if (machine.driveAttached())
+                    std::printf(" | drive pc $%04x head %d%s motor %s", static_cast<unsigned>(machine.drive().cpuRegs().pc),
+                                machine.drive().halfTrack() / 2, (machine.drive().halfTrack() & 1) ? ".5" : "",
+                                machine.drive().motor() ? "on" : "off");
+                std::printf("\n");
+            }
             for (const auto& [at, act] : panelAt) {
                 if (machine.cycle() != at) continue;
                 if (act == "reset") machine.hardDrive().pressReset();
@@ -404,6 +418,13 @@ int main(int argc, char** argv) {
             for (unsigned b = a; b < a + 16 && b < start + len; ++b) std::printf(" %02x", machine.ram()[b & 0xFFFF]);
             std::printf("\n");
         }
+    for (const auto& [start, len] : driveDumps)
+        if (machine.driveAttached())
+            for (unsigned a = start; a < start + len; a += 16) {
+                std::printf("drive %04x:", a & 0x7FF);
+                for (unsigned b = a; b < a + 16 && b < start + len; ++b) std::printf(" %02x", machine.drive().ram()[b & 0x7FF]);
+                std::printf("\n");
+            }
     if (debugCart) {
         const int result = machine.debugCartResult();
         std::printf("k64run: %s at cycle %llu\n", result < 0 ? "no result" : result == 0 ? "passed" : "failed",
