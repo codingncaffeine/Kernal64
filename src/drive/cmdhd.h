@@ -42,6 +42,12 @@ public:
     bool pullsClk() const;
     bool pullsData() const;
 
+    // Save states: everything the board holds, constant size (the ROM and the disk's blocks
+    // are outside: the disk is a host file, as the folder drive's folder).
+    static size_t stateSize();
+    void saveState(uint8_t* out) const;
+    void loadState(const uint8_t* in);
+
     // For tests and tools.
     const CpuRegs& cpuRegs() const { return cpu_.regs(); }
     bool cpuAtInstructionStart() const { return cpu_.atInstructionStart(); }
@@ -52,6 +58,10 @@ public:
     // at most `watchLeft` times in all.
     std::vector<uint16_t> watch;
     int watchLeft = 200;
+    // Counts the times the instruction at `countPc` starts (0 = off), for tools that wait for
+    // the ROM to reach a place (its idle loop).
+    uint16_t countPc = 0;
+    uint64_t countHits = 0;
 
 private:
     struct Bus {

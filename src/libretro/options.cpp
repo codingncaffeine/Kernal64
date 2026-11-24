@@ -76,6 +76,10 @@ std::vector<Def>& defs() {
                  "folder, named after the content): SAVE\"NAME\",10 writes NAME.prg there, LOAD\"$\",10 lists it. Not real "
                  "Commodore hardware: no fast loaders.", "media",
                  {{"10", "Device 10"}, {"9", "Device 9"}, {"11", "Device 11"}, {"off", "Off"}}, "10"});
+    d.push_back({"kernal64_hard_drive", "CMD HD", "A CMD HD hard drive on the serial bus, its disk the file "
+                 "\"<content name>.dhd\" in the save folder (made by the frontend, or the core's own make function). Its "
+                 "number is kept on its disk: 12 when the drive was made. Needs its boot ROM in the system folder. Takes effect when content is loaded.", "media",
+                 {{"auto", "On when the content has a hard drive"}, {"off", "Off"}}, "auto"});
     d.push_back({"kernal64_joyport", "Player 1's control port", "The C64 control port player 1's controller is in; "
                  "player 2's is in the other. Most games read port 2.", "input",
                  {{"2", "Port 2"}, {"1", "Port 1"}}, "2"});

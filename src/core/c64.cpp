@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 20;
+constexpr uint32_t kStateVersion = 21;   // 21: the CMD HD
 
 // The 1541 runs on its own 16 MHz crystal divided by 16 (hw/drive.md D1): 1 MHz. Against the
 // machine's clock that is exactly 18,000,000 / 17,734,475 drive cycles per machine cycle on
@@ -540,7 +540,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot) + C1541::stateSize() + sizeof(Datasette::State) + 4 + FolderDrive::stateSize();
+    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot) + C1541::stateSize() + sizeof(Datasette::State) + 4 + FolderDrive::stateSize() + 1 + 8 + CmdHd::stateSize();
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -577,6 +577,13 @@ void C64::saveState(uint8_t* out) const {
     put(&tapeLength, 4);
     folder_.saveState(out);
     out += FolderDrive::stateSize();
+    // The CMD HD: whether it is on the bus (a setting, kept so a state made with it does not load
+    // into a machine without it), its clock's phase, its board.
+    const uint8_t hdOn = hdOn_ ? 1 : 0;
+    put(&hdOn, 1);
+    put(&hdPhase_, 8);
+    hd_.saveState(out);
+    out += CmdHd::stateSize();
     cart_.saveContent(out);
 }
 
@@ -601,6 +608,10 @@ bool C64::stateFits(const uint8_t* in, size_t size) const {
     in += 2 * sizeof(Cia6526::State) + sizeof(Sid::State);
     Cartridge::State cs;
     get(&cs, sizeof cs);
+    // The CMD HD's on/off byte must match this machine's (it sits before the cartridge's content).
+    const uint8_t* hd = in - (4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) +
+                              sizeof(Cartridge::State)) + (stateSize() - cart_.contentSize() - CmdHd::stateSize() - 9);
+    if ((*hd != 0) != hdOn_) return false;
     return vs.cycle >= 1 && vs.cycle <= timing_->cyclesPerLine && vs.line >= 0 && vs.line < timing_->linesPerFrame && vs.vmli < 40 &&
            vs.dmli <= 40 && vs.xscrollPipe <= 7 && cart_.stateFits(cs);
 }
@@ -651,6 +662,11 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     tape_.cutTape(tapeLength);
     folder_.loadState(in);
     in += FolderDrive::stateSize();
+    uint8_t hdOn = 0;
+    get(&hdOn, 1);
+    get(&hdPhase_, 8);
+    hd_.loadState(in);
+    in += CmdHd::stateSize();
     cart_.loadContent(in);
     return true;
 }

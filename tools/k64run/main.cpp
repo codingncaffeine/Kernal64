@@ -52,11 +52,15 @@
 //   holds the switches in LIST (comma-separated swap8, swap9, wp; empty = release all), reset
 //   presses and releases RESET.
 // --screen-at CYCLE (with --cycles; repeatable) prints the text screen at that cycle.
+// --make-hd FILE.dhd MB makes a ready CMD HD image of MB megabytes (src/drive/hdprep.h) with the
+//   boot ROM and the utilities disk found in ROM_FOLDER, prints the result and exits.
 #include "c64.h"
+#include "hdprep.h"
 #include "roms.h"
 #include "png.h"
 
 #include <cctype>
+#include <filesystem>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -146,6 +150,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--drive") drive = true;
         else if (a == "--hd" && i + 1 < argc) hdRom = argv[++i];
+        else if (a == "--make-hd" && i + 2 < argc) i += 2;   // handled once the ROMs are found
         else if (a == "--hd-panel-at" && i + 2 < argc) { const uint64_t at = std::strtoull(argv[i + 1], nullptr, 10); panelAt.emplace_back(at, argv[i + 2]); i += 2; }
         else if (a == "--screen-at" && i + 1 < argc) screenAt.push_back(std::strtoull(argv[++i], nullptr, 10));
         else if (a == "--hd-disk" && i + 1 < argc) hdDisk = argv[++i];
@@ -168,6 +173,29 @@ int main(int argc, char** argv) {
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
     const k64::RomSet roms = k64::findRoms(argv[1]);
+    for (int i = 2; i + 2 < argc; ++i) {
+        if (std::string(argv[i]) != "--make-hd") continue;
+        std::vector<uint8_t> boot, d81;
+        std::string from, error;
+        for (const auto& e : std::filesystem::directory_iterator(argv[1])) {
+            if (boot.empty() && (e.file_size() == 16384 || e.file_size() == 32768)) {
+                FILE* f = std::fopen(e.path().string().c_str(), "rb");
+                std::vector<uint8_t> b(e.file_size());
+                if (f && std::fread(b.data(), 1, b.size(), f) == b.size() && k64::sha1Hex(b.data(), 16384) == "041943e068b789c8bf5145222ab4784f300da297") boot = b;
+                if (f) std::fclose(f);
+            }
+        }
+        const bool disk = k64::findUtilitiesDisk(argv[1], d81, from) ||
+                          k64::findUtilitiesDisk(std::filesystem::path(argv[1]).parent_path().string(), d81, from);
+        if (boot.empty() || !disk) { std::fprintf(stderr, "k64run: boot ROM or utilities disk not found\n"); return 3; }
+        int last = -1, parts = 0;
+        const bool ok = k64::makeHardDrive(argv[i + 1], std::strtoull(argv[i + 2], nullptr, 10) << 20, roms, boot, d81,
+                                           [&](int p) { if (p != last) { std::printf("k64run: make-hd %d%%\n", p); std::fflush(stdout); last = p; } return true; },
+                                           error, &parts);
+        if (!ok) { std::printf("k64run: make-hd FAILED: %s\n", error.c_str()); return 1; }
+        std::printf("k64run: make-hd ok: %s, %d partition(s)\n", argv[i + 1], parts);
+        return 0;
+    }
     static k64::C64 machine(model);
     machine.setRoms(roms);
     machine.setDriveWanted(drive);

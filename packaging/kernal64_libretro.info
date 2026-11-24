@@ -36,7 +36,7 @@ is_experimental = "true"
 # The core finds the ROMs by their contents, whatever they are named (also in a "kernal64"
 # folder inside the system folder, and as the two halves of a combined 16 KB C64C image);
 # these are the usual names.
-firmware_count = 5
+firmware_count = 7
 firmware0_desc = "basic.901226-01.bin (BASIC ROM, 8 KB)"
 firmware0_path = "basic.901226-01.bin"
 firmware0_opt = "false"
@@ -52,6 +52,12 @@ firmware3_opt = "true"
 firmware4_desc = "1541-e000.901229-05.bin (1541 DOS ROM, upper half, 8 KB)"
 firmware4_path = "1541-e000.901229-05.bin"
 firmware4_opt = "true"
-notes = "(!) The C64's BASIC, KERNAL and character ROMs go in the system folder (any file names: they are found by their contents).|(!) Disk images need the two 1541 ROMs as well; without them drive 8 is off.|(!) What the drive or the datasette writes is kept in the save folder (name.g64, name.tap); your own image files are never written.|(!) Select opens the on-screen keyboard; every RetroPad button can be mapped to a C64 key in the core options."
+firmware5_desc = "cmd_hd_bootrom_v280.bin (CMD HD boot ROM 2.80, 16 or 32 KB)"
+firmware5_path = "cmd_hd_bootrom_v280.bin"
+firmware5_opt = "true"
+firmware6_desc = "cmd_hd_utilities.d81 (the CMD HD's utilities disk: the floppy that sets a new drive up)"
+firmware6_path = "cmd_hd_utilities.d81"
+firmware6_opt = "true"
+notes = "(!) The C64's BASIC, KERNAL and character ROMs go in the system folder (any file names: they are found by their contents).|(!) Disk images need the two 1541 ROMs as well; without them drive 8 is off.|(!) What the drive or the datasette writes is kept in the save folder (name.g64, name.tap); your own image files are never written.|(!) A CMD HD hard drive is the file name.dhd in the save folder (device 12); it needs the CMD HD boot ROM in the system folder. Frontends can make ready drives with the core's kernal64_make_hard_drive (needs the utilities disk too).|(!) Select opens the on-screen keyboard; every RetroPad button can be mapped to a C64 key in the core options."
 
 description = "A cycle-exact Commodore 64 built from the chips' documentation: the 6510, the VIC-II (six models), both CIA generations, the 6581 and 8580 SID with its filter, and a 1541 drive emulated down to its read circuit running its own DOS. Cartridges of many hardware types, disk images (D64, G64 and NIB read directly), tapes, programs; joystick, paddles, the 1351 mouse and a light pen."

@@ -1,6 +1,7 @@
 // libretro entry points.
 #include "../core/c64.h"
 #include "../core/roms.h"
+#include "../drive/hdprep.h"
 #include "libretro.h"
 #include "keys.h"
 #include "options.h"
@@ -15,6 +16,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <memory>
 #include <string>
 #include <vector>
@@ -467,6 +469,78 @@ void applyFolderDrive() {
     const std::string dir = std::string(saveDir) + "/" + stem + " Drive";
     if (!folderStore || folderStore->dir() != dir) folderStore = std::make_unique<DirStore>(dir);
     machine->setFolderDrive(folderStore.get(), number);
+}
+
+// The CMD HD (option kernal64_hard_drive, PLAN Phase 11b): on the bus when the content has a
+// hard drive, "<save folder>/<content name>.dhd", and the boot ROM is in the system folder.
+// The ROM is recognized by its content: 16K, or a 32K chip image holding it twice.
+constexpr const char* kCmdHdRomSha1 = "041943e068b789c8bf5145222ab4784f300da297";   // boot ROM 2.80
+std::unique_ptr<k64::BlockFile> hdFile;
+
+bool findCmdHdRom(const std::string& sysDir, std::vector<uint8_t>& rom, std::string& from) {
+    namespace fs = std::filesystem;
+    for (const fs::path& dir : {fs::path(sysDir), fs::path(sysDir) / "kernal64"}) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(dir, ec)) {
+            if (!e.is_regular_file(ec)) continue;
+            const auto size = e.file_size(ec);
+            if (size != 16384 && size != 32768) continue;
+            std::vector<uint8_t> bytes;
+            if (!readWhole(e.path().string(), bytes) || bytes.size() < 16384) continue;
+            if (k64::sha1Hex(bytes.data(), 16384) != kCmdHdRomSha1) continue;
+            if (bytes.size() == 32768 && std::memcmp(bytes.data(), bytes.data() + 16384, 16384) != 0) continue;
+            rom = std::move(bytes);
+            from = e.path().string();
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string hardDrivePath() {
+    const char* saveDir = nullptr;
+    if (!envCb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &saveDir) || !saveDir) return {};
+    const std::string stem = contentName.empty() ? "Kernal64" : std::filesystem::path(contentName).stem().string();
+    return std::string(saveDir) + "/" + stem + ".dhd";
+}
+
+void applyHardDrive(const char* sysDir) {
+    retro_variable var{"kernal64_hard_drive", nullptr};
+    const bool off = envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "off");
+    const std::string path = hardDrivePath();
+    std::error_code ec;
+    if (off || path.empty() || !std::filesystem::exists(path, ec)) { machine->setHardDriveOn(false); hdFile.reset(); return; }
+    std::vector<uint8_t> rom;
+    std::string from;
+    if (!findCmdHdRom(sysDir, rom, from)) {
+        log(RETRO_LOG_WARN, "the content has a hard drive (%s) but the CMD HD boot ROM is not in %s", path.c_str(), sysDir);
+        notify("Kernal64: the CMD HD boot ROM is not in the system folder: the hard drive is off");
+        machine->setHardDriveOn(false);
+        return;
+    }
+    {
+        hdFile = std::make_unique<k64::BlockFile>();
+        if (!hdFile->open(path, 0)) {
+            log(RETRO_LOG_ERROR, "cannot open the hard drive %s", path.c_str());
+            notify("Kernal64: cannot open the hard drive file");
+            machine->setHardDriveOn(false);
+            hdFile.reset();
+            return;
+        }
+    }
+    machine->hardDrive().setRom(rom.data(), rom.size());
+    machine->hardDrive().attachDisk(hdFile.get());
+    // The drive's clock starts at the host's local time (then runs from the machine's cycles).
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+    machine->hardDrive().setTime({tm.tm_year % 100, tm.tm_mon + 1, tm.tm_mday, tm.tm_wday, tm.tm_hour, tm.tm_min, tm.tm_sec});
+    machine->setHardDriveOn(true);
+    log(RETRO_LOG_INFO, "CMD HD: boot ROM from %s, disk %s (%u blocks)", from.c_str(), path.c_str(), hdFile->blocks());
 }
 
 // "Automatic": NTSC when the file name says so ("NTSC", or a region tag of an NTSC country
@@ -1035,6 +1109,7 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
         machine.reset();
         return false;
     }
+    applyHardDrive(sysDir);
     machine->reset();
     if (!missing.empty()) {
         log(RETRO_LOG_ERROR, "missing system files in %s: %s", sysDir, missing.c_str());
@@ -1053,6 +1128,7 @@ RETRO_API void retro_unload_game(void) {
     slots.clear();
     disk.reset();
     machine.reset();
+    hdFile.reset();
 }
 
 RETRO_API unsigned retro_get_region(void) {
@@ -1269,3 +1345,46 @@ RETRO_API size_t retro_get_memory_size(unsigned id) {
 }
 
 } // extern "C"
+
+// ---- extensions for frontends that know this core (Emutastic) -------------------------
+//
+// Not part of the libretro API: a frontend finds them with dlsym/GetProcAddress. Safe to call
+// from any thread, with or without content loaded: they use their own private machine.
+
+// What making a hard drive needs from SYSTEM_DIR (or SYSTEM_DIR/kernal64): bit 0 the CMD HD's
+// boot ROM, bit 1 the utilities disk (the D81 the drive came with), bit 2 the C64's system
+// ROMs. All three (7) = kernal64_make_hard_drive can run.
+extern "C" RETRO_API int kernal64_hard_drive_requirements(const char* systemDir) {
+    if (!systemDir) return 0;
+    std::vector<uint8_t> rom, d81;
+    std::string from;
+    const k64::RomSet roms = k64::findRoms(systemDir);
+    return (findCmdHdRom(systemDir, rom, from) ? 1 : 0) | (k64::findUtilitiesDisk(systemDir, d81, from) ? 2 : 0) |
+           (roms.has(k64::RomRole::Basic) && roms.has(k64::RomRole::Kernal) && roms.has(k64::RomRole::Chargen) ? 4 : 0);
+}
+
+// Makes a ready CMD HD image at PATH of BYTES (20 MB to 2 GB): the drive's own programs install
+// its DOS and the partitions are made and formatted (src/drive/hdprep.h). PROGRESS (may be null)
+// gets 0-100 and returns 0 to cancel. Returns the number of partitions made, or 0 with a
+// message in ERROR. Takes from seconds (20 MB) to minutes (2 GB): call it off the UI thread.
+extern "C" RETRO_API int kernal64_make_hard_drive(const char* path, uint64_t bytes, const char* systemDir,
+                                                 int (*progress)(int percent, void* user), void* user,
+                                                 char* error, size_t errorSize) {
+    auto setError = [&](const std::string& e) {
+        if (error && errorSize) { std::snprintf(error, errorSize, "%s", e.c_str()); }
+        return 0;
+    };
+    if (!path || !systemDir) return setError("no path or system folder");
+    std::vector<uint8_t> rom, d81;
+    std::string from;
+    if (!findCmdHdRom(systemDir, rom, from)) return setError("the CMD HD boot ROM is not in the system folder");
+    if (!k64::findUtilitiesDisk(systemDir, d81, from)) return setError("the CMD HD utilities disk is not in the system folder");
+    const k64::RomSet roms = k64::findRoms(systemDir);
+    std::string why;
+    int parts = 0;
+    const bool ok = k64::makeHardDrive(path, bytes, roms, rom, d81,
+                                       [&](int p) { return !progress || progress(p, user) != 0; }, why, &parts);
+    if (!ok) return setError(why);
+    if (error && errorSize) error[0] = 0;
+    return parts;
+}

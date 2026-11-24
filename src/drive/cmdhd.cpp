@@ -157,6 +157,66 @@ void CmdHd::viaOutputs(int via) {
     scsiLines();
 }
 
+// ---- save states -------------------------------------------------------------------
+
+namespace {
+#pragma pack(push, 1)
+struct Board {
+    uint8_t latch, busLast, swap8, swap9, wp, atnLow, clkLow, dataLow, ackLow;
+    uint64_t cycle;
+};
+#pragma pack(pop)
+} // namespace
+
+size_t CmdHd::stateSize() {
+    return 65536 + sizeof(Board) + sizeof(Cpu65C02<Bus>::Snapshot) + 2 * sizeof(Via6522::State) + sizeof(Ppi8255::State) +
+           sizeof(Rtc72421::State) + sizeof(ScsiDisk::State);
+}
+
+void CmdHd::saveState(uint8_t* out) const {
+    auto put = [&out](const void* p, size_t n) { std::memcpy(out, p, n); out += n; };
+    put(ram_.data(), ram_.size());
+    const Board b{latch_, busLast_, swap8_, swap9_, wp_, atnLow_, clkLow_, dataLow_, ackLow_, cycle_};
+    put(&b, sizeof b);
+    const auto snap = cpu_.snapshot();
+    put(&snap, sizeof snap);
+    const Via6522::State v1 = via1_.state(), v2 = via2_.state();
+    put(&v1, sizeof v1);
+    put(&v2, sizeof v2);
+    const Ppi8255::State ps = ppi_.state();
+    put(&ps, sizeof ps);
+    const Rtc72421::State rs = rtc_.state();
+    put(&rs, sizeof rs);
+    const ScsiDisk::State ss = scsi_.state();
+    put(&ss, sizeof ss);
+}
+
+void CmdHd::loadState(const uint8_t* in) {
+    auto get = [&in](void* p, size_t n) { std::memcpy(p, in, n); in += n; };
+    get(ram_.data(), ram_.size());
+    Board b;
+    get(&b, sizeof b);
+    latch_ = b.latch; busLast_ = b.busLast; swap8_ = b.swap8; swap9_ = b.swap9; wp_ = b.wp;
+    atnLow_ = b.atnLow; clkLow_ = b.clkLow; dataLow_ = b.dataLow; ackLow_ = b.ackLow; cycle_ = b.cycle;
+    Cpu65C02<Bus>::Snapshot snap;
+    get(&snap, sizeof snap);
+    cpu_.restore(snap);
+    Via6522::State v1, v2;
+    get(&v1, sizeof v1);
+    get(&v2, sizeof v2);
+    via1_.setState(v1);
+    via2_.setState(v2);
+    Ppi8255::State ps;
+    get(&ps, sizeof ps);
+    ppi_.setState(ps);
+    Rtc72421::State rs;
+    get(&rs, sizeof rs);
+    rtc_.setState(rs);
+    ScsiDisk::State ss;
+    get(&ss, sizeof ss);
+    scsi_.setState(ss);
+}
+
 // ---- serial bus (as C1541) ----------------------------------------------------------
 
 bool CmdHd::pullsClk() const {
@@ -185,6 +245,7 @@ void CmdHd::setBus(bool atnLow, bool clkLow, bool dataLow) {
 void CmdHd::tick() {
     rtc_.tick();
     cpu_.setIrq(via1_.irq() || via2_.irq());
+    if (countPc && cpu_.atInstructionStart() && cpu_.regs().pc == countPc) ++countHits;
     if (!watch.empty() && watchLeft > 0 && cpu_.atInstructionStart()) {
         const uint16_t pc = cpu_.regs().pc;
         for (uint16_t w : watch)

@@ -42,6 +42,7 @@ add_library(k64core STATIC
   src/drive/cmdhd.cpp
   src/drive/scsidisk.cpp
   src/drive/rtc72421.cpp
+  src/drive/hdprep.cpp
   src/media/crt.cpp
   src/media/prg.cpp
   src/media/disk.cpp
