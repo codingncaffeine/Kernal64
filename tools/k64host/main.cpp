@@ -12,7 +12,7 @@
 // --freeze-frames holds the RetroPad button the core uses as a cartridge's freeze button
 // (a click of the right stick) during each frame N and the one after it.
 // --type presses the keys for TEXT one at a time from frame --type-at (default 200),
-// each held 3 frames and released 3 ("\n" = RETURN; " # $ ? ( ) are typed with SHIFT). --expect-screen fails the run
+// each held 3 frames and released 3 ("\n" = RETURN; typed as on a US keyboard, the core's default symbolic keymap: * + : " # $ ? ( ) with SHIFT). --expect-screen fails the run
 // unless TEXT is in the C64 text screen ($0400), read through RETRO_MEMORY_SYSTEM_RAM.
 // --expect-tone fails the run unless the last half second of audio is a tone of HZ (within
 // 0.1 %) at a level between DB_MIN and DB_MAX (RMS, dB below full scale); --expect-level
@@ -31,7 +31,7 @@
 // lightgun, none); --hold FROM TO PORT INPUT VALUE holds an input at VALUE during frames FROM
 // to TO: INPUT = a RetroPad button (b a y x up down left right select start l r l2 r2 l3 r3),
 // an analog axis (lx ly rx ry), the mouse (mx my = movement per frame, mleft mright) or the
-// light gun (gx gy = position -32767..32767, gtrigger, goffscreen).
+// light gun (gx gy = position -32767..32767, gtrigger, goffscreen), or key:N = keyboard key RETROK N.
 // --dump-frames DIR writes every frame of the first run as DIR/NNNNN.ppm (for making a video).
 // --expect-ram ADDR VALUE (hex address, decimal value): RAM at the end must hold VALUE.
 // --expect-led N: the core's LED 0 must have been switched on at least N times.
@@ -323,26 +323,26 @@ unsigned keyFor(char ch) {
     switch (ch) {
     case ' ': return RETROK_SPACE;
     case '\n': return RETROK_RETURN;
-    case '*': return RETROK_RIGHTBRACKET;   // the core's positional map: ] = *
-    case '+': return RETROK_MINUS;          // - = +
-    case '-': return RETROK_EQUALS;         // = = -
+    // Typed as on a US keyboard (the core's default symbolic keymap); shifted() says which need SHIFT.
+    case '-': return RETROK_MINUS;
+    case '=': return RETROK_EQUALS;
     case '.': return RETROK_PERIOD;
     case ',': return RETROK_COMMA;
-    case ':': return RETROK_SEMICOLON;      // ; = :
     case '/': return RETROK_SLASH;
-    case ';': return RETROK_QUOTE;          // ' = ;
-    case '=': return RETROK_BACKSLASH;      // \ = =
-    // With SHIFT (shifted() below): the C64's own shifted keys.
-    case '"': return RETROK_2;
+    case ';': return RETROK_SEMICOLON;
+    case '*': return RETROK_8;
+    case '+': return RETROK_EQUALS;
+    case ':': return RETROK_SEMICOLON;
+    case '"': return RETROK_QUOTE;
     case '#': return RETROK_3;
     case '$': return RETROK_4;
     case '?': return RETROK_SLASH;
-    case '(': return RETROK_8;
-    case ')': return RETROK_9;
+    case '(': return RETROK_9;
+    case ')': return RETROK_0;
     default: return RETROK_UNKNOWN;
     }
 }
-bool shifted(char ch) { return ch == '"' || ch == '#' || ch == '$' || ch == '?' || ch == '(' || ch == ')'; }
+bool shifted(char ch) { return std::strchr("*+:\"#$?()", ch) != nullptr && ch != 0; }
 std::vector<unsigned> freezeFrames;
 void inputPoll() {}
 int16_t inputState(unsigned port, unsigned device, unsigned index, unsigned id) {
@@ -480,11 +480,17 @@ int main(int argc, char** argv) {
                 {"gtrigger", {RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_TRIGGER}},
                 {"goffscreen", {RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_IS_OFFSCREEN}},
             };
-            auto it = kInputs.find(in);
-            if (it == kInputs.end()) { std::fprintf(stderr, "--hold: unknown input %s\n", in.c_str()); return 2; }
-            h.device = it->second[0];
-            h.index = it->second[1];
-            h.id = it->second[2];
+            if (in.rfind("key:", 0) == 0) {   // a keyboard key by its RETROK number
+                h.device = RETRO_DEVICE_KEYBOARD;
+                h.index = 0;
+                h.id = static_cast<unsigned>(std::stoul(in.substr(4)));
+            } else {
+                auto it = kInputs.find(in);
+                if (it == kInputs.end()) { std::fprintf(stderr, "--hold: unknown input %s\n", in.c_str()); return 2; }
+                h.device = it->second[0];
+                h.index = it->second[1];
+                h.id = it->second[2];
+            }
             holds.push_back(h);
         } else if (a == "--option") {
             std::string kv = next();

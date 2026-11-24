@@ -64,6 +64,10 @@ std::vector<Def>& defs() {
                  {{"full", "Full"}, {"small", "Small"}, {"none", "None"}}, "full"});
     d.push_back({"kernal64_drive8", "Drive 8 (1541)", "The 1541 on the serial bus. Needs its ROMs in the system folder.",
                  "media", {{"on", "On"}, {"off", "Off"}}, "on"});
+    d.push_back({"kernal64_keyboard", "Keyboard", "Symbolic: a key types the symbol printed on it (US layout: SHIFT+8 "
+                 "is *, SHIFT+' is \"). Positional: the keys are where the C64's own keys are (SHIFT+8 is the C64's (, "
+                 "and so on), as on the real keyboard.", "input",
+                 {{"symbolic", "Symbolic"}, {"positional", "Positional"}}, "symbolic"});
     d.push_back({"kernal64_joyport", "Player 1's control port", "The C64 control port player 1's controller is in; "
                  "player 2's is in the other. Most games read port 2.", "input",
                  {{"2", "Port 2"}, {"1", "Port 1"}}, "2"});

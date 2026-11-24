@@ -18,7 +18,7 @@ CORE="$BIN/kernal64_libretro.so"
 core() {
     local want="$1" label="$2" log got; shift 2
     log="$OUT/host-$(printf '%s' "$label" | tr -c 'A-Za-z0-9.-' '_').log"
-    "$BIN/k64host" "$CORE" --system "$ROOT/gitignore" "$@" >"$log" 2>&1
+    "$BIN/k64host" "$CORE" --system "$ROOT/gitignore/bios" "$@" >"$log" 2>&1
     got=$?
     [ "$got" = 0 ] || got=1
     if [ "$got" = "$want" ]; then echo "ok   $label"; else echo "FAIL $label"; grep -m3 'FAIL' "$log"; fi
@@ -91,6 +91,17 @@ TAPE=(--content "$OUT/blank.tap" --frames 1800 --option kernal64_pad_l=tape_play
       --hold 300 305 0 l2 1 --hold 400 402 0 l 1 --type-at 450 --type '10 ?42\nSAVE\n' --expect-screen 'SAVING')
 sbs_start core 0 "datasette RECORD through a mapped button" "${TAPE[@]}" --save "$OUT/tape1" --hold 600 602 0 r 1 --check
 sbs_start core 1 "datasette RECORD through a mapped button (control: no input)" "${TAPE[@]}" --save "$OUT/tape2"
+
+# The keyboard (option kernal64_keyboard). Symbolic, the default: keys type what a US keyboard
+# prints (k64host types that way: SHIFT+8 is *, SHIFT+= is +, SHIFT+; is :, SHIFT+' is "); the
+# same typing under the positional map must fail. Positional: the C64's own layout, its * is the
+# key right of P (RETROK ]), pressed here as a raw key between the typed halves.
+SYMS='PRINT 6*7+1;"A:B";(2)\n'
+sbs_start core 0 "symbolic keyboard: * + : \" ( ) as printed" --frames 450 --type "$SYMS" --expect-screen ' 43 A:B 2'
+sbs_start core 1 "symbolic keyboard (control: the positional map)" --frames 450 --option kernal64_keyboard=positional \
+    --type "$SYMS" --expect-screen ' 43 A:B 2'
+pair "positional keyboard: the C64's * key" "--hold 300 302 0 key:93 1" --frames 450 --option kernal64_keyboard=positional \
+    --type-at 200 --type 'PRINT 6' --type-at 320 --type '7\n' --expect-screen ' 42'
 
 # The machine options through the core, each with what it changes: the CIA generation (the
 # serial-port interrupt probe takes its interrupt two timer counts later on the 8521, as in

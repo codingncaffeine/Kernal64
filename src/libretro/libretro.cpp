@@ -109,6 +109,43 @@ constexpr KeyMap kKeys[] = {
     {RETROK_ESCAPE, 7, 7, false},       // RUN/STOP
 };
 
+// Symbolic keyboard (option kernal64_keyboard, the default): a key types the symbol printed on it on
+// a US keyboard. Digits and punctuation go to the C64 key that makes that symbol, with or without the
+// C64's SHIFT as that symbol needs (the C64 has " on SHIFT+2, * and + on keys of their own, : and ;
+// unshifted ...). The host's SHIFT then only says which of the key's two symbols is meant. Letters and
+// the other keys keep their place (SHIFT+letter is the C64's own graphics character).
+struct SymbolKey { unsigned key; int8_t col, row; bool shift; int8_t scol, srow; bool sshift; };
+constexpr SymbolKey kSymbols[] = {
+    // host key       unshifted: C64 key, SHIFT     shifted: C64 key, SHIFT
+    {RETROK_1,         7, 0, false,                   7, 0, true},    // 1  !
+    {RETROK_2,         7, 3, false,                   5, 6, false},   // 2  @
+    {RETROK_3,         1, 0, false,                   1, 0, true},    // 3  #
+    {RETROK_4,         1, 3, false,                   1, 3, true},    // 4  $
+    {RETROK_5,         2, 0, false,                   2, 0, true},    // 5  %
+    {RETROK_6,         2, 3, false,                   6, 6, false},   // 6  ^ = the up arrow
+    {RETROK_7,         3, 0, false,                   2, 3, true},    // 7  & = SHIFT+6
+    {RETROK_8,         3, 3, false,                   6, 1, false},   // 8  *
+    {RETROK_9,         4, 0, false,                   3, 3, true},    // 9  ( = SHIFT+8
+    {RETROK_0,         4, 3, false,                   4, 0, true},    // 0  ) = SHIFT+9
+    {RETROK_MINUS,     5, 3, false,                   7, 1, false},   // -  _ = the left arrow
+    {RETROK_EQUALS,    6, 5, false,                   5, 0, false},   // =  +
+    {RETROK_LEFTBRACKET, 5, 5, true,                  5, 5, true},    // [ = SHIFT+:
+    {RETROK_RIGHTBRACKET, 6, 2, true,                 6, 2, true},    // ] = SHIFT+;
+    {RETROK_BACKSLASH, 6, 0, false,                   6, 0, false},   // \ = the pound key
+    {RETROK_SEMICOLON, 6, 2, false,                   5, 5, false},   // ;  :
+    {RETROK_QUOTE,     3, 0, true,                    7, 3, true},    // ' = SHIFT+7, " = SHIFT+2
+    {RETROK_BACKQUOTE, 7, 1, false,                   7, 1, false},   // ` = the left arrow
+    {RETROK_COMMA,     5, 7, false,                   5, 7, true},    // ,  <
+    {RETROK_PERIOD,    5, 4, false,                   5, 4, true},    // .  >
+    {RETROK_SLASH,     6, 7, false,                   6, 7, true},    // /  ?
+};
+
+bool symbolicKeyboard() {
+    retro_variable var{"kernal64_keyboard", nullptr};
+    return !(envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "positional"));
+}
+bool symbolicKeys = true;   // read with the options
+
 int joystickPort() {
     retro_variable var{"kernal64_joyport", nullptr};
     if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value && !std::strcmp(var.value, "1")) return 1;
@@ -133,6 +170,7 @@ int portOf(int player) {
 
 k64lr::PadAction padMap[k64lr::kPadButtonCount];
 void readPadOptions() {
+    symbolicKeys = symbolicKeyboard();
     for (int b = 0; b < k64lr::kPadButtonCount; ++b) {
         const std::string key = std::string("kernal64_pad_") + k64lr::kPadButtons[b].name;
         retro_variable var{key.c_str(), nullptr};
@@ -168,11 +206,25 @@ void applyInput() {
     if (!inputStateCb) return;
     machine->releaseAllKeys();
     std::array<bool, k64lr::kC64KeyCount> keys{};
+    auto hostKey = [](unsigned key) { return inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, key) != 0; };
+    const bool hostShift = hostKey(RETROK_LSHIFT) || hostKey(RETROK_RSHIFT);
+    int symbolShift = -1;   // a symbol key is down: the C64's SHIFT as its symbol needs (0 / 1)
+    if (symbolicKeys) {
+        for (const SymbolKey& k : kSymbols) {
+            if (!hostKey(k.key)) continue;
+            machine->setKey(hostShift ? k.scol : k.col, hostShift ? k.srow : k.row, true);
+            symbolShift = (hostShift ? k.sshift : k.shift) ? 1 : 0;
+        }
+    }
     for (const auto& k : kKeys) {
-        if (!inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, k.key)) continue;
+        if (!hostKey(k.key)) continue;
+        const bool isShift = k.key == RETROK_LSHIFT || k.key == RETROK_RSHIFT;
+        if (symbolicKeys && (isShift || std::any_of(std::begin(kSymbols), std::end(kSymbols), [&](const SymbolKey& s) { return s.key == k.key; })))
+            continue;   // the symbol table and the SHIFT decision below handle these
         machine->setKey(k.col, k.row, true);
         if (k.shift) machine->setKey(1, 7, true);
     }
+    if (symbolicKeys && (symbolShift == 1 || (symbolShift < 0 && hostShift))) machine->setKey(1, 7, true);
     bool restore = inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEUP) != 0;
     // The button on a freezer cartridge: Page Down, or a RetroPad button mapped to it.
     bool freeze = inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEDOWN) != 0;
