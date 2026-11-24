@@ -24,7 +24,7 @@ fails=0
 for row in "pal|c64|492|0" "ntsc|ntsc|508|20" "ntsc-old|oldntsc|500|20"; do
     IFS='|' read -r model vmodel dx dy <<<"$row"
     for frames in 150 171 203 260 333 401; do
-        cycles="$("$K64RUN" "$ROOT/gitignore" --frames "$frames" --model "$model" --raster "$OUT/$model-$frames.raw" |
+        cycles="$("$K64RUN" "$ROOT/gitignore/bios" --frames "$frames" --model "$model" --raster "$OUT/$model-$frames.raw" |
                   sed -n 's/^k64run: [0-9]* frames, \([0-9]*\) cycles.*/\1/p')"
         rm -f "$OUT/ref-$model-$frames.png"
         kept="$SHOTS/startup-$vmodel-$cycles.png"

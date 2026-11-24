@@ -19,7 +19,7 @@ typed() {
 
 check_dir() {
     mapfile -t args < <(typed 'LOAD"$",8\r')
-    "$K64RUN" "$ROOT/gitignore" --disk "$IMAGE" --cycles 20000000 "${args[@]}" --type-at 19000000 'LIST\r' \
+    "$K64RUN" "$ROOT/gitignore/bios" --disk "$IMAGE" --cycles 20000000 "${args[@]}" --type-at 19000000 'LIST\r' \
         --expect 'BLOCKS FREE.' --expect '"DRIVEMEM"' >"$OUT/dir.log" 2>&1 || { echo "FAIL directory"; tail -20 "$OUT/dir.log"; return 1; }
 }
 
@@ -29,7 +29,7 @@ check_file() {
     len=$(( ${#want} / 2 - 2 ))
     cycles=$(( 8000000 + len * 3000 ))
     mapfile -t args < <(typed "LOAD\"$name\",8\\r")
-    "$K64RUN" "$ROOT/gitignore" --disk "$IMAGE" --cycles "$cycles" "${args[@]}" --dump "0801:$(printf %x "$len")" \
+    "$K64RUN" "$ROOT/gitignore/bios" --disk "$IMAGE" --cycles "$cycles" "${args[@]}" --dump "0801:$(printf %x "$len")" \
         >"$OUT/$name.log" 2>&1
     got=$(grep '^[0-9a-f]\{4\}:' "$OUT/$name.log" | cut -d: -f2 | tr -d ' \n')
     [ "$got" = "${want:4}" ] || { echo "FAIL $name: the loaded bytes differ"; grep -v '^[0-9a-f]\{4\}:' "$OUT/$name.log" | grep -v '^ *$' | tail -5; return 1; }
@@ -40,11 +40,11 @@ check_file() {
 check_nib() {
     local S="$ROOT/gitignore/external/testprogs/drive/scanner"
     python3 -I "$ROOT/tools/mknib.py" "$S/scan35.g64" "$OUT/scan35.nib" 7 || { echo "FAIL nib: not made"; return 1; }
-    "$K64RUN" "$ROOT/gitignore" --disk "$OUT/scan35.nib" --autostart "$S/scanner35.prg" --debugcart --cycles 31000000 \
+    "$K64RUN" "$ROOT/gitignore/bios" --disk "$OUT/scan35.nib" --autostart "$S/scanner35.prg" --debugcart --cycles 31000000 \
         >"$OUT/nib.log" 2>&1 || { echo "FAIL nib: the scanner did not pass"; tail -3 "$OUT/nib.log"; return 1; }
     # Every sector of the source, header and data, comes out of the mounted NIB unchanged
     # (tools/g64sectors.py decodes both itself).
-    "$K64RUN" "$ROOT/gitignore" --disk "$OUT/scan35.nib" --cycles 1 --save-disk "$OUT/nib.g64" >/dev/null 2>&1
+    "$K64RUN" "$ROOT/gitignore/bios" --disk "$OUT/scan35.nib" --cycles 1 --save-disk "$OUT/nib.g64" >/dev/null 2>&1
     python3 -I "$ROOT/tools/g64sectors.py" "$S/scan35.g64" >"$OUT/want.txt"
     python3 -I "$ROOT/tools/g64sectors.py" "$OUT/nib.g64" >"$OUT/got.txt"
     [ "$(wc -l <"$OUT/want.txt")" -gt 600 ] && cmp -s "$OUT/want.txt" "$OUT/got.txt" \

@@ -37,7 +37,7 @@ one_line() {
         echo "FAIL $src [$defs]: does not assemble"; return
     fi
     rm -f "$OUT/$tag.raw"
-    "$K64RUN" "$ROOT/gitignore" --model "$model" --autostart "$OUT/$tag.prg" --cycles "$cycles" --raster "$OUT/$tag.raw" \
+    "$K64RUN" "$ROOT/gitignore/bios" --model "$model" --autostart "$OUT/$tag.prg" --cycles "$cycles" --raster "$OUT/$tag.raw" \
         --png "$OUT/$tag.png" >/dev/null 2>&1
     got="$(sha256sum "$OUT/$tag.raw" 2>/dev/null | cut -c1-16)"
     line="$src [$defs] $model: picture ${got:-none}, recorded $want"

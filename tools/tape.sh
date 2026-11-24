@@ -12,9 +12,9 @@ trap 'rm -rf "$OUT"' EXIT
 rc=0
 
 # 1. SAVE onto a blank tape (RECORD+PLAY down), then LOAD it back (PLAY down) and RUN.
-"$B/k64run" "$ROOT/gitignore" --blank-tape --record --cycles 60000000 --type-at 3000000 $'10 ?4242\r' \
+"$B/k64run" "$ROOT/gitignore/bios" --blank-tape --record --cycles 60000000 --type-at 3000000 $'10 ?4242\r' \
     --type-at 3300000 'SAVE"T"'$'\r' --save-tape "$OUT/kernal.tap" >"$OUT/save.log" 2>&1
-if "$B/k64run" "$ROOT/gitignore" --tape "$OUT/kernal.tap" --play --cycles 60000000 --type-at 3000000 $'LOAD\r' \
+if "$B/k64run" "$ROOT/gitignore/bios" --tape "$OUT/kernal.tap" --play --cycles 60000000 --type-at 3000000 $'LOAD\r' \
        --type-at 55000000 $'RUN\r' --expect ' 4242' >"$OUT/load.log" 2>&1; then
     echo "tape: the KERNAL saves to tape and loads it back"
 else
@@ -38,7 +38,7 @@ PY
 }
 for p in "tap204060once:20 40 60" "tap204060invonce:30 50"; do
     prg="${p%%:*}"; want="${p#*:}"
-    "$B/k64run" "$ROOT/gitignore" --blank-tape --record --autostart "$T/$prg.prg" --cycles 30000000 \
+    "$B/k64run" "$ROOT/gitignore/bios" --blank-tape --record --autostart "$T/$prg.prg" --cycles 30000000 \
         --save-tape "$OUT/$prg.tap" >/dev/null 2>&1
     got=$(pulses "$OUT/$prg.tap" 4)
     # The inverted program starts with its long lead-in pause; compare what follows it.
@@ -57,7 +57,7 @@ for speed in "256 384" "160 240"; do
     python3 -I "$ROOT/tests/tape/mkturbo.py" "$d" "$1" "$2" && python3 -I "$ROOT/tools/k64asm.py" -o "$d/turbo.prg" "$d/turbo.s" >/dev/null \
         || { echo "FAIL tape: turbo $1/$2 not built"; rc=1; continue; }
     for model in pal ntsc; do
-        if "$B/k64run" "$ROOT/gitignore" --model "$model" --tape "$d/turbo.tap" --play --autostart "$d/turbo.prg" \
+        if "$B/k64run" "$ROOT/gitignore/bios" --model "$model" --tape "$d/turbo.tap" --play --autostart "$d/turbo.prg" \
                --debugcart --cycles 60000000 >"$d/$model.log" 2>&1; then
             echo "tape: our turbo ($1/$2 cycles, $model) loads 8 KB intact"
         else
@@ -67,7 +67,7 @@ for speed in "256 384" "160 240"; do
 done
 
 # 4. A tape as content: PLAY down, LOAD and RUN typed by the core.
-if "$B/k64host" "$CORE" --system "$ROOT/gitignore" --save "$OUT" --content "$OUT/kernal.tap" --frames 2700 \
+if "$B/k64host" "$CORE" --system "$ROOT/gitignore/bios" --save "$OUT" --content "$OUT/kernal.tap" --frames 2700 \
        --expect-screen ' 4242' >"$OUT/host.log" 2>&1; then
     echo "tape: a tape as content starts by itself"
 else

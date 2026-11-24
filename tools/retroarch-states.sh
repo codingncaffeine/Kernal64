@@ -22,7 +22,7 @@ EXT="$ROOT/gitignore/external"
 ra() {
     local name="$1" content="$2" frames="$3" shot="$4" extra="$5" d="$OUT/$1"
     mkdir -p "$d/system" "$d/saves" "$d/states" "$d/shots"
-    cp "$ROOT"/gitignore/*.bin "$d/system/"
+    cp "$ROOT"/gitignore/bios/*.bin "$d/system/"
     cat >"$d/retroarch.cfg" <<CFG
 audio_driver = "null"
 audio_enable = "false"
@@ -84,7 +84,7 @@ printf '\x01\x08\x0b\x08\x0a\x00\x9e2061\x00\x00\x00\xa5\xa2\x8d\x00\x04\xee\x20
 { printf '\x09\x80\x09\x80\xc3\xc2\xcd\x38\x30\x78\xad\x12\xd0\xc9\x80\xd0\xf9\xee\x20\xd0\xad\x12\xd0\xc9\x80\xf0\xf9\x4c\x0a\x80'
   head -c $((8192 - 30)) /dev/zero; } >"$M/border.bin"
 python3 -I "$ROOT/tools/mkcrt.py" -o "$M/border.crt" --type 0 --exrom 0 --game 1 "$M/border.bin@0:8000"
-"$BIN/k64run" "$ROOT/gitignore" --blank-tape --record --cycles 60000000 --type-at 3000000 $'10 ?4242\r' \
+"$BIN/k64run" "$ROOT/gitignore/bios" --blank-tape --record --cycles 60000000 --type-at 3000000 $'10 ?4242\r' \
     --type-at 3300000 'SAVE"T"'$'\r' --save-tape "$M/kernal.tap" >"$M/tape.log" 2>&1
 python3 -I "$ROOT/tools/mknib.py" "$EXT/testprogs/drive/scanner/scan35.g64" "$M/scan35.nib" 7 >/dev/null
 printf '%s\n' "$EXT/testprogs/vdrive/test.d64" "$EXT/testprogs/drive/scanner/scan35.d64" >"$M/two.m3u"

@@ -24,7 +24,7 @@ one_run() {
     local key="$1" value="$2" board="$3" log dumps d name
     name=first; [ "$board" = nr ] && name=later   # the suite's file names for the two boards
     log="$OUT/$board-$value.log"
-    "$K64RUN" "$ROOT/gitignore" --cart "$T/$board-freeze.crt" --cycles 5000000 --type-at 500000 "$key\\r" \
+    "$K64RUN" "$ROOT/gitignore/bios" --cart "$T/$board-freeze.crt" --cycles 5000000 --type-at 500000 "$key\\r" \
         --freeze-at 2500000 --freeze-hold 2000 --dump 0800:534 >"$log" 2>&1
     grep -q '^ACKD' "$log" && grep -q 'SAVE TO DISK' "$log" || { echo "FAIL $name board, second register \$$value: the program did not get through its freeze"; return; }
     if [ "$board" = rr ]; then dumps="RR-FRZ${value}_cz0 dump_rr_${value}_impetigo"; else dumps="RR-FRZ${value}_gpz_nr dump_nr_${value}_gpz dump_nr_${value}_cz"; fi

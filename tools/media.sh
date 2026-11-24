@@ -42,7 +42,7 @@ CORE="$BIN/kernal64_libretro.so"
 # machine WANT LABEL K64RUN-ARGUMENTS...: the run's exit status must be WANT.
 machine() {
     local want="$1" label="$2" got; shift 2
-    "$BIN/k64run" "$ROOT/gitignore" "$@" >/dev/null 2>&1
+    "$BIN/k64run" "$ROOT/gitignore/bios" "$@" >/dev/null 2>&1
     got=$?
     if [ "$got" = "$want" ]; then echo "ok   machine: $label"; else echo "FAIL machine: $label (exit $got, expected $want)"; fi
 }
@@ -50,7 +50,7 @@ machine() {
 core() {
     local want="$1" label="$2" log got; shift 2
     log="$OUT/host-$(printf '%s' "$label" | tr -c 'A-Za-z0-9.-' '_').log"
-    "$BIN/k64host" "$CORE" --system "$ROOT/gitignore" "$@" >"$log" 2>&1
+    "$BIN/k64host" "$CORE" --system "$ROOT/gitignore/bios" "$@" >"$log" 2>&1
     got=$?
     [ "$got" = 0 ] || got=1
     if [ "$got" = "$want" ]; then echo "ok   core: $label"; else echo "FAIL core: $label"; grep -m3 'FAIL' "$log"; fi

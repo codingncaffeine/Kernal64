@@ -103,7 +103,7 @@ run_one() {
         refmedia+=(-cartcrt "/k64/${base#"$root"/}$crt")
         if [ -n "$prg" ]; then ckey="$ckey+crt$(sha1sum "$base$crt" | cut -c1-8)"; else file="$base$crt"; ckey="$ckey+crt"; fi
         # A cartridge whose hardware is not built yet is refused by our machine at once.
-        if "$k64run" "$root/gitignore" --cart "$base$crt" --cycles 1 2>&1 | grep -q 'is not supported yet'; then
+        if "$k64run" "$root/gitignore/bios" --cart "$base$crt" --cycles 1 2>&1 | grep -q 'is not supported yet'; then
             printf 'skip      %s (%s)\n' "$name" "cartridge hardware not built yet"; return
         fi
     fi
@@ -114,7 +114,7 @@ run_one() {
         case "$fam" in pal) dx=492; dy=0 ;; ntsc) dx=508; dy=20 ;; *) dx=500; dy=20 ;; esac
         mkdir -p "$shots"
         key2="$(sha1sum "$file" | cut -c1-16)-$vkey$ckey-$cycles"
-        nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" "${media[@]}" --cycles "$cycles" \
+        nice -n 10 "$k64run" "$root/gitignore/bios" --model "$model" --cia "$cia" --sid "$sid" "${media[@]}" --cycles "$cycles" \
             --raster "$out/$tag.raw" >"$out/$tag.k64.log" 2>&1
         if [ ! -s "$shots/$key2.png" ] || [ "${K64_SUITE_REFRESH:-0}" = 1 ]; then
             K64_VICE_DRIVE="$vdrive" K64_VICE_MODEL="$vmodel" timeout 600 "$root/tools/oracle/vice.sh" "${vextra[@]}" -sidenginemodel $sidref -ciamodel $ciaref -jamaction 1 -warp -VICIIborders 2 \
@@ -130,7 +130,7 @@ run_one() {
         fi
         return
     fi
-    nice -n 10 "$k64run" "$root/gitignore" --model "$model" --cia "$cia" --sid "$sid" "${media[@]}" --debugcart --cycles "$cycles" \
+    nice -n 10 "$k64run" "$root/gitignore/bios" --model "$model" --cia "$cia" --sid "$sid" "${media[@]}" --debugcart --cycles "$cycles" \
         >"$out/$tag.k64.log" 2>&1
     local ours=$?
     local cache="$root/gitignore/external/suite-ref.cache" key ref

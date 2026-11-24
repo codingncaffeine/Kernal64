@@ -25,7 +25,7 @@ one_line() {
         echo "FAIL $src [$defs]: does not assemble"; return
     fi
     # shellcheck disable=SC2086
-    "$K64RUN" "$ROOT/gitignore" --model "$model" --cia "$cia" $extra --autostart "$OUT/$tag.prg" --debugcart --cycles 20000000 >/dev/null 2>&1
+    "$K64RUN" "$ROOT/gitignore/bios" --model "$model" --cia "$cia" $extra --autostart "$OUT/$tag.prg" --debugcart --cycles 20000000 >/dev/null 2>&1
     got=$?
     line="$src [$defs] $model cia-$cia${extra:+ $extra}: ours $got, expected $want"
     if [ "${K64_PROBES_REF:-0}" = 1 ] && [ -z "$extra" ]; then

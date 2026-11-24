@@ -88,7 +88,7 @@ one_line() {
     [ -n "$at" ] && extra+=(--freeze-pc "$at" --freeze-hold 2000)
     if [ "$ok" = 0 ]; then echo "FAIL type $type, $banks bank(s): does not assemble"; return; fi
     python3 -I "$ROOT/tools/mkcrt.py" -o "$OUT/$tag.crt" --type "${htype:-$type}" --exrom "${exrom:-0}" --game "${game:-1}" "${chips[@]}"
-    "$K64RUN" "$ROOT/gitignore" --cart "$OUT/$tag.crt" --debugcart --cycles "$cycles" "${extra[@]}" >"$OUT/$tag.log" 2>&1
+    "$K64RUN" "$ROOT/gitignore/bios" --cart "$OUT/$tag.crt" --debugcart --cycles "$cycles" "${extra[@]}" >"$OUT/$tag.log" 2>&1
     got=$?
     line="type $type, $banks bank(s)${htype:+ in type $htype hardware}: ours $got, expected $want"
     [ "$type" = 32 ] && line="type 32, flash chips$([ "$strict" = 1 ] && echo ", data sheet checks too"): ours $got, expected $want"

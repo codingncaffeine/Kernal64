@@ -75,7 +75,7 @@ extra="$(nm -D --defined-only "$CORE" | awk '{print $3}' | grep -v '^retro_' || 
 [ -z "$extra" ] || bad "core exports non-libretro symbols: $(echo "$extra" | head -3 | tr '\n' ' ')"
 
 # The machine needs the user's system ROMs (never in the repository): the gitignore folder.
-ROMS="$ROOT/gitignore"
+ROMS="$ROOT/gitignore/bios"
 EXT="$ROOT/gitignore/external"
 
 step "libretro conformance"

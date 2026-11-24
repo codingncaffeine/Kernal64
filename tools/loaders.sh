@@ -16,7 +16,7 @@ python3 -I "$ROOT/tools/k64asm.py" -o "$OUT/checker.prg" "$OUT/checker.s" || exi
 (cd "$OUT" && "$SPIN" -o spindle.d64 script >spin.log 2>&1) || { echo "loaders: spin failed"; cat "$OUT/spin.log"; exit 2; }
 rc=0
 for model in pal ntsc; do
-    "$K64RUN" "$ROOT/gitignore" --model "$model" --disk "$OUT/spindle.d64" --debugcart --cycles 40000000 \
+    "$K64RUN" "$ROOT/gitignore/bios" --model "$model" --disk "$OUT/spindle.d64" --debugcart --cycles 40000000 \
         --type-at 4000000 'LOAD"*",8' --type-at 4300000 $'\r' --type-at 9000000 $'RUN\r' >"$OUT/$model.log" 2>&1
     r=$?
     if [ $r = 0 ]; then echo "spindle ($model): every job intact"
@@ -28,7 +28,7 @@ done
 BF="$ROOT/gitignore/external/loaders/bitfire/benchmark"
 if [ -s "$BF/k64-bench.d64" ] && [ -s "$BF/benchmark.prg" ]; then
     for model in pal ntsc; do
-        "$K64RUN" "$ROOT/gitignore" --model "$model" --drive --disk "$BF/k64-bench.d64" --autostart "$BF/benchmark.prg" \
+        "$K64RUN" "$ROOT/gitignore/bios" --model "$model" --drive --disk "$BF/k64-bench.d64" --autostart "$BF/benchmark.prg" \
             --cycles 160000000 --type-at 6000000 $'SYS2304\r' --dump 0010:2 --dump 0024:2 >"$OUT/bf-$model.log" 2>&1
         read -r _ hi lo < <(grep '^0010:' "$OUT/bf-$model.log") || true
         runs=$(( 16#${hi:-0} * 256 + 16#${lo:-0} ))
