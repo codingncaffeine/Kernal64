@@ -49,7 +49,7 @@ target_include_directories(k64core PUBLIC src/core src/media src/drive)
 target_compile_options(k64core PRIVATE ${K64_WARNINGS} -ffp-contract=off)
 
 # The libretro core.
-add_library(kernal64_libretro SHARED src/libretro/libretro.cpp)
+add_library(kernal64_libretro SHARED src/libretro/libretro.cpp src/libretro/options.cpp src/libretro/osk.cpp)
 target_include_directories(kernal64_libretro PRIVATE include)
 target_link_libraries(kernal64_libretro PRIVATE k64core)
 target_compile_options(kernal64_libretro PRIVATE ${K64_WARNINGS})

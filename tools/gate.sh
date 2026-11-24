@@ -94,8 +94,10 @@ for model in pal ntsc; do
 done
 # A disk as content: inserted, started with LOAD"*",8,1 and RUN; the suite's program reads
 # the drive's ROM over the bus with the DOS's memory-read command.
+# The drive's light reaches the frontend's LED 0: on at power on (its port pins float high
+# until the DOS sets them up), on again for the load.
 side "disk as content, started by itself" "$BUILD/host-disk.log" "$BUILD/k64host" "$CORE" --system "$ROMS" \
-    --content "$EXT/testprogs/vdrive/test.d64" --frames 900 --check --expect-screen 'ROM:  254' --expect-screen 'ROM:  103'
+    --content "$EXT/testprogs/vdrive/test.d64" --frames 900 --check --expect-led 2 --expect-screen 'ROM:  254' --expect-screen 'ROM:  103'
 sides
 # What the drive writes is kept (PLAN D10): SAVE to a disk, unload; loaded again, the copy in
 # the save folder has the program.
@@ -215,6 +217,7 @@ script "raster-effect programs" "$BUILD/effects.log" tools/effects.sh "$BUILD/k6
 script "disks through drive 8 (directory and files byte for byte)" "$BUILD/disk.log" tools/disk.sh "$BUILD/k64run"
 script "fast loaders on PAL and NTSC (Spindle, Bitfire)" "$BUILD/loaders.log" tools/loaders.sh "$BUILD/k64run"
 script "the datasette (KERNAL save + load, recorded pulses, tape as content)" "$BUILD/tape.log" tools/tape.sh "$BUILD"
+script "controllers, mapped buttons, on-screen keyboard, option versions" "$BUILD/input.log" tools/input.sh "$BUILD"
 # Independent of each other: side by side.
 side "VIC-II rule tests" "$BUILD/victest.log" "$BUILD/victest"
 side "SID paddle converter rules" "$BUILD/sidtest.log" "$BUILD/sidtest"

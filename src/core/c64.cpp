@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 17;
+constexpr uint32_t kStateVersion = 18;
 
 // The 1541 runs on its own 16 MHz crystal divided by 16 (hw/drive.md D1): 1 MHz. Against the
 // machine's clock that is exactly 18,000,000 / 17,734,475 drive cycles per machine cycle on
@@ -297,7 +297,12 @@ void C64::ioWrite(uint16_t a, uint8_t v) {
 // The light pen line is CIA 1's port B bit 4 (also the fire button of control port 1 and
 // a keyboard row), so software can pull it low through the port (hw/cia.md rule 16).
 void C64::updateLightPen() {
-    vic_.setLightPen(!(ciaPortB(0, cia1_.portBOut()) & 0x10));
+    vic_.setLightPen(s_.penLow || !(ciaPortB(0, cia1_.portBOut()) & 0x10));
+}
+
+void C64::setLightPen(int line, int cycle) {
+    s_.penLine = static_cast<int16_t>(line < 0 || line >= timing_->linesPerFrame ? -1 : line);
+    s_.penCycle = static_cast<int16_t>(cycle);
 }
 
 // ---- input and the CIA ports (hw/cia.md rules 16-17) -----------------------------
@@ -395,6 +400,11 @@ uint8_t C64::ciaPortB(int cia, uint8_t driven) {
 // ---- the cycle ------------------------------------------------------------------
 
 void C64::tick() {
+    const uint8_t pen = s_.penLine >= 0 && vic_.line() == s_.penLine && vic_.cycleInLine() == s_.penCycle;
+    if (pen != s_.penLow) {
+        s_.penLow = pen;
+        updateLightPen();
+    }
     vic_.phase1();
     s_.vicLastByte = vic_.lastByte();
     s_.aecLow = vic_.aecLow();

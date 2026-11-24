@@ -43,8 +43,7 @@ Files are recognized by their contents, not their names.
   its flash chips is kept in save states, not yet from one session to the next. Other
   types are refused with a message.
 - A freezer cartridge's button is Page Down on the keyboard and a click of the right
-  stick on the RetroPad (remappable in the frontend). Without such a cartridge it does
-  nothing.
+  stick (R3) on the RetroPad. Without such a cartridge it does nothing.
 - Program files (`.prg`, `.p00`) and the first program of a `.t64` container: put into
   memory once the machine has booted, and started with `RUN`.
 - Disk images (`.d64` with or without error bytes and with 35, 40 or 42 tracks, `.g64`,
@@ -54,23 +53,49 @@ Files are recognized by their contents, not their names.
   goes into a copy in the frontend's save folder (`<name>.g64`), which is loaded in place of
   the original next time; your own image file is never written.
 - Tapes (`.tap`, versions 0 and 1) in the datasette: started with PLAY down, `LOAD` and `RUN`
-  typed, turbo loaders included. The RetroPad's L2 is PLAY / STOP and R2 rewinds (remappable);
-  what the datasette records goes into a copy in the save folder (`<name>.tap`).
+  typed, turbo loaders included. PLAY / STOP, RECORD and rewind are actions you can put on
+  any RetroPad button (see Controls); what the datasette records goes into a copy in the
+  save folder (`<name>.tap`).
 - Disk lists (`.m3u`, one image path per line) for software on several disks: swap with the
   frontend's disk control (eject, choose, insert); the DOS sees the change as it would on a
   real drive.
+
+## Controls
+
+Each player picks a device in the frontend's controls menu: **Joystick** (the default),
+**Paddles**, **Mouse (1351)** or **Light pen** (control port 1 only). Player 1's device is in
+control port 2 unless the `kernal64_joyport` option says port 1; player 2's is in the other.
+
+- Joystick: the D-pad or the left stick. Paddles: the left stick turns paddle X, the right
+  stick paddle Y; the fire button is paddle X's button, A is paddle Y's. With paddles for
+  both players, player 2's left stick turns the second paddle of player 1's port. Mouse:
+  Commodore's 1351 in its proportional mode, the left button is fire and the right one is up.
+  Light pen: point at the picture; the trigger is the pen's button (on the up line).
+- The RetroPad's buttons, by default: B fire, X SPACE, L2 RUN/STOP, R2 RETURN, Select the
+  on-screen keyboard, R3 the freezer button. Each button has a `kernal64_pad_*` option that
+  makes it any C64 key or one of: fire, repeating fire, joystick up, on-screen keyboard,
+  datasette PLAY / STOP, RECORD, rewind, freezer button, swap the joystick ports.
+- The on-screen keyboard is the C64's own layout. D-pad moves, B presses the key, X is SPACE,
+  Start is RETURN, Y is SHIFT LOCK, A moves the keyboard to the other half of the picture.
+  SHIFT, C= and CTRL stay down until the next key.
+- The host keyboard is the C64 keyboard by position; Page Up is RESTORE.
+- The drive's activity light is the frontend's LED 0.
+- Save states hold everything a replay needs: the disk's surface and which disk is in the
+  drive, the tape, the mouse's position and the on-screen keyboard. So rewind, run-ahead and
+  netplay come out the same across a SAVE.
 
 ## Core options
 
 | Option | Values (default first) | What it selects |
 | --- | --- | --- |
-| `kernal64_model` | `pal`, `pal-new`, `pal-old`, `ntsc`, `ntsc-new`, `ntsc-old` | The video chip: 6569R3, 8565, 6569R1, 6567R8, 8562, 6567R56A |
+| `kernal64_model` | `auto`, `pal`, `pal-new`, `pal-old`, `ntsc`, `ntsc-new`, `ntsc-old` | The video chip: automatic (PAL unless the content's file name says NTSC, `(USA)` or `(Japan)`), 6569R3, 8565, 6569R1, 6567R8, 8562, 6567R56A |
 | `kernal64_cia` | `6526`, `8521` | The CIA generation |
 | `kernal64_sid` | `6581`, `8580` | The SID chip |
 | `kernal64_sid_noise_pulse` | `drains it`, `leaves it alone` | 6581 only. Real 6581s differ in what noise combined with pulse does to the noise generator: on most it empties it within a few cycles, on some it does not |
 | `kernal64_border` | `full`, `small`, `none` | How much of the border is shown |
 | `kernal64_drive8` | `on`, `off` | A 1541 as drive 8 on the serial bus (needed for disk images) |
-| `kernal64_joyport` | `2`, `1` | The control port the RetroPad's joystick is in |
+| `kernal64_joyport` | `2`, `1` | The control port player 1's device is in |
+| `kernal64_pad_b` ... `kernal64_pad_start` | `none`, `fire`, `turbo`, `up`, `keyboard`, `tape_play`, `tape_record`, `tape_rewind`, `freeze`, `swap`, `key_*` | What each RetroPad button does (see Controls) |
 
 ## Test cartridges
 

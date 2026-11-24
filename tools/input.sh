@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# The players' controllers through the built core's API (local-notes/hw/input.md): the
+# RetroPad's mapped buttons, paddles, the 1351 mouse, the light pen, the on-screen keyboard
+# and the options in each version a frontend may speak. BASIC prints what the machine reads;
+# each line that sends an input has a control, the same run without it, which must fail.
+# Lines with a state check (--check) replay their second half from a state.
+#
+#   tools/input.sh [BUILD-FOLDER]      default: bin
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$(realpath "${1:-$ROOT/bin}")"
+OUT="$ROOT/scratch/input"
+mkdir -p "$OUT"
+. "$ROOT/tools/sidebyside.sh"
+CORE="$BIN/kernal64_libretro.so"
+
+# core WANT LABEL K64HOST-ARGUMENTS...: WANT = 0, the run must pass; 1, it must fail.
+core() {
+    local want="$1" label="$2" log got; shift 2
+    log="$OUT/host-$(printf '%s' "$label" | tr -c 'A-Za-z0-9.-' '_').log"
+    "$BIN/k64host" "$CORE" --system "$ROOT/gitignore" "$@" >"$log" 2>&1
+    got=$?
+    [ "$got" = 0 ] || got=1
+    if [ "$got" = "$want" ]; then echo "ok   $label"; else echo "FAIL $label"; grep -m3 'FAIL' "$log"; fi
+}
+# pair LABEL "INPUT ARGUMENTS" REST...: the run passes with the input and fails without it.
+pair() {
+    local label="$1" input="$2"; shift 2
+    # shellcheck disable=SC2086
+    sbs_start core 0 "$label" "$@" $input
+    sbs_start core 1 "$label (control: no input)" "$@"
+}
+
+PORT2='10 ?PEEK(56320):GOTO10\nRUN\n'        # control port 2's lines (fire = 16 low)
+PORT1='10 ?PEEK(56321):GOTO10\nRUN\n'        # control port 1's
+# The SID's paddle registers with port 2 switched through (keyboard interrupt off meanwhile).
+POTS2='10 POKE56333,127:POKE56320,128:FORI=1TO9:NEXT:A=PEEK(54297)\n20 B=PEEK(54298):POKE56333,129:?A;B:GOTO10\nRUN\n'
+PEN='10 ?PEEK(53267);PEEK(53268):GOTO10\nRUN\n'   # the light pen latch, LPX and LPY
+
+# The RetroPad: B = fire (default), held after typing (a joystick in port 2 shares lines with
+# the keyboard, so input during typing would garble it, as on the machine).
+pair "B is fire in port 2" "--hold 400 499 0 b 1" --frames 500 --type-at 200 --type "$PORT2" --expect-screen ' 111'
+pair "R2 is RETURN" "--hold 360 364 0 r2 1" --frames 450 --type-at 300 --type '?6*7' --expect-screen ' 42'
+pair "a button mapped to a key (A = Q)" "--hold 560 564 0 a 1" --frames 600 --option kernal64_pad_a=key_q \
+    --type-at 200 --type '10 GETA$:IFA$=""GOTO10\n20 ?ASC(A$)\nRUN\n' --expect-screen ' 81'
+pair "repeating fire" "--hold 400 599 0 b 1" --frames 600 --option kernal64_pad_b=turbo --type-at 200 --type "$PORT2" \
+    --expect-screen ' 111' --expect-screen ' 127' --check
+pair "the swap button moves player 1 to port 1" "--hold 380 381 0 l 1" --frames 500 --option kernal64_pad_l=swap \
+    --hold 400 499 0 b 1 --type-at 200 --type "$PORT1" --expect-screen ' 239' --check
+pair "player 1 in port 1 by option" "--option kernal64_joyport=1" --frames 500 --hold 400 499 0 b 1 --type-at 200 --type "$PORT1" \
+    --expect-screen ' 239'
+
+# Paddles (P1-P3): full left 255, middle 128, full right 0; the right stick is paddle Y.
+pair "paddles at both ends" "--device 0 paddles" --frames 1100 --type-at 200 --type "$POTS2" --hold 0 1099 0 lx -32768 \
+    --hold 0 1099 0 rx 32767 --expect-screen ' 255  0 ' --check
+sbs_start core 0 "paddles in the middle" --device 0 paddles --frames 1100 --type-at 200 --type "$POTS2" --expect-screen ' 128  128 '
+# With paddles for both players, player 2's stick turns paddle Y of player 1's port.
+sbs_start core 0 "player 2 turns the second paddle" --device 0 paddles --device 1 paddles --frames 1100 --type-at 200 \
+    --type "$POTS2" --hold 0 1099 0 lx -32768 --hold 0 1099 1 lx 32767 --expect-screen ' 255  0 '
+
+# The 1351 mouse (M1-M4): 3 x 10 steps right, 2 x 5 toward the user: POTX 60, POTY 108; a jump
+# of 100 is passed on 31 a frame and ends at 100 mod 64 = 36 (72); left = fire, right = up.
+pair "mouse movement" "--hold 800 802 0 mx 10 --hold 800 801 0 my 5" --frames 1100 --device 0 mouse --type-at 200 \
+    --type "$POTS2" --expect-screen ' 60  108 ' --check
+sbs_start core 0 "mouse, a long move in one frame" --frames 1100 --device 0 mouse --type-at 200 --type "$POTS2" \
+    --hold 800 800 0 mx 100 --expect-screen ' 72  0 '
+pair "mouse left button = fire" "--hold 400 499 0 mleft 1" --frames 500 --device 0 mouse --type-at 200 --type "$PORT2" --expect-screen ' 111'
+pair "mouse right button = up" "--hold 400 499 0 mright 1" --frames 500 --device 0 mouse --type-at 200 --type "$PORT2" --expect-screen ' 126'
+
+# The light pen (L1-L3) in port 1: pointed at the picture's middle, LPY = raster line 16 + 141,
+# LPX = half the X coordinate of the cycle drawing the pixel; another point; in port 2 it sees
+# nothing.
+pair "light pen, middle of the picture" "--device 0 lightgun" --frames 600 --option kernal64_joyport=1 --type-at 200 --type "$PEN" \
+    --hold 0 599 0 gx 0 --hold 0 599 0 gy 0 --expect-screen ' 86  157 ' --check
+sbs_start core 0 "light pen, upper left" --frames 600 --option kernal64_joyport=1 --device 0 lightgun --type-at 200 --type "$PEN" \
+    --hold 0 599 0 gx -20000 --hold 0 599 0 gy -20000 --expect-screen ' 26  71 '
+sbs_start core 1 "light pen in port 2 sees nothing" --frames 600 --device 0 lightgun --type-at 200 --type "$PEN" \
+    --hold 0 599 0 gx 0 --hold 0 599 0 gy 0 --expect-screen ' 86  157 '
+
+# The on-screen keyboard: Select opens it on F; B types F, Start is RETURN: BASIC answers.
+pair "on-screen keyboard types" "--hold 250 255 0 b 1" --frames 400 --hold 200 202 0 select 1 --hold 300 305 0 start 1 \
+    --expect-screen '?SYNTAX' --check
+
+# The datasette's buttons as mapped actions: a blank tape as content (PLAY down, LOAD typed);
+# RUN/STOP breaks the search, L (PLAY / STOP) stops the tape, SAVE asks for RECORD, R presses
+# it and the KERNAL records; a state is taken in the middle of the recording.
+printf 'C64-TAPE-RAW\x01\x00\x00\x00\x00\x00\x00\x00' >"$OUT/blank.tap"
+rm -rf "$OUT/tape1" "$OUT/tape2"
+mkdir -p "$OUT/tape1" "$OUT/tape2"
+TAPE=(--content "$OUT/blank.tap" --frames 1800 --option kernal64_pad_l=tape_play --option kernal64_pad_r=tape_record
+      --hold 300 305 0 l2 1 --hold 400 402 0 l 1 --type-at 450 --type '10 ?42\nSAVE\n' --expect-screen 'SAVING')
+sbs_start core 0 "datasette RECORD through a mapped button" "${TAPE[@]}" --save "$OUT/tape1" --hold 600 602 0 r 1 --check
+sbs_start core 1 "datasette RECORD through a mapped button (control: no input)" "${TAPE[@]}" --save "$OUT/tape2"
+
+# Options in each version a frontend may speak (v2 with categories, v1, plain variables).
+for v in 2 1 0; do
+    sbs_start core 0 "options version $v" --options-version $v --frames 400 --check --type 'PRINT 6*7\n' --expect-screen ' 42'
+done
+sbs_start core 1 "an option value the core does not declare is caught" --frames 30 --option kernal64_border=huge
+
+sbs_finish

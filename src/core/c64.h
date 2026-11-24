@@ -106,6 +106,10 @@ public:
     // What sits on a control port's two paddle lines, as the value (0-255) the SID's
     // register shows when that port alone is switched through; -1 = nothing on the line.
     void setPaddles(int port, int x, int y);     // port 1 or 2
+    // A light pen on control port 1 looking at the picture at raster `line`, the beam's
+    // `cycle` in it (1-based): it pulls LP low in that cycle of every frame (hw/input.md L).
+    // line < 0: it looks at nothing.
+    void setLightPen(int line, int cycle);
 
     // Test harness only: the reference emulator's debug cartridge. A write to $D7FF ends a
     // test program with that value as its result (0 = passed). Off unless enabled.
@@ -182,6 +186,8 @@ private:
         uint32_t todCount = 0;            // mains phase: += mainsHz per cycle, a tick per clock rate
         uint32_t drivePhase = 0;
         uint16_t autotypePos = 0;
+        int16_t penLine = -1, penCycle = 0;   // where a light pen points (raster line, cycle); -1 = nowhere
+        uint8_t penLow = 0;               // the pen pulls LP low in this cycle (hw/input.md L3)
         uint8_t busOut = 0x3F;            // CIA 2's bus outputs before its last access (S5)         // keys of the autotype text already typed          // the drive's clock against ours: += driveNum_ per cycle, a drive cycle per driveDen_
     };
 #pragma pack(pop)

@@ -2,8 +2,12 @@
 #include "../core/c64.h"
 #include "../core/roms.h"
 #include "libretro.h"
+#include "keys.h"
+#include "options.h"
+#include "osk.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdarg>
@@ -26,6 +30,8 @@ retro_audio_sample_batch_t audioBatchCb;
 retro_input_poll_t inputPollCb;
 retro_input_state_t inputStateCb;
 retro_log_printf_t logCb;
+retro_led_interface ledCb{};
+bool ledWas = false;
 
 std::unique_ptr<k64::C64> machine;
 // The disks: one image, or the list an .m3u names (swapped through the frontend's disk
@@ -50,9 +56,6 @@ std::vector<float> audioMono;
 
 constexpr unsigned kSampleRate = 48000;
 
-// The part of the visible picture that is shown (core option kernal64_border).
-struct Crop { int x = 0, y = 0, w = 0, h = 0; };
-Crop crop;
 
 void log(retro_log_level level, const char* fmt, ...) {
     char buf[512];
@@ -114,47 +117,241 @@ int joystickPort() {
 
 void notify(const std::string& line);
 
+// ---- the players' controllers ----------------------------------------------------------
+//
+// Player 1 and 2 (libretro ports 0 and 1) each have a device in a C64 control port: player
+// 1's in the port the kernal64_joyport option names, player 2's in the other (a "swap" button
+// exchanges them while running). Devices and their wiring: local-notes/hw/input.md.
+constexpr unsigned kDevicePaddles = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_ANALOG, 0);
+unsigned device[2] = {RETRO_DEVICE_JOYPAD, RETRO_DEVICE_JOYPAD};
+bool portsSwapped = false;
+int portOf(int player) {
+    int p = joystickPort();
+    if (player == 1) p = 3 - p;
+    return portsSwapped ? 3 - p : p;
+}
+
+k64lr::PadAction padMap[k64lr::kPadButtonCount];
+void readPadOptions() {
+    for (int b = 0; b < k64lr::kPadButtonCount; ++b) {
+        const std::string key = std::string("kernal64_pad_") + k64lr::kPadButtons[b].name;
+        retro_variable var{key.c_str(), nullptr};
+        const bool got = envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value;
+        padMap[b] = k64lr::padActionFromValue(got ? var.value : k64lr::kPadButtons[b].defaultValue);
+    }
+}
+
+k64lr::Osk osk;
+int oskOwner = 0;
+bool padWas[2][16] = {};
+int mouseAcc[2][2] = {}, mousePos[2][2] = {};   // per player: movement not yet passed on, 1351 position
+struct Crop { int x = 0, y = 0, w = 0, h = 0; };
+Crop crop;   // the part of the visible picture that is shown (kernal64_border)
+
+void tapeButton(k64lr::PadAction a) {
+    auto& d = machine->datasette();
+    if (!d.hasTape()) { notify("Datasette: no tape"); return; }
+    if (a == k64lr::kTapePlay) {
+        const bool moving = d.button() != k64::Datasette::Button::None;
+        if (moving) d.stop(); else d.press(k64::Datasette::Button::Play);
+        notify(moving ? "Datasette: STOP" : "Datasette: PLAY");
+    } else if (a == k64lr::kTapeRecord) {
+        d.press(k64::Datasette::Button::Record);
+        notify("Datasette: RECORD");
+    } else {
+        d.rewind();
+        notify("Datasette: rewound");
+    }
+}
+
 void applyInput() {
     if (!inputStateCb) return;
     machine->releaseAllKeys();
+    std::array<bool, k64lr::kC64KeyCount> keys{};
     for (const auto& k : kKeys) {
         if (!inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, k.key)) continue;
         machine->setKey(k.col, k.row, true);
         if (k.shift) machine->setKey(1, 7, true);
     }
-    machine->setRestore(inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEUP) != 0);
-    auto pad = [](unsigned id) { return inputStateCb(0, RETRO_DEVICE_JOYPAD, 0, id) != 0; };
-    // The button on a freezer cartridge: Page Down, or a click of the right stick. It is
-    // the cartridge's own button, so without such a cartridge it does nothing.
-    machine->setFreezeButton(inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEDOWN) != 0 || pad(RETRO_DEVICE_ID_JOYPAD_R3));
-    // The datasette's buttons (PLAN D25): L2 = PLAY / STOP, R2 = stop and rewind to the start.
-    // Pressed on the button's way down only; without a tape they do nothing.
-    static bool l2Was = false, r2Was = false;
-    const bool l2 = pad(RETRO_DEVICE_ID_JOYPAD_L2), r2 = pad(RETRO_DEVICE_ID_JOYPAD_R2);
-    if (l2 && !l2Was && machine->datasette().hasTape()) {
-        const bool playing = machine->datasette().button() != k64::Datasette::Button::None;
-        if (playing) machine->datasette().stop(); else machine->datasette().press(k64::Datasette::Button::Play);
-        notify(playing ? "Datasette: STOP" : "Datasette: PLAY");
+    bool restore = inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEUP) != 0;
+    // The button on a freezer cartridge: Page Down, or a RetroPad button mapped to it.
+    bool freeze = inputStateCb(0, RETRO_DEVICE_KEYBOARD, 0, RETROK_PAGEDOWN) != 0;
+    uint8_t lines[2] = {0, 0};
+    int pots[2][2] = {{-1, -1}, {-1, -1}};
+    int penLine = -1, penCycle = 0;
+    for (int player = 0; player < 2; ++player) {
+        const unsigned dev = device[player];
+        if (dev == RETRO_DEVICE_NONE) continue;
+        const int port = portOf(player);
+        bool now[16];
+        for (unsigned id = 0; id < 16; ++id) now[id] = inputStateCb(static_cast<unsigned>(player), RETRO_DEVICE_JOYPAD, 0, id) != 0;
+        auto pressed = [&](unsigned id) { return now[id] && !padWas[player][id]; };
+        const bool oskHere = osk.isOpen() && oskOwner == player;
+        bool fire = false, up = false;
+        for (int b = 0; b < k64lr::kPadButtonCount; ++b) {
+            const unsigned id = k64lr::kPadButtons[b].id;
+            const k64lr::PadAction a = padMap[b];
+            if (oskHere && a != k64lr::kKeyboard) continue;   // the keyboard has this pad
+            switch (a) {
+            case k64lr::kNone: break;
+            case k64lr::kFire: fire |= now[id]; break;
+            case k64lr::kTurbo: fire |= now[id] && (machine->frame() / 2) % 2 == 0; break;
+            case k64lr::kUp: up |= now[id]; break;
+            case k64lr::kKeyboard:
+                if (pressed(id)) {
+                    osk.setOpen(!osk.isOpen());
+                    oskOwner = player;
+                }
+                break;
+            case k64lr::kTapePlay: case k64lr::kTapeRecord: case k64lr::kTapeRewind:
+                if (pressed(id)) tapeButton(a);
+                break;
+            case k64lr::kFreeze: freeze |= now[id]; break;
+            case k64lr::kSwapPorts:
+                if (pressed(id)) {
+                    portsSwapped = !portsSwapped;
+                    notify("Player 1 in control port " + std::to_string(portOf(0)));
+                }
+                break;
+            default:
+                if (a >= k64lr::kKey) keys[static_cast<size_t>(a - k64lr::kKey)] |= now[id];
+                break;
+            }
+        }
+        if (oskHere) {
+            using J = unsigned;
+            osk.update({now[J{RETRO_DEVICE_ID_JOYPAD_UP}], now[J{RETRO_DEVICE_ID_JOYPAD_DOWN}], now[J{RETRO_DEVICE_ID_JOYPAD_LEFT}],
+                        now[J{RETRO_DEVICE_ID_JOYPAD_RIGHT}], now[J{RETRO_DEVICE_ID_JOYPAD_B}], now[J{RETRO_DEVICE_ID_JOYPAD_X}],
+                        now[J{RETRO_DEVICE_ID_JOYPAD_START}], now[J{RETRO_DEVICE_ID_JOYPAD_Y}], now[J{RETRO_DEVICE_ID_JOYPAD_A}]});
+        }
+        std::copy(now, now + 16, padWas[player]);
+        auto analog = [&](unsigned index, unsigned id) {
+            return inputStateCb(static_cast<unsigned>(player), RETRO_DEVICE_ANALOG, index, id);
+        };
+        uint8_t l = static_cast<uint8_t>((up ? 0x01 : 0) | (fire ? 0x10 : 0));
+        if (dev == RETRO_DEVICE_JOYPAD) {
+            if (!oskHere) {
+                // The D-pad, or the left stick pushed past half way.
+                const int ax = analog(RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
+                const int ay = analog(RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y);
+                l |= static_cast<uint8_t>((now[RETRO_DEVICE_ID_JOYPAD_UP] || ay < -0x4000 ? 0x01 : 0) |
+                                          (now[RETRO_DEVICE_ID_JOYPAD_DOWN] || ay > 0x4000 ? 0x02 : 0) |
+                                          (now[RETRO_DEVICE_ID_JOYPAD_LEFT] || ax < -0x4000 ? 0x04 : 0) |
+                                          (now[RETRO_DEVICE_ID_JOYPAD_RIGHT] || ax > 0x4000 ? 0x08 : 0));
+            } else {
+                l = 0;
+            }
+        } else if (dev == kDevicePaddles) {
+            // P1-P3: a stick's X is a knob (right = clockwise = lower); the button mapped to fire
+            // is paddle X's (LEFT line), A paddle Y's (RIGHT line). With paddles for both
+            // players, player 2 turns paddle Y of player 1's port.
+            auto knob = [](int x) { return 255 - (x + 32768) * 255 / 65535; };
+            const int lx = analog(RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
+            const int rx = analog(RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X);
+            const bool second = player == 1 && device[0] == kDevicePaddles;
+            const int p = (second ? portOf(0) : port) - 1;
+            if (second) {
+                pots[p][1] = knob(lx);
+                if (fire) lines[p] |= 0x08;
+                l = 0;
+            } else {
+                pots[p][0] = knob(lx);
+                if (pots[p][1] < 0) pots[p][1] = knob(rx);
+                l = static_cast<uint8_t>((fire ? 0x04 : 0) | (now[RETRO_DEVICE_ID_JOYPAD_A] ? 0x08 : 0));
+            }
+        } else if (dev == RETRO_DEVICE_MOUSE) {
+            // M1-M4: the position modulo 64 in pot bits 6..1, at most 31 steps a frame; Y counts
+            // up as the mouse moves away from the user. Left button = FIRE, right = UP.
+            auto m = [&](unsigned id) { return inputStateCb(static_cast<unsigned>(player), RETRO_DEVICE_MOUSE, 0, id); };
+            mouseAcc[player][0] += m(RETRO_DEVICE_ID_MOUSE_X);
+            mouseAcc[player][1] -= m(RETRO_DEVICE_ID_MOUSE_Y);
+            for (int axis = 0; axis < 2; ++axis) {
+                const int step = std::clamp(mouseAcc[player][axis], -31, 31);
+                mouseAcc[player][axis] -= step;
+                mousePos[player][axis] += step;
+                pots[port - 1][axis] = (mousePos[player][axis] & 63) << 1;
+            }
+            l |= static_cast<uint8_t>((m(RETRO_DEVICE_ID_MOUSE_LEFT) ? 0x10 : 0) | (m(RETRO_DEVICE_ID_MOUSE_RIGHT) ? 0x01 : 0));
+        } else if (dev == RETRO_DEVICE_LIGHTGUN && port == 1) {
+            // L1-L3: the pen looks at a point of the shown picture; its button is on UP.
+            auto g = [&](unsigned id) { return inputStateCb(static_cast<unsigned>(player), RETRO_DEVICE_LIGHTGUN, 0, id); };
+            const auto& t = machine->timing();
+            if (!g(RETRO_DEVICE_ID_LIGHTGUN_IS_OFFSCREEN) && crop.w > 0) {
+                const int x = (g(RETRO_DEVICE_ID_LIGHTGUN_SCREEN_X) + 0x7FFF) * crop.w / 0xFFFF;
+                const int y = (g(RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y) + 0x7FFF) * crop.h / 0xFFFF;
+                if (x >= 0 && x < crop.w && y >= 0 && y < crop.h) {
+                    penLine = (t.firstVisibleLine + crop.y + y) % t.linesPerFrame;
+                    penCycle = (t.firstVisiblePixel + crop.x + x) / 8 + 1;
+                }
+            }
+            if (g(RETRO_DEVICE_ID_LIGHTGUN_TRIGGER)) l |= 0x01;
+        }
+        lines[port - 1] |= l;
     }
-    if (r2 && !r2Was && machine->datasette().hasTape()) {
-        machine->datasette().rewind();
-        notify("Datasette: rewound");
+    osk.keysDown(keys);
+    for (int k = 0; k < k64lr::kC64KeyCount; ++k) {
+        if (!keys[static_cast<size_t>(k)]) continue;
+        const k64lr::C64Key& key = k64lr::kC64Keys[k];
+        if (key.row < 0) { restore = true; continue; }
+        machine->setKey(key.col, key.row, true);
+        if (key.shift) machine->setKey(1, 7, true);
     }
-    l2Was = l2;
-    r2Was = r2;
-    const uint8_t lines = static_cast<uint8_t>((pad(RETRO_DEVICE_ID_JOYPAD_UP) ? 0x01 : 0) | (pad(RETRO_DEVICE_ID_JOYPAD_DOWN) ? 0x02 : 0) |
-                                               (pad(RETRO_DEVICE_ID_JOYPAD_LEFT) ? 0x04 : 0) | (pad(RETRO_DEVICE_ID_JOYPAD_RIGHT) ? 0x08 : 0) |
-                                               (pad(RETRO_DEVICE_ID_JOYPAD_B) ? 0x10 : 0));
-    const int port = joystickPort();
-    machine->setJoystick(port, lines);
-    machine->setJoystick(3 - port, 0);
+    machine->setRestore(restore);
+    machine->setFreezeButton(freeze);
+    machine->setJoystick(1, lines[0]);
+    machine->setJoystick(2, lines[1]);
+    machine->setPaddles(1, pots[0][0], pots[0][1]);
+    machine->setPaddles(2, pots[1][0], pots[1][1]);
+    machine->setLightPen(penLine, penCycle);
+}
+
+// The content's file name, for the automatic model.
+std::string contentName;
+
+// "Automatic": NTSC when the file name says so ("NTSC", or a region tag of an NTSC country
+// alone: "(USA)", "(Japan)"), else PAL, the machine most C64 software was made on.
+k64::VicModel modelForName(const std::string& path) {
+    std::string n = path.substr(path.find_last_of("/\\") == std::string::npos ? 0 : path.find_last_of("/\\") + 1);
+    for (char& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const bool ntsc = n.find("ntsc") != std::string::npos || n.find("(usa)") != std::string::npos || n.find("(japan)") != std::string::npos;
+    return ntsc ? k64::VicModel::Mos6567R8 : k64::VicModel::Mos6569;
 }
 
 k64::VicModel modelFromOptions() {
     retro_variable var{"kernal64_model", nullptr};
-    k64::VicModel m = k64::VicModel::Mos6569;
+    k64::VicModel m = modelForName(contentName);
     if (envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) k64::vicModelFromName(var.value, m);
     return m;
+}
+
+// What each RetroPad button does, for the frontend's remapping screen.
+void setDescriptors() {
+    static std::vector<retro_input_descriptor> d;
+    static std::vector<std::string> labels;
+    d.clear();
+    labels.clear();
+    labels.reserve(2 * k64lr::kPadButtonCount);
+    for (unsigned p = 0; p < 2; ++p) {
+        d.push_back({p, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP, "Joystick up"});
+        d.push_back({p, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN, "Joystick down"});
+        d.push_back({p, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT, "Joystick left"});
+        d.push_back({p, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Joystick right"});
+        d.push_back({p, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X, "Joystick / paddle X"});
+        d.push_back({p, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y, "Joystick"});
+        d.push_back({p, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, "Paddle Y"});
+        for (int b = 0; b < k64lr::kPadButtonCount; ++b) {
+            const k64lr::PadAction a = padMap[b];
+            if (a == k64lr::kNone) continue;
+            static const char* kNames[] = {"", "Joystick fire", "Joystick fire, repeating", "Joystick up", "On-screen keyboard",
+                                           "Datasette PLAY / STOP", "Datasette RECORD", "Datasette rewind",
+                                           "Freezer cartridge button", "Swap the joystick ports"};
+            labels.push_back(a >= k64lr::kKey ? std::string("Key ") + k64lr::kC64Keys[a - k64lr::kKey].label
+                                              : std::string(kNames[static_cast<int>(a)]));
+            d.push_back({p, RETRO_DEVICE_JOYPAD, 0, k64lr::kPadButtons[b].id, labels.back().c_str()});
+        }
+    }
+    d.push_back({0, 0, 0, 0, nullptr});
+    envCb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, d.data());
 }
 
 k64::CiaModel ciaFromOptions() {
@@ -474,31 +671,19 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
     envCb = cb;
     bool noGame = true;
     cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &noGame);
-    static const retro_variable vars[] = {
-        {"kernal64_model", "Video chip; pal|pal-new|pal-old|ntsc|ntsc-new|ntsc-old"},
-        {"kernal64_cia", "CIA chips; 6526|8521"},
-        {"kernal64_sid", "SID chip; 6581|8580"},
-        {"kernal64_sid_noise_pulse", "6581: noise + pulse on the noise register; drains it|leaves it alone"},
-        {"kernal64_border", "Border; full|small|none"},
-        {"kernal64_drive8", "Drive 8 (1541); on|off"},
-        {"kernal64_joyport", "RetroPad is the joystick in control port; 2|1"},
-        {nullptr, nullptr},
-    };
-    cb(RETRO_ENVIRONMENT_SET_VARIABLES, const_cast<retro_variable*>(vars));
+    k64lr::registerOptions(cb);
     cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, const_cast<retro_disk_control_ext_callback*>(&kDiskControl));
-    // What the RetroPad's buttons are, for the frontend's remapping screen.
-    static const retro_input_descriptor inputs[] = {
-        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP, "Joystick up"},
-        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN, "Joystick down"},
-        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT, "Joystick left"},
-        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Joystick right"},
-        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "Fire"},
-        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3, "Cartridge freeze button"},
-        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2, "Datasette PLAY / STOP"},
-        {0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2, "Datasette rewind"},
-        {0, 0, 0, 0, nullptr},
+    // The devices a player can plug in (local-notes/hw/input.md).
+    static const retro_controller_description kTypes[] = {
+        {"Joystick", RETRO_DEVICE_JOYPAD},
+        {"Paddles", kDevicePaddles},
+        {"Mouse (1351)", RETRO_DEVICE_MOUSE},
+        {"Light pen (control port 1)", RETRO_DEVICE_LIGHTGUN},
+        {"None", RETRO_DEVICE_NONE},
     };
-    cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, const_cast<retro_input_descriptor*>(inputs));
+    static const retro_controller_info kPorts[] = {{kTypes, 5}, {kTypes, 5}, {nullptr, 0}};
+    cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, const_cast<retro_controller_info*>(kPorts));
+    if (!cb(RETRO_ENVIRONMENT_GET_LED_INTERFACE, &ledCb)) ledCb = {};
     retro_log_callback logging{};
     logCb = cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging) ? logging.log : nullptr;
 }
@@ -530,7 +715,12 @@ RETRO_API void retro_get_system_info(retro_system_info* info) {
 
 RETRO_API void retro_get_system_av_info(retro_system_av_info* info) { fillAvInfo(info); }
 
-RETRO_API void retro_set_controller_port_device(unsigned, unsigned) {}
+RETRO_API void retro_set_controller_port_device(unsigned port, unsigned dev) {
+    if (port > 1) return;
+    device[port] = dev;
+    if (dev == RETRO_DEVICE_LIGHTGUN && portOf(static_cast<int>(port)) != 1)
+        notify("Kernal64: a light pen works in control port 1 only");
+}
 
 RETRO_API void retro_reset(void) {
     if (machine) machine->reset();
@@ -542,7 +732,14 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
         log(RETRO_LOG_ERROR, "frontend does not accept XRGB8888");
         return false;
     }
+    contentName = info && info->path ? info->path : "";
     machine = std::make_unique<k64::C64>(modelFromOptions());
+    readPadOptions();
+    setDescriptors();
+    osk.setOpen(false);
+    portsSwapped = false;
+    std::memset(mouseAcc, 0, sizeof mouseAcc);
+    std::memset(mousePos, 0, sizeof mousePos);
     machine->setCiaModel(ciaFromOptions());
     machine->setSidModel(sidFromOptions());
     machine->setSidNoisePulseDrains(sidNoisePulseDrainsFromOptions());
@@ -563,6 +760,7 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
         else missing += std::string(missing.empty() ? "" : ", ") + k64::romName(r);
     }
     machine->setRoms(roms);
+    osk.setFont(roms.has(k64::RomRole::Chargen) ? roms.image[static_cast<size_t>(k64::RomRole::Chargen)].data() : nullptr);
     if (roms.has(k64::RomRole::Drive1541Low) && roms.has(k64::RomRole::Drive1541High)) {
         for (k64::RomRole r : {k64::RomRole::Drive1541Low, k64::RomRole::Drive1541High})
             log(RETRO_LOG_INFO, "%s: from %s", k64::romName(r), roms.from[static_cast<size_t>(r)].c_str());
@@ -605,6 +803,8 @@ RETRO_API void retro_run(void) {
         machine->setSidModel(sidFromOptions());
         machine->setSidNoisePulseDrains(sidNoisePulseDrainsFromOptions());
         machine->setDriveWanted(driveFromOptions());
+        readPadOptions();
+        setDescriptors();
         const k64::VicModel m = modelFromOptions();
         const bool newModel = m != machine->timing().model;
         if (newModel) machine->setModel(m);
@@ -623,6 +823,13 @@ RETRO_API void retro_run(void) {
 
     const auto& t = machine->timing();
     machine->visibleFrame(frameOut.data());
+    osk.draw(frameOut.data() + static_cast<size_t>(crop.y) * static_cast<size_t>(t.visibleWidth) + static_cast<size_t>(crop.x),
+             static_cast<size_t>(t.visibleWidth), crop.w, crop.h);
+    // The drive's activity light on the frontend's LED 0.
+    if (ledCb.set_led_state && machine->driveAttached() && machine->drive().led() != ledWas) {
+        ledWas = machine->drive().led();
+        ledCb.set_led_state(0, ledWas ? 1 : 0);
+    }
     videoCb(frameOut.data() + static_cast<size_t>(crop.y) * static_cast<size_t>(t.visibleWidth) + static_cast<size_t>(crop.x),
             static_cast<unsigned>(crop.w), static_cast<unsigned>(crop.h), static_cast<size_t>(t.visibleWidth) * sizeof(uint32_t));
 
@@ -644,9 +851,34 @@ RETRO_API void retro_run(void) {
     if (tape && tape->changed && machine->datasette().button() == k64::Datasette::Button::None) saveTape();
 }
 
-// A state = the machine's state, which holds the surface of the disk in the drive, then which
-// disk of the list that is (4 bytes, little-endian; 0xFFFFFFFF = the drive is empty).
-constexpr size_t kDiskTailSize = 4;
+// A state = the machine's state, which holds the surface of the disk in the drive, then a tail
+// (little-endian): which disk of the list that is (4 bytes; 0xFFFFFFFF = the drive is empty),
+// whether the joystick ports are swapped (1), the 1351 mice's positions and movement still to
+// pass on (8 x 4), the RetroPad buttons as last seen (2 x 16), the on-screen keyboard's owner
+// (1) and state: what a replay needs to come out the same.
+constexpr size_t kDiskTailSize = 4 + 1 + 8 * 4 + 32 + 1 + k64lr::Osk::kStateSize;
+void putTail(uint8_t* out, uint32_t inDrive) {
+    auto put32 = [&out](uint32_t v) { for (int b = 0; b < 4; ++b) *out++ = static_cast<uint8_t>(v >> (8 * b)); };
+    put32(inDrive);
+    *out++ = portsSwapped ? 1 : 0;
+    for (int p = 0; p < 2; ++p)
+        for (int a = 0; a < 2; ++a) { put32(static_cast<uint32_t>(mousePos[p][a])); put32(static_cast<uint32_t>(mouseAcc[p][a])); }
+    for (const auto& player : padWas)
+        for (bool b : player) *out++ = b ? 1 : 0;
+    *out++ = static_cast<uint8_t>(oskOwner);
+    osk.saveState(out);
+}
+void getTailInput(const uint8_t* in) {
+    auto get32 = [&in]() { const uint32_t v = static_cast<uint32_t>(in[0] | in[1] << 8 | in[2] << 16 | static_cast<uint32_t>(in[3]) << 24); in += 4; return v; };
+    in += 4;
+    portsSwapped = *in++ != 0;
+    for (int p = 0; p < 2; ++p)
+        for (int a = 0; a < 2; ++a) { mousePos[p][a] = static_cast<int>(get32()); mouseAcc[p][a] = static_cast<int>(get32()); }
+    for (auto& player : padWas)
+        for (bool& b : player) b = *in++ != 0;
+    oskOwner = *in++ & 1;
+    osk.loadState(in);
+}
 constexpr uint32_t kNoDisk = 0xFFFFFFFFu;
 
 RETRO_API size_t retro_serialize_size(void) { return machine ? kDiskTailSize + machine->stateSize() : 0; }
@@ -657,7 +889,7 @@ RETRO_API bool retro_serialize(void* data, size_t size) {
     const uint32_t inDrive = disk ? static_cast<uint32_t>(slotIndex) : kNoDisk;
     machine->saveState(out);
     out += machine->stateSize();
-    for (int b = 0; b < 4; ++b) out[b] = static_cast<uint8_t>(inDrive >> (8 * b));
+    putTail(out, inDrive);
     return true;
 }
 
@@ -686,7 +918,9 @@ RETRO_API bool retro_unserialize(const void* data, size_t size) {
             diskEjected = false;
         }
     }
-    return machine->loadState(in, machine->stateSize());
+    if (!machine->loadState(in, machine->stateSize())) return false;
+    getTailInput(tail);
+    return true;
 }
 
 RETRO_API void retro_cheat_reset(void) {}
