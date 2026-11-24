@@ -14,7 +14,7 @@
 // --freeze-frames holds the RetroPad button the core uses as a cartridge's freeze button
 // (a click of the right stick) during each frame N and the one after it.
 // --type presses the keys for TEXT one at a time from frame --type-at (default 200),
-// each held 3 frames and released 3 ("\n" = RETURN; typed as on a US keyboard, the core's default symbolic keymap: * + : " # $ ? ( ) with SHIFT). --expect-screen fails the run
+// each held 3 frames and released 3 ("\n" = RETURN; typed as on a US keyboard, the core's default symbolic keymap: * + : " # $ ? ( ) @ with SHIFT). --expect-screen fails the run
 // unless TEXT is in the C64 text screen ($0400), read through RETRO_MEMORY_SYSTEM_RAM.
 // --expect-tone fails the run unless the last half second of audio is a tone of HZ (within
 // 0.1 %) at a level between DB_MIN and DB_MAX (RMS, dB below full scale); --expect-level
@@ -337,6 +337,7 @@ unsigned keyFor(char ch) {
     case '+': return RETROK_EQUALS;
     case ':': return RETROK_SEMICOLON;
     case '"': return RETROK_QUOTE;
+    case '@': return RETROK_2;
     case '#': return RETROK_3;
     case '$': return RETROK_4;
     case '?': return RETROK_SLASH;
@@ -345,7 +346,7 @@ unsigned keyFor(char ch) {
     default: return RETROK_UNKNOWN;
     }
 }
-bool shifted(char ch) { return std::strchr("*+:\"#$?()", ch) != nullptr && ch != 0; }
+bool shifted(char ch) { return std::strchr("*+:\"#$?()@", ch) != nullptr && ch != 0; }
 std::vector<unsigned> freezeFrames;
 void inputPoll() {}
 int16_t inputState(unsigned port, unsigned device, unsigned index, unsigned id) {

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <chrono>
 #include <cctype>
 #include <cmath>
@@ -395,6 +396,78 @@ void applyInput() {
 
 // The content's file name, for the automatic model.
 std::string contentName;
+
+bool readWhole(const std::string& path, std::vector<uint8_t>& bytes);
+bool writeWhole(const std::string& path, const std::vector<uint8_t>& data);
+
+// The folder drive's folder (option kernal64_folder_drive): "<save folder>/<content name> Drive", made when
+// first needed. Files are NAME.prg and NAME.seq; anything else in the folder is left alone.
+class DirStore : public k64::FolderStore {
+public:
+    explicit DirStore(std::string dir) : dir_(std::move(dir)) {}
+    std::vector<Entry> list() override {
+        std::vector<Entry> out;
+        std::error_code ec;
+        for (const auto& e : std::filesystem::directory_iterator(dir_, ec)) {
+            if (!e.is_regular_file(ec)) continue;
+            std::string ext = e.path().extension().string();
+            for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (ext != ".prg" && ext != ".seq") continue;
+            out.push_back({e.path().stem().string(), ext == ".seq", static_cast<size_t>(e.file_size(ec))});
+        }
+        return out;
+    }
+    bool read(const std::string& name, bool seq, std::vector<uint8_t>& out) override {
+        return readWhole(file(name, seq), out);
+    }
+    bool write(const std::string& name, bool seq, const std::vector<uint8_t>& data) override {
+        std::error_code ec;
+        std::filesystem::create_directories(dir_, ec);
+        return writeWhole(file(name, seq), data);
+    }
+    bool remove(const std::string& name) override {
+        std::error_code ec;
+        const bool a = std::filesystem::remove(file(name, false), ec), b = std::filesystem::remove(file(name, true), ec);
+        return a || b;
+    }
+    bool rename(const std::string& from, const std::string& to) override {
+        std::error_code ec;
+        for (bool seq : {false, true})
+            if (std::filesystem::exists(file(from, seq), ec)) {
+                std::filesystem::rename(file(from, seq), file(to, seq), ec);
+                return !ec;
+            }
+        return false;
+    }
+    std::string label() override { return std::filesystem::path(dir_).filename().string(); }
+    const std::string& dir() const { return dir_; }
+private:
+    std::string file(const std::string& name, bool seq) const { return dir_ + "/" + name + (seq ? ".seq" : ".prg"); }
+    std::string dir_;
+};
+std::unique_ptr<DirStore> folderStore;
+
+// Option kernal64_folder_drive: the device number (10, 9 or 11) or off.
+int folderDriveDevice() {
+    retro_variable var{"kernal64_folder_drive", nullptr};
+    if (!(envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)) return 10;
+    if (!std::strcmp(var.value, "off")) return 0;
+    const int n = std::atoi(var.value);
+    return n >= 8 && n <= 30 ? n : 10;
+}
+
+void applyFolderDrive() {
+    const int number = folderDriveDevice();
+    const char* saveDir = nullptr;
+    if (number == 0 || !envCb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &saveDir) || !saveDir) {
+        machine->setFolderDrive(nullptr, 0);
+        return;
+    }
+    std::string stem = contentName.empty() ? "Kernal64" : std::filesystem::path(contentName).stem().string();
+    const std::string dir = std::string(saveDir) + "/" + stem + " Drive";
+    if (!folderStore || folderStore->dir() != dir) folderStore = std::make_unique<DirStore>(dir);
+    machine->setFolderDrive(folderStore.get(), number);
+}
 
 // "Automatic": NTSC when the file name says so ("NTSC", or a region tag of an NTSC country
 // alone: "(USA)", "(Japan)"), else PAL, the machine most C64 software was made on.
@@ -933,6 +1006,7 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
     machine->setSidModel(sidFromOptions());
     machine->setSidNoisePulseDrains(sidNoisePulseDrainsFromOptions());
     machine->setDriveWanted(driveFromOptions());
+    applyFolderDrive();
     machine->setAudioRate(kSampleRate);
     crop = cropFromOptions();
     log(RETRO_LOG_INFO, "version %s, machine %s, CIA %s", KERNAL64_VERSION, machine->timing().name,
@@ -992,6 +1066,7 @@ RETRO_API void retro_run(void) {
         machine->setSidModel(sidFromOptions());
         machine->setSidNoisePulseDrains(sidNoisePulseDrainsFromOptions());
         machine->setDriveWanted(driveFromOptions());
+        applyFolderDrive();
         readPadOptions();
         setDescriptors();
         const k64::VicModel m = modelFromOptions();

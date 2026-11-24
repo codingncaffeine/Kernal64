@@ -38,6 +38,7 @@ add_library(k64core STATIC
   src/core/datasette.cpp
   src/drive/via6522.cpp
   src/drive/c1541.cpp
+  src/drive/folderdrive.cpp
   src/media/crt.cpp
   src/media/prg.cpp
   src/media/disk.cpp

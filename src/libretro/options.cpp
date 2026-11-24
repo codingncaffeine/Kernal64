@@ -72,6 +72,10 @@ std::vector<Def>& defs() {
                  "is *, SHIFT+' is \"). Positional: the keys are where the C64's own keys are (SHIFT+8 is the C64's (, "
                  "and so on), as on the real keyboard.", "input",
                  {{"symbolic", "Symbolic"}, {"positional", "Positional"}}, "symbolic"});
+    d.push_back({"kernal64_folder_drive", "Folder drive", "A drive whose disk is a folder of this computer (in the save "
+                 "folder, named after the content): SAVE\"NAME\",10 writes NAME.prg there, LOAD\"$\",10 lists it. Not real "
+                 "Commodore hardware: no fast loaders.", "media",
+                 {{"10", "Device 10"}, {"9", "Device 9"}, {"11", "Device 11"}, {"off", "Off"}}, "10"});
     d.push_back({"kernal64_joyport", "Player 1's control port", "The C64 control port player 1's controller is in; "
                  "player 2's is in the other. Most games read port 2.", "input",
                  {{"2", "Port 2"}, {"1", "Port 1"}}, "2"});

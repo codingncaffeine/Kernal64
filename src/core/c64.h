@@ -15,6 +15,7 @@
 #include "cartridge.h"
 #include "prg.h"
 #include "c1541.h"
+#include "folderdrive.h"
 #include "datasette.h"
 
 #include <algorithm>
@@ -64,6 +65,14 @@ public:
     }
     bool driveAttached() const { return driveWanted_ && drive_.hasRoms(); }
     const C1541& drive() const { return drive_; }
+    // The folder drive on the serial bus (a host folder as a disk; PLAN "HARD DRIVES" (a)): on with a store,
+    // at the given device number. Off (null store): it is not on the bus.
+    void setFolderDrive(FolderStore* store, int device) {
+        folder_.setStore(store);
+        folder_.setDevice(device);
+        folderOn_ = store != nullptr;
+    }
+    bool folderDriveOn() const { return folderOn_; }
     // The datasette on the cassette port.
     // The tape moves past the head: a button down and the motor running (what fast loading watches).
     bool tapeMoving() const {
@@ -227,6 +236,8 @@ private:
     bool debugCart_ = false;
     int debugExit_ = -1;
     C1541 drive_;
+    FolderDrive folder_;
+    bool folderOn_ = false;
     Datasette tape_;
     bool driveWanted_ = true;
     uint32_t driveNum_ = 1, driveDen_ = 1;   // drive cycles per machine cycle, exactly (setModel)

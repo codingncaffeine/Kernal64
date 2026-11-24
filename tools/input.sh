@@ -142,6 +142,30 @@ sbs_start core 0 "fast loading: a disk at 4x" --content "$ROOT/gitignore/externa
 sbs_start core 1 "fast loading: a disk (control: off)" --content "$ROOT/gitignore/external/testprogs/vdrive/test.d64" \
     --frames 200 --option kernal64_fast_loading=off --expect-screen 'ROM:  254'
 
+# The folder drive (option kernal64_folder_drive, device 10 by default: a host folder as a disk, in the
+# save folder, "<content> Drive"): a program saved, NEW, loaded and run (replayed from a state); the "$"
+# listing; a sequential file written with PRINT# and read with INPUT#; rename; scratch with its status;
+# SAVE"@:" replaces, a second plain SAVE is refused (63 FILE EXISTS). Control: with the drive off,
+# device 10 is not present.
+folder() {   # folder NAME WANT [K64HOST...]
+    local name="$1" want="$2"; shift 2
+    rm -rf "$OUT/folder-$name"; mkdir -p "$OUT/folder-$name"
+    core "$want" "folder drive: $name" --save "$OUT/folder-$name" "$@"
+}
+sbs_start folder "SAVE, NEW, LOAD, RUN" 0 --frames 1000 --check --type-at 200 --type '10 PRINT 77\nSAVE"HELLO",10\n' \
+    --type-at 500 --type 'NEW\nLOAD"HELLO",10\n' --type-at 850 --type 'RUN\n' --expect-screen ' 77'
+sbs_start folder "files" 0 --frames 2600 --type-at 200 \
+    --type '10 OPEN2,10,2,"DATA,S,W":PRINT#2,"HI THERE":CLOSE2\n20 OPEN2,10,2,"DATA,S,R":INPUT#2,A$:CLOSE2:PRINTA$\n30 OPEN15,10,15,"R:INFO=DATA":CLOSE15:SAVE"GONE",10\n40 OPEN15,10,15,"S:GONE":INPUT#15,E,E$,T,S:CLOSE15:PRINTE;E$;T\nRUN\n' \
+    --type-at 2000 --type 'LOAD"$",10\n' --type-at 2400 --type 'LIST\n' \
+    --expect-screen 'HI THERE' --expect-screen ' 1 FILES SCRATCHED 1' --expect-screen '"INFO"' --expect-screen ' SEQ'
+sbs_start folder "@: replaces, a second SAVE is refused" 0 --frames 2600 --type-at 200 \
+    --type '10 PRINT 1\nSAVE"P",10\n' --type-at 500 --type '10 PRINT 2\nSAVE"P",10\n' \
+    --type-at 800 --type 'NEW\nLOAD"P",10\n' --type-at 1150 --type 'RUN\n' \
+    --type-at 1300 --type '10 PRINT 3\nSAVE"@:P",10\n' --type-at 1650 --type 'NEW\nLOAD"P",10\n' --type-at 2000 --type 'RUN\n' \
+    --expect-screen ' 1 ' --expect-screen ' 3 '
+sbs_start folder "(control: off, device 10 not present)" 1 --frames 600 --option kernal64_folder_drive=off \
+    --type-at 200 --type '10 PRINT 1\nSAVE"P",10\n' --expect-screen 'SAVING'
+
 # The keyboard (option kernal64_keyboard). Symbolic, the default: keys type what a US keyboard
 # prints (k64host types that way: SHIFT+8 is *, SHIFT+= is +, SHIFT+; is :, SHIFT+' is "); the
 # same typing under the positional map must fail. Positional: the C64's own layout, its * is the

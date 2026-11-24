@@ -9,7 +9,7 @@ namespace k64 {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x3436'4B32; // "K64" + format generation
-constexpr uint32_t kStateVersion = 19;
+constexpr uint32_t kStateVersion = 20;
 
 // The 1541 runs on its own 16 MHz crystal divided by 16 (hw/drive.md D1): 1 MHz. Against the
 // machine's clock that is exactly 18,000,000 / 17,734,475 drive cycles per machine cycle on
@@ -72,6 +72,7 @@ void C64::reset() {
     cart_.reset();
     drive_.setBus(false, false, false);
     drive_.reset();   // the serial bus's RESET line is the machine's
+    folder_.reset();
     s_.autostartPending = autostart_.data.empty() ? 0 : 1;
     updatePots();
 }
@@ -383,8 +384,8 @@ uint8_t C64::ciaPortA(int cia, uint8_t driven) {
     // inverters; the inputs read CLK (bit 6) and DATA (bit 7) as they are: low when any
     // device pulls them.
     const bool drive = driveAttached();
-    const bool clk = !(driven & 0x10) && !(drive && drive_.pullsClk());
-    const bool data = !(driven & 0x20) && !(drive && drive_.pullsData());
+    const bool clk = !(driven & 0x10) && !(drive && drive_.pullsClk()) && !(folderOn_ && folder_.pullsClk());
+    const bool data = !(driven & 0x20) && !(drive && drive_.pullsData()) && !(folderOn_ && folder_.pullsData());
     return static_cast<uint8_t>((driven & 0x3F) | (clk ? 0x40 : 0) | (data ? 0x80 : 0)) &
            static_cast<uint8_t>(driven | 0x3F);
 }
@@ -441,11 +442,21 @@ void C64::tick() {
         while (s_.drivePhase >= driveDen_) {
             s_.drivePhase -= driveDen_;
             const uint8_t pa = end >= delay ? now : before;
-            drive_.setBus((pa & 0x08) != 0, (pa & 0x10) != 0, (pa & 0x20) != 0);
+            // The lines are low when anybody pulls them: the folder drive's pulls reach the 1541 too.
+            drive_.setBus((pa & 0x08) != 0, (pa & 0x10) != 0 || (folderOn_ && folder_.pullsClk()),
+                          (pa & 0x20) != 0 || (folderOn_ && folder_.pullsData()));
             drive_.tick();
             end += driveDen_;
         }
         s_.busOut = now;
+    }
+    if (folderOn_) {
+        // The folder drive sees what the computer drives and what the 1541 pulls (about a microsecond a
+        // cycle: its protocol timings are counted in these cycles).
+        const uint8_t pa = cia2_.portAOut();
+        const bool drive = driveAttached();
+        folder_.tick((pa & 0x08) != 0, (pa & 0x10) != 0 || (drive && drive_.pullsClk()),
+                     (pa & 0x20) != 0 || (drive && drive_.pullsData()));
     }
     cpu_.tick();
     if (s_.potAny) updatePots();
@@ -511,7 +522,7 @@ void C64::visibleFrame(uint32_t* out) const {
 // ---- save states ----------------------------------------------------------------
 
 size_t C64::stateSize() const {
-    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot) + C1541::stateSize() + sizeof(Datasette::State) + 4;
+    return 4 + 4 + 3 + sizeof(State) + sizeof(Vic2::State) + 2 * sizeof(Cia6526::State) + sizeof(Sid::State) + sizeof(Cartridge::State) + cart_.contentSize() + sizeof(BoardFilter::State) + ram_.size() + colorRam_.size() + sizeof(Cpu6502<CpuBus>::Snapshot) + C1541::stateSize() + sizeof(Datasette::State) + 4 + FolderDrive::stateSize();
 }
 
 void C64::saveState(uint8_t* out) const {
@@ -546,6 +557,8 @@ void C64::saveState(uint8_t* out) const {
     put(&ts, sizeof ts);
     const uint32_t tapeLength = tape_.tapeLength();
     put(&tapeLength, 4);
+    folder_.saveState(out);
+    out += FolderDrive::stateSize();
     cart_.saveContent(out);
 }
 
@@ -618,6 +631,8 @@ bool C64::loadState(const uint8_t* in, size_t size) {
     uint32_t tapeLength = 0;
     get(&tapeLength, 4);
     tape_.cutTape(tapeLength);
+    folder_.loadState(in);
+    in += FolderDrive::stateSize();
     cart_.loadContent(in);
     return true;
 }
