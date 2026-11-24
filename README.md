@@ -11,7 +11,7 @@ running its own DOS, the datasette, and a CMD HD hard drive running its own DOS.
 
 ## What sets it apart
 
-- **Measured, not guessed.** Every chip is built from its documents and checked against
+- Every chip is built from its documents and checked against
   ground truth: the CPU against a transistor-level simulation of the 6502 and all 2,560,000
   per-opcode bus traces; the PLA against a real chip's read-out for all 65,536 inputs; the
   drives and cartridges against bytes captured from real hardware. On the established C64 test
