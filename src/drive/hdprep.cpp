@@ -185,7 +185,7 @@ bool makeHardDrive(const std::string& path, uint64_t bytes, const RomSet& roms, 
                    int* partitionsMade) {
     namespace fs = std::filesystem;
     error.clear();
-    if (bytes < kHardDriveMinBytes || bytes > kHardDriveMaxBytes) { error = "the size must be from 20 MB to 2 GB"; return false; }
+    if (bytes < kHardDriveMinBytes || bytes > kHardDriveMaxBytes) { error = "the size must be from 20 MB to 1 GB"; return false; }
     bytes &= ~uint64_t(511);
     DiskFile need[kNeedCount];
     if (!pickNeeded(d81, need)) { error = "the utilities disk does not hold the programs that set a drive up"; return false; }

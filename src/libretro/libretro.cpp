@@ -1363,10 +1363,10 @@ extern "C" RETRO_API int kernal64_hard_drive_requirements(const char* systemDir)
            (roms.has(k64::RomRole::Basic) && roms.has(k64::RomRole::Kernal) && roms.has(k64::RomRole::Chargen) ? 4 : 0);
 }
 
-// Makes a ready CMD HD image at PATH of BYTES (20 MB to 2 GB): the drive's own programs install
+// Makes a ready CMD HD image at PATH of BYTES (20 MB to 1 GB): the drive's own programs install
 // its DOS and the partitions are made and formatted (src/drive/hdprep.h). PROGRESS (may be null)
 // gets 0-100 and returns 0 to cancel. Returns the number of partitions made, or 0 with a
-// message in ERROR. Takes from seconds (20 MB) to minutes (2 GB): call it off the UI thread.
+// message in ERROR. Takes from about 20 seconds (20 MB) to about a minute (1 GB): call it off the UI thread.
 extern "C" RETRO_API int kernal64_make_hard_drive(const char* path, uint64_t bytes, const char* systemDir,
                                                  int (*progress)(int percent, void* user), void* user,
                                                  char* error, size_t errorSize) {

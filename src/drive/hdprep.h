@@ -23,7 +23,7 @@
 namespace k64 {
 
 constexpr uint64_t kHardDriveMinBytes = 20ull << 20;   // the smallest CMD HD sold
-constexpr uint64_t kHardDriveMaxBytes = 2ull << 30;    // our limit (USER 2026-11-24)
+constexpr uint64_t kHardDriveMaxBytes = 1ull << 30;    // the DOS reaches 1 GB of a disk (USER 2026-11-24: 1 GB)
 
 // Finds the utilities disk in DIR or DIR/kernal64: a D81 holding every program step 1 needs.
 bool findUtilitiesDisk(const std::string& dir, std::vector<uint8_t>& d81, std::string& from);
