@@ -318,6 +318,10 @@ if [ "$QUICK" = 0 ]; then
             || { tail -5 "$BUILD/ra.log"; bad "RetroArch run"; }
         grep -q "\[Kernal64\] version" "$BUILD/ra.log" || bad "RetroArch did not log the core's version line"
         grep -q "missing system files" "$BUILD/ra.log" && bad "RetroArch run without the system ROMs"
+        # Each kind of content saved and restored by RetroArch itself, frame-exact.
+        timeout 300 tools/retroarch-states.sh "$BUILD" >"$BUILD/ra-states.log" 2>&1
+        grep '^FAIL' "$BUILD/ra-states.log" && bad "RetroArch save state and restore"
+        [ "$(grep -c '^ok' "$BUILD/ra-states.log")" = 7 ] || { tail -5 "$BUILD/ra-states.log"; bad "RetroArch states: not all 7 kinds of content checked"; }
     else
         echo "(RetroArch not installed: skipped)"
     fi

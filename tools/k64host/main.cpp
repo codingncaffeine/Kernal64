@@ -32,6 +32,7 @@
 // to TO: INPUT = a RetroPad button (b a y x up down left right select start l r l2 r2 l3 r3),
 // an analog axis (lx ly rx ry), the mouse (mx my = movement per frame, mleft mright) or the
 // light gun (gx gy = position -32767..32767, gtrigger, goffscreen).
+// --expect-ram ADDR VALUE (hex address, decimal value): RAM at the end must hold VALUE.
 // --expect-led N: the core's LED 0 must have been switched on at least N times.
 // Files: the host offers a VFS (version 1, plain files underneath) as RetroArch does and
 // counts its use; --no-vfs offers none; --expect-vfs fails the run unless the core used it. --check: a declared memory map must be the RAM the
@@ -402,6 +403,7 @@ int main(int argc, char** argv) {
     double expectHz = 0.0, expectDbMin = 0.0, expectDbMax = 0.0;
     bool expectSilence = false, expectLevel = false, expectLoadFailure = false;
     unsigned expectLed = 0;
+    std::vector<std::pair<unsigned, unsigned>> expectRam;
     bool expectVfs = false;
     double levelMin = 0.0, levelMax = 0.0;
     for (int i = 2; i < argc; ++i) {
@@ -437,6 +439,10 @@ int main(int argc, char** argv) {
         else if (a == "--expect-level") { expectLevel = true; levelMin = std::stod(next()); levelMax = std::stod(next()); }
         else if (a == "--options-version") optionsVersion = static_cast<unsigned>(std::stoul(next()));
         else if (a == "--no-vfs") offerVfs = false;
+        else if (a == "--expect-ram") {
+            const unsigned addr = static_cast<unsigned>(std::stoul(next(), nullptr, 16));
+            expectRam.emplace_back(addr & 0xFFFF, static_cast<unsigned>(std::stoul(next())));
+        }
         else if (a == "--expect-vfs") expectVfs = true;
         else if (a == "--expect-led") expectLed = static_cast<unsigned>(std::stoul(next()));
         else if (a == "--device") {
@@ -671,6 +677,11 @@ int main(int argc, char** argv) {
         c.retro_unload_game();   // what the core keeps is written by now
         if (!vfsCalls) fail("the core never used the frontend's VFS");
         c.retro_load_game(content.empty() ? nullptr : &gi);
+    }
+    for (const auto& [addr, want] : expectRam) {
+        const auto* ram = static_cast<const uint8_t*>(c.retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM));
+        if (!ram) fail("system RAM is not exposed");
+        else if (ram[addr] != want) fail("RAM $%04x holds %u, expected %u", addr, ram[addr], want);
     }
     if (ledOnCount < expectLed) fail("LED 0 was switched on %u time(s), expected at least %u", ledOnCount, expectLed);
     if (expectSilence) {

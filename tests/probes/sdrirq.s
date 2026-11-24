@@ -1,6 +1,6 @@
 ; Probe: at which cycle does the CPU take a CIA 1 interrupt, counted by timer B?
 ; -D SHIFT=0/1: one extra cycle before the NOP slide; -D MASK=$88 serial port, $81 timer A.
-; The result (timer B low byte at the handler's first instruction) goes to $D7FF.
+; The result (timer B low byte at the handler's first instruction) goes to $D7FF and $0400.
         * = $0801
         .basic
         sei
@@ -52,4 +52,5 @@ w2      bit $d011
 hang    jmp hang
 irq     lda $dc06
         sta $d7ff
+        sta $0400          ; also on the screen, for a run without the debug cartridge
 hang2   jmp hang2

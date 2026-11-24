@@ -92,6 +92,22 @@ TAPE=(--content "$OUT/blank.tap" --frames 1800 --option kernal64_pad_l=tape_play
 sbs_start core 0 "datasette RECORD through a mapped button" "${TAPE[@]}" --save "$OUT/tape1" --hold 600 602 0 r 1 --check
 sbs_start core 1 "datasette RECORD through a mapped button (control: no input)" "${TAPE[@]}" --save "$OUT/tape2"
 
+# The machine options through the core, each with what it changes: the CIA generation (the
+# serial-port interrupt probe takes its interrupt two timer counts later on the 8521, as in
+# tests/probes/expected.txt); drive 8 switched off refuses a disk; the automatic video chip
+# from the file name (the KERNAL's own PAL/NTSC flag at $02A6: 1 PAL, 0 NTSC).
+python3 -I "$ROOT/tools/k64asm.py" "$ROOT/tests/probes/sdrirq.s" -D SHIFT=0 -D 'MASK=$88' -o "$OUT/sdrirq.prg" >/dev/null
+sbs_start core 0 "CIA option 6526" --content "$OUT/sdrirq.prg" --frames 300 --option kernal64_cia=6526 --expect-ram 0400 169
+sbs_start core 0 "CIA option 8521" --content "$OUT/sdrirq.prg" --frames 300 --option kernal64_cia=8521 --expect-ram 0400 171
+python3 -I "$ROOT/tools/mkd64.py" "$OUT/blank.d64"
+sbs_start core 0 "drive 8 off: a disk is refused" --content "$OUT/blank.d64" --frames 10 --option kernal64_drive8=off --expect-load-failure
+sbs_start core 0 "drive 8 on: the disk loads" --content "$OUT/blank.d64" --frames 10 --option kernal64_drive8=on
+cp "$OUT/sdrirq.prg" "$OUT/probe (NTSC).prg"
+cp "$OUT/sdrirq.prg" "$OUT/probe (USA, Europe).prg"
+sbs_start core 0 "automatic model: NTSC in the name" --content "$OUT/probe (NTSC).prg" --frames 300 --expect-ram 02a6 0
+sbs_start core 0 "automatic model: PAL otherwise" --content "$OUT/probe (USA, Europe).prg" --frames 300 --expect-ram 02a6 1
+sbs_start core 0 "automatic model: the option wins" --content "$OUT/probe (NTSC).prg" --frames 300 --option kernal64_model=pal --expect-ram 02a6 1
+
 # Options in each version a frontend may speak (v2 with categories, v1, plain variables).
 for v in 2 1 0; do
     sbs_start core 0 "options version $v" --options-version $v --frames 400 --check --type 'PRINT 6*7\n' --expect-screen ' 42'
