@@ -1,6 +1,7 @@
 #include "disk.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace k64 {
@@ -184,7 +185,9 @@ std::vector<uint8_t> writeG64(const GcrDisk& disk) {
 // first SYNC that is followed by a sector header ($52 = GCR of $08's first five bits) recur;
 // failing that, after any SYNC; failing that, any 64-byte window; failing that, the nominal
 // length from the start.
-static std::vector<uint8_t> oneRevolution(const uint8_t* raw, size_t len, int zone) {
+enum class RevFound { Header, Sync, Window, Nominal };
+static std::vector<uint8_t> oneRevolution(const uint8_t* raw, size_t len, int zone, RevFound* how = nullptr) {
+    auto found = [&](RevFound f) { if (how) *how = f; };
     const size_t nominal = static_cast<size_t>(kTrackBytes[zone & 3]);
     const size_t lo = nominal * 95 / 100, hi = std::min(len - 16, nominal * 105 / 100);
     auto syncEnd = [&](size_t from, bool header) -> size_t {
@@ -205,6 +208,7 @@ static std::vector<uint8_t> oneRevolution(const uint8_t* raw, size_t len, int zo
                 size_t start = s;
                 while (start > 0 && raw[start - 1] == 0xFF) --start;
                 if (start + best > len) start = s;
+                found(header ? RevFound::Header : RevFound::Sync);
                 return std::vector<uint8_t>(raw + start, raw + start + best);
             }
         }
@@ -219,8 +223,9 @@ static std::vector<uint8_t> oneRevolution(const uint8_t* raw, size_t len, int zo
             const size_t dist = p > nominal ? p - nominal : nominal - p;
             if (dist < bestDist) { best = p; bestDist = dist; }
         }
-        if (best) return std::vector<uint8_t>(raw + x, raw + x + best);
+        if (best) { found(RevFound::Window); return std::vector<uint8_t>(raw + x, raw + x + best); }
     }
+    found(RevFound::Nominal);
     return std::vector<uint8_t>(raw, raw + std::min(len, nominal));
 }
 
@@ -238,6 +243,130 @@ bool parseNib(const uint8_t* data, size_t size, GcrDisk& out, std::string& error
         out.zone[i] = static_cast<uint8_t>(zone);
     }
     return true;
+}
+
+namespace {
+
+// What one revolution holds, read as the DOS would: after each SYNC (G1: ten or more 1 bits;
+// the track is byte-framed after a SYNC, as the drive frames it), a sector header ($08, checksum,
+// sector, track, ID; checksum = XOR of the four) or a data block ($07, 256 bytes, XOR checksum).
+struct TrackScan {
+    int syncs = 0, headersGood = 0, headersBad = 0, dataGood = 0, dataBad = 0;
+    int otherTrack = -1;            // a track number other than the expected one, from a good header
+    uint64_t sectors = 0;           // the sector numbers of good headers (bit per sector, up to 63)
+};
+
+// 5 GCR bytes -> 4 bytes; false if a 5-bit group is no GCR code.
+bool gcrDecode5(const uint8_t* in, uint8_t out[4]) {
+    static int8_t inv[32];
+    static bool ready = false;
+    if (!ready) { std::fill(std::begin(inv), std::end(inv), int8_t(-1)); for (int i = 0; i < 16; ++i) inv[kGcr[i]] = int8_t(i); ready = true; }
+    uint64_t bits = 0;
+    for (int i = 0; i < 5; ++i) bits = (bits << 8) | in[i];
+    bool ok = true;
+    for (int i = 0; i < 4; ++i) {
+        const int hi = inv[(bits >> (35 - 10 * i)) & 31], lo = inv[(bits >> (30 - 10 * i)) & 31];
+        ok = ok && hi >= 0 && lo >= 0;
+        out[i] = static_cast<uint8_t>(((hi & 15) << 4) | (lo & 15));
+    }
+    return ok;
+}
+
+TrackScan scanTrack(const std::vector<uint8_t>& t, int track) {
+    TrackScan r;
+    const size_t n = t.size();
+    if (n < 16) return r;
+    auto at = [&](size_t i) { return t[i % n]; };
+    for (size_t i = 0; i < n; ++i) {
+        // A SYNC ends at i: the byte before is all 1s with at least two more 1s before it.
+        if (at(i) == 0xFF || at(i + n - 1) != 0xFF || (at(i + n - 2) & 3) != 3) continue;
+        ++r.syncs;
+        uint8_t raw[325];
+        for (size_t k = 0; k < 325; ++k) raw[k] = at(i + k);
+        uint8_t first[4];
+        gcrDecode5(raw, first);
+        if (first[0] == 0x08) {
+            uint8_t h[8];
+            const bool codes = gcrDecode5(raw, h) && gcrDecode5(raw + 5, h + 4);
+            if (codes && h[1] == static_cast<uint8_t>(h[2] ^ h[3] ^ h[4] ^ h[5])) {
+                ++r.headersGood;
+                if (h[2] < 64) r.sectors |= uint64_t(1) << h[2];
+                if (h[3] != track) r.otherTrack = h[3];
+            } else {
+                ++r.headersBad;
+            }
+        } else if (first[0] == 0x07) {
+            uint8_t d[260];
+            bool codes = true;
+            for (int g = 0; g < 65; ++g) codes = gcrDecode5(raw + 5 * g, d + 4 * g) && codes;
+            uint8_t x = 0;
+            for (int k = 1; k <= 256; ++k) x ^= d[k];
+            if (codes && x == d[257]) ++r.dataGood; else ++r.dataBad;
+        }
+    }
+    return r;
+}
+
+std::string sectorList(uint64_t bits) {
+    std::string s;
+    for (int a = 0; a < 64; ++a) {
+        if (!(bits >> a & 1)) continue;
+        int b = a;
+        while (b + 1 < 64 && (bits >> (b + 1) & 1)) ++b;
+        if (!s.empty()) s += ',';
+        s += std::to_string(a);
+        if (b > a) s += '-' + std::to_string(b);
+        a = b;
+    }
+    return s.empty() ? "none" : s;
+}
+
+} // namespace
+
+std::vector<std::string> describeNib(const uint8_t* data, size_t size) {
+    std::vector<std::string> lines;
+    if (size < 0x100 || std::memcmp(data, "MNIB-1541-RAW", 13) != 0) { lines.push_back("not a NIB image"); return lines; }
+    int tracks = 0, halfTracks = 0;
+    std::vector<std::string> badBlocks, notFound, noSync;
+    size_t at = 0x100;
+    char buf[320];
+    for (size_t e = 0x10; e + 1 < 0x100 && data[e]; e += 2, at += 8192) {
+        const int halfTrack = data[e];
+        const uint8_t density = data[e + 1];
+        if (at + 8192 > size) { lines.push_back("track data outside the file: the image is cut short"); break; }
+        const std::string name = std::to_string(halfTrack / 2) + (halfTrack & 1 ? ".5" : "");
+        if (halfTrack < 2 || halfTrack >= 2 + GcrDisk::kHalfTracks) {
+            lines.push_back("track " + name + ": outside the drive's range, not used");
+            continue;
+        }
+        (halfTrack & 1 ? halfTracks : tracks)++;
+        RevFound how = RevFound::Nominal;
+        const std::vector<uint8_t> rev = oneRevolution(data + at, 8192, density & 3, &how);
+        const TrackScan sc = scanTrack(rev, halfTrack / 2);
+        const char* found = how == RevFound::Header ? "repeat after a sector header"
+                          : how == RevFound::Sync ? "repeat after a SYNC"
+                          : how == RevFound::Window ? "repeat of a 64-byte window"
+                          : "NOT FOUND, cut at the nominal length";
+        std::snprintf(buf, sizeof buf,
+                      "track %-4s density $%02X: %zu bytes (nominal %d), revolution: %s; SYNCs %d; headers %d good %d bad (sectors %s); data %d good %d bad",
+                      name.c_str(), density, rev.size(), kTrackBytes[density & 3], found, sc.syncs, sc.headersGood, sc.headersBad,
+                      sectorList(sc.sectors).c_str(), sc.dataGood, sc.dataBad);
+        std::string line = buf;
+        if (density & 0x80) line += "; dumper flag $80 (track of all 1s)";
+        if (density & 0x40) line += "; dumper flag $40 (no SYNC)";
+        if (sc.otherTrack >= 0) line += "; a header names track " + std::to_string(sc.otherTrack);
+        lines.push_back(line);
+        if (sc.headersBad || sc.dataBad) badBlocks.push_back(name);
+        if (how == RevFound::Nominal) notFound.push_back(name);
+        if (!sc.syncs) noSync.push_back(name);
+    }
+    auto join = [](const std::vector<std::string>& v) { std::string s; for (const auto& x : v) s += (s.empty() ? "" : " ") + x; return s.empty() ? std::string("none") : s; };
+    std::snprintf(buf, sizeof buf, "summary: %d tracks, %d half-tracks", tracks, halfTracks);
+    lines.push_back(buf);
+    lines.push_back("  revolution not found (our conversion is unsure): " + join(notFound));
+    lines.push_back("  bad header or data checksums (damage in the dump, or protection): " + join(badBlocks));
+    lines.push_back("  no SYNC at all (unformatted, or protection): " + join(noSync));
+    return lines;
 }
 
 bool parseDisk(const uint8_t* data, size_t size, GcrDisk& out, std::string& error) {

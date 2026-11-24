@@ -137,6 +137,11 @@ add_executable(imgtest tools/imgtest/main.cpp)
 target_include_directories(imgtest PRIVATE src/core)
 target_compile_options(imgtest PRIVATE ${K64_WARNINGS})
 
+# The report the core logs for a NIB disk image, for a file on its own.
+add_executable(nibinfo tools/nibinfo/main.cpp)
+target_link_libraries(nibinfo PRIVATE k64core)
+target_compile_options(nibinfo PRIVATE ${K64_WARNINGS})
+
 # Compares the PLA logic with a read-out of a real PLA.
 add_executable(placheck tools/placheck/main.cpp)
 target_include_directories(placheck PRIVATE src/core)

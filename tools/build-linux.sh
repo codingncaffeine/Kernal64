@@ -3,6 +3,7 @@
 #   bin/kernal64_libretro.so   the core
 #   bin/kernal64               starts it in RetroArch (arguments are passed on)
 #   bin/k64host                the test host
+#   bin/nibinfo                the NIB report the core logs, for a file
 #
 #   tools/build-linux.sh [Release|Debug]
 set -euo pipefail
@@ -21,6 +22,7 @@ install -m 755 "$BUILD/k64host" "$ROOT/bin/k64host"
 install -m 755 "$BUILD/cputest" "$ROOT/bin/cputest"
 install -m 755 "$BUILD/imgtest" "$ROOT/bin/imgtest"
 install -m 755 "$BUILD/placheck" "$ROOT/bin/placheck"
+install -m 755 "$BUILD/nibinfo" "$ROOT/bin/nibinfo"
 install -m 755 "$BUILD/k64run" "$ROOT/bin/k64run"
 install -m 755 "$BUILD/victest" "$ROOT/bin/victest"
 install -m 755 "$BUILD/audiotest" "$ROOT/bin/audiotest"

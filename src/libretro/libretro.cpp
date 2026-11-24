@@ -719,17 +719,26 @@ std::string diskCopyPath(const char* path) {
     return std::string(saveDir) + "/" + name + ".g64";
 }
 
+// A NIB is converted when it is read, track by track: the report says how each track came out.
+void logNibReport(const std::vector<uint8_t>& bytes, const std::string& path) {
+    if (bytes.size() < 13 || std::memcmp(bytes.data(), "MNIB-1541-RAW", 13) != 0) return;
+    log(RETRO_LOG_INFO, "nib: %s", path.c_str());
+    for (const std::string& line : k64::describeNib(bytes.data(), bytes.size())) log(RETRO_LOG_INFO, "nib: %s", line.c_str());
+}
+
 // The slot's disk: its kept copy when there is one, else the image file.
 bool loadSlot(DiskSlot& slot, std::string& error) {
     if (slot.disk) return true;
     auto d = std::make_shared<k64::GcrDisk>();
     std::vector<uint8_t> bytes;
     if (!slot.savePath.empty() && readWhole(slot.savePath, bytes) && k64::parseDisk(bytes.data(), bytes.size(), *d, error)) {
-        log(RETRO_LOG_INFO, "disk: the written copy %s", slot.savePath.c_str());
+        log(RETRO_LOG_INFO, "disk: the written copy %s is used, not %s (delete the copy to start again from the image)",
+            slot.savePath.c_str(), slot.path.c_str());
     } else {
         bytes.clear();
         if (!readWhole(slot.path, bytes)) { error = "cannot read " + slot.path; return false; }
         if (!k64::parseDisk(bytes.data(), bytes.size(), *d, error)) return false;
+        logNibReport(bytes, slot.path);
     }
     slot.disk = d;
     return true;
@@ -938,6 +947,10 @@ bool loadContent(const retro_game_info* info) {
             if (slots[0].savePath.empty() || !readWhole(slots[0].savePath, copy)) {
                 auto d = std::make_shared<k64::GcrDisk>();
                 if (k64::parseDisk(bytes.data(), bytes.size(), *d, error)) slots[0].disk = d;
+                logNibReport(bytes, slots[0].path);
+            } else {
+                log(RETRO_LOG_INFO, "disk: the written copy %s is used, not the image (delete the copy to start again from the image)",
+                    slots[0].savePath.c_str());
             }
         } else {
             for (const std::string& p : readM3u(info->path)) slots.push_back(DiskSlot{p, diskCopyPath(p.c_str()), nullptr});
@@ -1056,8 +1069,32 @@ RETRO_API void retro_reset(void) {
     if (machine) machine->reset();
 }
 
+// The drive's head and motor, logged when they change (sampled once a frame, at most
+// kDriveLogLines lines): where a loader goes on the disk, and the last place it went before it
+// stopped, show which track a game cannot read.
+int driveLogHead = -1, driveLogLines = 0;
+bool driveLogMotor = false;
+uint64_t driveLogFrame = 0;
+constexpr int kDriveLogLines = 4000;
+void logDrive() {
+    ++driveLogFrame;
+    if (!disk || !machine->driveAttached() || driveLogLines >= kDriveLogLines) return;
+    const auto& drv = machine->drive();
+    const int h = drv.halfTrack();
+    const bool motor = drv.motor();
+    if (h == driveLogHead && motor == driveLogMotor) return;
+    const bool inRange = h >= 2 && h < 2 + k64::GcrDisk::kHalfTracks;
+    const bool data = inRange && !disk->tracks[static_cast<size_t>(k64::GcrDisk::index(h))].empty();
+    log(RETRO_LOG_INFO, "drive: frame %llu, motor %s, head on track %d%s (%s)", static_cast<unsigned long long>(driveLogFrame),
+        motor ? "on" : "off", h / 2, (h & 1) ? ".5" : "", data ? "recorded" : "nothing recorded there");
+    driveLogHead = h;
+    driveLogMotor = motor;
+    if (++driveLogLines == kDriveLogLines) log(RETRO_LOG_INFO, "drive: log limit reached, no more drive lines");
+}
+
 RETRO_API bool retro_load_game(const retro_game_info* info) {
     forgetSymbolKeys();
+    driveLogHead = -1; driveLogLines = 0; driveLogMotor = false; driveLogFrame = 0;
     retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
     if (!envCb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt)) {
         log(RETRO_LOG_ERROR, "frontend does not accept XRGB8888");
@@ -1146,6 +1183,7 @@ RETRO_API unsigned retro_get_region(void) {
 }
 
 RETRO_API void retro_run(void) {
+    logDrive();
     bool updated = false;
     if (envCb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
         machine->setCiaModel(ciaFromOptions());

@@ -38,6 +38,10 @@ bool parseG64(const uint8_t* data, size_t size, GcrDisk& out, std::string& error
 // NIB ("MNIB-1541-RAW", G8): per half-track a raw read of more than one revolution; each
 // track's revolution is found where its sector headers repeat (G9).
 bool parseNib(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
+// A report on a NIB image, a line per half-track it holds and a summary: how the revolution was
+// found, its length, the SYNCs and the sector headers and data blocks decoded with good or bad
+// checksums. For telling a damaged or protected dump from a fault in the conversion.
+std::vector<std::string> describeNib(const uint8_t* data, size_t size);
 // By content: G64 and NIB by their signatures, D64 by its size.
 bool parseDisk(const uint8_t* data, size_t size, GcrDisk& out, std::string& error);
 
