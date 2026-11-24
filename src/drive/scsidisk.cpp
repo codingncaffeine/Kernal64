@@ -5,6 +5,26 @@
 
 namespace k64 {
 
+namespace {
+// 64-bit file positions: an image may be gigabytes, and `long` is 32 bits on Windows.
+int seek64(std::FILE* f, uint64_t pos) {
+#ifdef _WIN32
+    return _fseeki64(f, static_cast<__int64>(pos), SEEK_SET);
+#else
+    return fseeko(f, static_cast<off_t>(pos), SEEK_SET);
+#endif
+}
+uint64_t size64(std::FILE* f) {
+#ifdef _WIN32
+    _fseeki64(f, 0, SEEK_END);
+    return static_cast<uint64_t>(_ftelli64(f));
+#else
+    fseeko(f, 0, SEEK_END);
+    return static_cast<uint64_t>(ftello(f));
+#endif
+}
+} // namespace
+
 // ---- BlockFile -------------------------------------------------------------------
 
 bool BlockFile::open(const std::string& path, uint64_t blocks) {
@@ -12,8 +32,7 @@ bool BlockFile::open(const std::string& path, uint64_t blocks) {
     f_ = std::fopen(path.c_str(), "r+b");
     if (!f_) return false;
     if (!blocks) {
-        std::fseek(f_, 0, SEEK_END);
-        blocks = static_cast<uint64_t>(std::ftell(f_)) / 512;
+        blocks = size64(f_) / 512;
     }
     blocks_ = static_cast<uint32_t>(blocks > 0xFFFFFFFFu ? 0xFFFFFFFFu : blocks);
     return true;
@@ -22,14 +41,14 @@ bool BlockFile::open(const std::string& path, uint64_t blocks) {
 bool BlockFile::read(uint32_t lba, uint8_t* out) {
     if (!f_ || lba >= blocks_) return false;
     std::memset(out, 0, 512);
-    if (std::fseek(f_, static_cast<long>(lba) * 512, SEEK_SET) != 0) return false;
+    if (seek64(f_, uint64_t(lba) * 512) != 0) return false;
     (void)std::fread(out, 1, 512, f_);   // short past the end of a sparse file: zeros
     return true;
 }
 
 bool BlockFile::write(uint32_t lba, const uint8_t* in) {
     if (!f_ || lba >= blocks_) return false;
-    if (std::fseek(f_, static_cast<long>(lba) * 512, SEEK_SET) != 0) return false;
+    if (seek64(f_, uint64_t(lba) * 512) != 0) return false;
     const bool ok = std::fwrite(in, 1, 512, f_) == 512;
     std::fflush(f_);
     return ok;
