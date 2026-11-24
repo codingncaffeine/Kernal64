@@ -9,6 +9,14 @@ The whole machine is in: the 6510, both CIA generations, the VIC-II in its PAL a
 generations, the 6581 and 8580 SIDs, cartridges (plain, bank-switched and freezers), a 1541
 running its own DOS, the datasette, and a CMD HD hard drive running its own DOS.
 
+## Using it
+
+The easiest way is [Emutastic](https://github.com/codingncaffeine/Emutastic-For-Linux) (Linux, Windows and macOS),
+which downloads the core by itself and has the Commodore 64 in its library. The
+[Emutastic page](https://github.com/codingncaffeine/Kernal64/wiki/Emutastic) in the wiki says where to get it and
+what to click. For RetroArch, the core is installed by hand: see the
+[RetroArch page](https://github.com/codingncaffeine/Kernal64/wiki/RetroArch).
+
 ## What sets it apart
 
 Compared with VICE (3.9), the C64 emulator our tests are checked against:
