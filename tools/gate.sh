@@ -238,6 +238,7 @@ side "VIC-II rule tests" "$BUILD/victest.log" "$BUILD/victest"
 side "SID paddle converter rules" "$BUILD/sidtest.log" "$BUILD/sidtest"
 side "6522 rule tests" "$BUILD/viatest.log" "$BUILD/viatest"
 side "1541 board with its ROM" "$BUILD/drivetest.log" "$BUILD/drivetest" "$ROMS"
+side "NIB conversion (synthetic reads)" "$BUILD/nibtest.log" "$BUILD/nibtest"
 if [ -d "$EXT/singlestep/6502/v1" ]; then
     side "per-opcode bus traces" "$BUILD/cputest.log" "$BUILD/cputest" "$EXT/singlestep/6502/v1" --quiet
 else bad "per-opcode suite missing: tools/fetch.sh singlestep"; fi

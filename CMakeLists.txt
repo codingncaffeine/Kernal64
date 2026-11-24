@@ -137,6 +137,11 @@ add_executable(imgtest tools/imgtest/main.cpp)
 target_include_directories(imgtest PRIVATE src/core)
 target_compile_options(imgtest PRIVATE ${K64_WARNINGS})
 
+# The NIB conversion on synthetic raw reads.
+add_executable(nibtest tools/nibtest/main.cpp)
+target_link_libraries(nibtest PRIVATE k64core)
+target_compile_options(nibtest PRIVATE ${K64_WARNINGS})
+
 # The report the core logs for a NIB disk image, for a file on its own.
 add_executable(nibinfo tools/nibinfo/main.cpp)
 target_link_libraries(nibinfo PRIVATE k64core)

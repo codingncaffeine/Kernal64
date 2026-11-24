@@ -179,72 +179,6 @@ std::vector<uint8_t> writeG64(const GcrDisk& disk) {
     return out;
 }
 
-// G9: one revolution out of a raw read. The read is byte-framed by the drive (a SYNC realigns
-// the framing), so what follows a SYNC comes back byte for byte one revolution later. The
-// revolution is the distance, near the zone's nominal length, at which the 16 bytes after the
-// first SYNC that is followed by a sector header ($52 = GCR of $08's first five bits) recur;
-// failing that, after any SYNC; failing that, any 64-byte window; failing that, the nominal
-// length from the start.
-enum class RevFound { Header, Sync, Window, Nominal };
-static std::vector<uint8_t> oneRevolution(const uint8_t* raw, size_t len, int zone, RevFound* how = nullptr) {
-    auto found = [&](RevFound f) { if (how) *how = f; };
-    const size_t nominal = static_cast<size_t>(kTrackBytes[zone & 3]);
-    const size_t lo = nominal * 95 / 100, hi = std::min(len - 16, nominal * 105 / 100);
-    auto syncEnd = [&](size_t from, bool header) -> size_t {
-        for (size_t i = from; i + 1 < len; ++i)
-            if (raw[i] == 0xFF && raw[i + 1] != 0xFF && i > 0 && raw[i - 1] == 0xFF && (!header || raw[i + 1] == 0x52)) return i + 1;
-        return len;
-    };
-    for (bool header : {true, false}) {
-        for (size_t s = syncEnd(0, header); s < len && s + lo + 16 < len; s = syncEnd(s + 1, header)) {
-            size_t best = 0, bestDist = SIZE_MAX;
-            for (size_t p = lo; p <= hi && s + p + 16 <= len; ++p) {
-                if (std::memcmp(raw + s, raw + s + p, 16) != 0) continue;
-                const size_t dist = p > nominal ? p - nominal : nominal - p;
-                if (dist < bestDist) { best = p; bestDist = dist; }
-            }
-            if (best) {
-                // Start the revolution at the SYNC before s, so the track begins with a whole SYNC.
-                size_t start = s;
-                while (start > 0 && raw[start - 1] == 0xFF) --start;
-                if (start + best > len) start = s;
-                found(header ? RevFound::Header : RevFound::Sync);
-                return std::vector<uint8_t>(raw + start, raw + start + best);
-            }
-        }
-    }
-    // A long track can leave too little of the read after its first SYNC for the repeat to
-    // start there. Between SYNCs the framing is the same a revolution later too: a longer
-    // window (64 bytes), starting anywhere the read still holds one revolution after it.
-    for (size_t x = 0; x + lo + 64 <= len; ++x) {
-        size_t best = 0, bestDist = SIZE_MAX;
-        for (size_t p = lo; p <= hi + 16 && x + p + 64 <= len; ++p) {
-            if (std::memcmp(raw + x, raw + x + p, 64) != 0) continue;
-            const size_t dist = p > nominal ? p - nominal : nominal - p;
-            if (dist < bestDist) { best = p; bestDist = dist; }
-        }
-        if (best) { found(RevFound::Window); return std::vector<uint8_t>(raw + x, raw + x + best); }
-    }
-    found(RevFound::Nominal);
-    return std::vector<uint8_t>(raw, raw + std::min(len, nominal));
-}
-
-bool parseNib(const uint8_t* data, size_t size, GcrDisk& out, std::string& error) {
-    if (size < 0x100 || std::memcmp(data, "MNIB-1541-RAW", 13) != 0) { error = "not a NIB image"; return false; }
-    out = blankDisk();
-    size_t at = 0x100;
-    for (size_t e = 0x10; e + 1 < 0x100 && data[e]; e += 2, at += 8192) {
-        const int halfTrack = data[e];
-        const int zone = data[e + 1] & 3;
-        if (at + 8192 > size) { error = "NIB track data outside the file"; return false; }
-        if (halfTrack < 2 || halfTrack >= 2 + GcrDisk::kHalfTracks) continue;
-        const size_t i = static_cast<size_t>(GcrDisk::index(halfTrack));
-        out.tracks[i] = oneRevolution(data + at, 8192, zone);
-        out.zone[i] = static_cast<uint8_t>(zone);
-    }
-    return true;
-}
-
 namespace {
 
 // What one revolution holds, read as the DOS would: after each SYNC (G1: ten or more 1 bits;
@@ -270,6 +204,27 @@ bool gcrDecode5(const uint8_t* in, uint8_t out[4]) {
         out[i] = static_cast<uint8_t>(((hi & 15) << 4) | (lo & 15));
     }
     return ok;
+}
+
+// The kind of block that starts at b (just after a SYNC): 8 = sector header, 7 = data block, 0 = other.
+int blockKind(const uint8_t* b) {
+    uint8_t first[4];
+    gcrDecode5(b, first);
+    return first[0] == 0x08 ? 8 : first[0] == 0x07 ? 7 : 0;
+}
+// Whether the block of that kind at b has valid GCR codes and a matching checksum.
+bool blockGood(const uint8_t* b, int kind) {
+    if (kind == 8) {
+        uint8_t h[8];
+        const bool codes = gcrDecode5(b, h) && gcrDecode5(b + 5, h + 4);
+        return codes && h[1] == static_cast<uint8_t>(h[2] ^ h[3] ^ h[4] ^ h[5]);
+    }
+    uint8_t d[260];
+    bool codes = true;
+    for (int g = 0; g < 65; ++g) codes = gcrDecode5(b + 5 * g, d + 4 * g) && codes;
+    uint8_t x = 0;
+    for (int k = 1; k <= 256; ++k) x ^= d[k];
+    return codes && x == d[257];
 }
 
 TrackScan scanTrack(const std::vector<uint8_t>& t, int track) {
@@ -323,11 +278,116 @@ std::string sectorList(uint64_t bits) {
 
 } // namespace
 
+// G9: one revolution out of a raw read. The read is byte-framed by the drive (a SYNC realigns
+// the framing), so what follows a SYNC comes back byte for byte one revolution later. The
+// revolution is the distance, near the zone's nominal length, at which the 16 bytes after the
+// first SYNC that is followed by a sector header ($52 = GCR of $08's first five bits) recur;
+// failing that, after any SYNC; failing that, any 64-byte window; failing that, the nominal
+// length from the start.
+enum class RevFound { Header, Sync, Window, Nominal };
+struct Revolution { size_t start = 0, length = 0; RevFound how = RevFound::Nominal; };
+static Revolution findRevolution(const uint8_t* raw, size_t len, int zone) {
+    const size_t nominal = static_cast<size_t>(kTrackBytes[zone & 3]);
+    const size_t lo = nominal * 95 / 100, hi = std::min(len - 16, nominal * 105 / 100);
+    auto syncEnd = [&](size_t from, bool header) -> size_t {
+        for (size_t i = from; i + 1 < len; ++i)
+            if (raw[i] == 0xFF && raw[i + 1] != 0xFF && i > 0 && raw[i - 1] == 0xFF && (!header || raw[i + 1] == 0x52)) return i + 1;
+        return len;
+    };
+    for (bool header : {true, false}) {
+        for (size_t s = syncEnd(0, header); s < len && s + lo + 16 < len; s = syncEnd(s + 1, header)) {
+            size_t best = 0, bestDist = SIZE_MAX;
+            for (size_t p = lo; p <= hi && s + p + 16 <= len; ++p) {
+                if (std::memcmp(raw + s, raw + s + p, 16) != 0) continue;
+                const size_t dist = p > nominal ? p - nominal : nominal - p;
+                if (dist < bestDist) { best = p; bestDist = dist; }
+            }
+            if (best) {
+                // Start the revolution at the SYNC before s, so the track begins with a whole SYNC.
+                size_t start = s;
+                while (start > 0 && raw[start - 1] == 0xFF) --start;
+                if (start + best > len) start = s;
+                return {start, best, header ? RevFound::Header : RevFound::Sync};
+            }
+        }
+    }
+    // A long track can leave too little of the read after its first SYNC for the repeat to
+    // start there. Between SYNCs the framing is the same a revolution later too: a longer
+    // window (64 bytes), starting anywhere the read still holds one revolution after it.
+    for (size_t x = 0; x + lo + 64 <= len; ++x) {
+        size_t best = 0, bestDist = SIZE_MAX;
+        for (size_t p = lo; p <= hi + 16 && x + p + 64 <= len; ++p) {
+            if (std::memcmp(raw + x, raw + x + p, 64) != 0) continue;
+            const size_t dist = p > nominal ? p - nominal : nominal - p;
+            if (dist < bestDist) { best = p; bestDist = dist; }
+        }
+        if (best) return {x, best, RevFound::Window};
+    }
+    return {0, std::min(len, nominal), RevFound::Nominal};
+}
+
+// A raw read holds more than one revolution, so the part read twice gives a second copy of the
+// blocks in it, exactly one revolution away. A sector header or data block that is bad in the
+// revolution kept but good in its other copy was misread by the dumping drive on one pass: it is
+// taken from the good copy (PLAN D30). A block bad in every copy is left as it is (a damaged
+// disk, or protection that wants it bad). Only where the revolution's length was found, so the
+// copies line up: a revolution measured from a SYNC. Returns the number of blocks taken from the
+// other copy.
+static int repairFromOtherPass(std::vector<uint8_t>& track, const uint8_t* raw, size_t len, size_t start) {
+    const size_t n = track.size();
+    int repaired = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (track[i] == 0xFF || track[(i + n - 1) % n] != 0xFF || (track[(i + n - 2) % n] & 3) != 3) continue;
+        uint8_t blk[325];
+        for (size_t k = 0; k < 325; ++k) blk[k] = track[(i + k) % n];
+        const int kind = blockKind(blk);
+        if (!kind || blockGood(blk, kind)) continue;
+        const size_t blen = kind == 8 ? 10 : 325;
+        // The same block in the raw read: this pass (unwrapped), and one or two revolutions on or back.
+        for (long k = -2; k <= 2; ++k) {
+            const long r = static_cast<long>(start + i) + k * static_cast<long>(n);
+            if (r < 0 || static_cast<size_t>(r) + blen > len) continue;
+            if (!blockGood(raw + r, kind)) continue;
+            for (size_t b = 0; b < blen; ++b) track[(i + b) % n] = raw[static_cast<size_t>(r) + b];
+            ++repaired;
+            break;
+        }
+    }
+    return repaired;
+}
+
+// One revolution of a NIB track, with misread blocks taken from the read's other pass.
+static std::vector<uint8_t> nibTrack(const uint8_t* raw, size_t len, int zone, RevFound* how = nullptr, int* repaired = nullptr) {
+    const Revolution r = findRevolution(raw, len, zone);
+    std::vector<uint8_t> track(raw + r.start, raw + r.start + r.length);
+    const bool anchored = r.how == RevFound::Header || r.how == RevFound::Sync;
+    const int fixed = anchored ? repairFromOtherPass(track, raw, len, r.start) : 0;
+    if (how) *how = r.how;
+    if (repaired) *repaired = fixed;
+    return track;
+}
+
+bool parseNib(const uint8_t* data, size_t size, GcrDisk& out, std::string& error) {
+    if (size < 0x100 || std::memcmp(data, "MNIB-1541-RAW", 13) != 0) { error = "not a NIB image"; return false; }
+    out = blankDisk();
+    size_t at = 0x100;
+    for (size_t e = 0x10; e + 1 < 0x100 && data[e]; e += 2, at += 8192) {
+        const int halfTrack = data[e];
+        const int zone = data[e + 1] & 3;
+        if (at + 8192 > size) { error = "NIB track data outside the file"; return false; }
+        if (halfTrack < 2 || halfTrack >= 2 + GcrDisk::kHalfTracks) continue;
+        const size_t i = static_cast<size_t>(GcrDisk::index(halfTrack));
+        out.tracks[i] = nibTrack(data + at, 8192, zone);
+        out.zone[i] = static_cast<uint8_t>(zone);
+    }
+    return true;
+}
+
 std::vector<std::string> describeNib(const uint8_t* data, size_t size) {
     std::vector<std::string> lines;
     if (size < 0x100 || std::memcmp(data, "MNIB-1541-RAW", 13) != 0) { lines.push_back("not a NIB image"); return lines; }
     int tracks = 0, halfTracks = 0;
-    std::vector<std::string> badBlocks, notFound, noSync;
+    std::vector<std::string> badBlocks, notFound, noSync, repairedTracks;
     size_t at = 0x100;
     char buf[320];
     for (size_t e = 0x10; e + 1 < 0x100 && data[e]; e += 2, at += 8192) {
@@ -341,7 +401,8 @@ std::vector<std::string> describeNib(const uint8_t* data, size_t size) {
         }
         (halfTrack & 1 ? halfTracks : tracks)++;
         RevFound how = RevFound::Nominal;
-        const std::vector<uint8_t> rev = oneRevolution(data + at, 8192, density & 3, &how);
+        int repaired = 0;
+        const std::vector<uint8_t> rev = nibTrack(data + at, 8192, density & 3, &how, &repaired);
         const TrackScan sc = scanTrack(rev, halfTrack / 2);
         const char* found = how == RevFound::Header ? "repeat after a sector header"
                           : how == RevFound::Sync ? "repeat after a SYNC"
@@ -355,6 +416,8 @@ std::vector<std::string> describeNib(const uint8_t* data, size_t size) {
         if (density & 0x80) line += "; dumper flag $80 (track of all 1s)";
         if (density & 0x40) line += "; dumper flag $40 (no SYNC)";
         if (sc.otherTrack >= 0) line += "; a header names track " + std::to_string(sc.otherTrack);
+        if (repaired) line += "; " + std::to_string(repaired) + " misread block(s) taken from the read's other pass";
+        if (repaired) repairedTracks.push_back(name);
         lines.push_back(line);
         if (sc.headersBad || sc.dataBad) badBlocks.push_back(name);
         if (how == RevFound::Nominal) notFound.push_back(name);
@@ -366,6 +429,7 @@ std::vector<std::string> describeNib(const uint8_t* data, size_t size) {
     lines.push_back("  revolution not found (our conversion is unsure): " + join(notFound));
     lines.push_back("  bad header or data checksums (damage in the dump, or protection): " + join(badBlocks));
     lines.push_back("  no SYNC at all (unformatted, or protection): " + join(noSync));
+    lines.push_back("  blocks misread on one pass of the dump, taken from the other: " + join(repairedTracks));
     return lines;
 }
 
