@@ -62,6 +62,10 @@ std::vector<Def>& defs() {
     d.push_back({"kernal64_border", "Border", "How much of the border is shown: all the chip draws, a frame around the "
                  "screen, or the 320x200 screen alone.", "video",
                  {{"full", "Full"}, {"small", "Small"}, {"none", "None"}}, "full"});
+    d.push_back({"kernal64_fast_loading", "Fast loading", "While a tape moves (and, with disks, while the 1541's motor "
+                 "runs), the machine runs 4 times as fast, sound muted; normal speed as soon as the loading stops. "
+                 "What the machine does is the same, only sooner.", "media",
+                 {{"tape_disk", "Tape and disk"}, {"tape", "Tape"}, {"off", "Off"}}, "tape_disk"});
     d.push_back({"kernal64_drive8", "Drive 8 (1541)", "The 1541 on the serial bus. Needs its ROMs in the system folder.",
                  "media", {{"on", "On"}, {"off", "Off"}}, "on"});
     d.push_back({"kernal64_keyboard", "Keyboard", "Symbolic: a key types the symbol printed on it (US layout: SHIFT+8 "

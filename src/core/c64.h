@@ -65,6 +65,16 @@ public:
     bool driveAttached() const { return driveWanted_ && drive_.hasRoms(); }
     const C1541& drive() const { return drive_; }
     // The datasette on the cassette port.
+    // The tape moves past the head: a button down and the motor running (what fast loading watches).
+    bool tapeMoving() const {
+        return tape_.hasTape() && tape_.button() != Datasette::Button::None && !((s_.portDdr & 0x20) && (s_.portData & 0x20));
+    }
+    // The KERNAL's pause after "FOUND name" on a tape load (it waits for the C= key or about 8 seconds, the
+    // tape stopped): the loop at $E4E0-$E4EB of KERNAL 901227-03, a button of the datasette down.
+    bool kernalTapePause() const {
+        const uint16_t pc = cpu_.regs().pc;
+        return tape_.hasTape() && tape_.button() != Datasette::Button::None && pc >= 0xE4E0 && pc <= 0xE4EB;
+    }
     Datasette& datasette() { return tape_; }
     const Datasette& datasette() const { return tape_; }
     // The disk in drive 8 (it can change while the machine runs, as a disk is swapped). The

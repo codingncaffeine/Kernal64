@@ -169,8 +169,26 @@ int portOf(int player) {
 }
 
 k64lr::PadAction padMap[k64lr::kPadButtonCount];
+// Fast loading: what counts as loading (off, the tape, the tape and the 1541).
+enum class FastLoading { Off, Tape, TapeAndDisk };
+FastLoading fastLoading = FastLoading::TapeAndDisk;
+constexpr int kFastFactor = 4;
+double audioDue = 0.0;     // samples due since the content was loaded (frames shown x rate / fps)
+uint64_t audioSent = 0;    // samples handed over
+bool loadingNow() {
+    if (fastLoading == FastLoading::Off) return false;
+    if (machine->tapeMoving() || machine->kernalTapePause()) return true;
+    return fastLoading == FastLoading::TapeAndDisk && machine->driveAttached() && machine->drive().motor();
+}
+
 void readPadOptions() {
     symbolicKeys = symbolicKeyboard();
+    {
+        retro_variable var{"kernal64_fast_loading", nullptr};
+        const bool got = envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value;
+        fastLoading = !got || !std::strcmp(var.value, "tape_disk") ? FastLoading::TapeAndDisk
+                    : !std::strcmp(var.value, "tape") ? FastLoading::Tape : FastLoading::Off;
+    }
     for (int b = 0; b < k64lr::kPadButtonCount; ++b) {
         const std::string key = std::string("kernal64_pad_") + k64lr::kPadButtons[b].name;
         retro_variable var{key.c_str(), nullptr};
@@ -839,6 +857,8 @@ RETRO_API bool retro_load_game(const retro_game_info* info) {
         return false;
     }
     contentName = info && info->path ? info->path : "";
+    audioDue = 0.0;
+    audioSent = 0;
     machine = std::make_unique<k64::C64>(modelFromOptions());
     // The memory map for achievements and cheats: the 64 KB of RAM at its own addresses.
     static retro_memory_descriptor ramDesc{};
@@ -935,7 +955,20 @@ RETRO_API void retro_run(void) {
     if (inputPollCb) inputPollCb();
     applyInput();   // once per frame, at the frame boundary (D9)
 
-    if (machine->hasSystemRoms()) machine->runFrame();
+    // Fast loading (option kernal64_fast_loading): while the tape moves or the KERNAL pauses after
+    // FOUND (or, with disks, the 1541's
+    // motor runs) each frame shown is up to kFastFactor frames of the machine, sound muted. A fixed
+    // factor decided from the machine's own state, so rewind, run-ahead and netplay stay exact.
+    bool fast = false;
+    if (machine->hasSystemRoms()) {
+        machine->runFrame();
+        for (int extra = 1; extra < kFastFactor && loadingNow(); ++extra) {
+            std::vector<float> drop(machine->audioAvailable());
+            machine->readAudio(drop.data(), drop.size());
+            machine->runFrame();
+            fast = true;
+        }
+    }
 
     const auto& t = machine->timing();
     machine->visibleFrame(frameOut.data());
@@ -949,10 +982,17 @@ RETRO_API void retro_run(void) {
     videoCb(frameOut.data() + static_cast<size_t>(crop.y) * static_cast<size_t>(t.visibleWidth) + static_cast<size_t>(crop.x),
             static_cast<unsigned>(crop.w), static_cast<unsigned>(crop.h), static_cast<size_t>(t.visibleWidth) * sizeof(uint32_t));
 
-    // The audio this frame produced: mono, the same on both channels.
-    const size_t frames = machine->audioAvailable();
+    // The audio this frame produced: mono, the same on both channels. A fast frame hands over silence,
+    // as many samples as keep the total on time (sample rate / frame rate per frame shown).
+    size_t frames = machine->audioAvailable();
     audioMono.resize(frames);
     machine->readAudio(audioMono.data(), frames);
+    audioDue += kSampleRate / t.framesPerSecond();
+    if (fast) {
+        frames = audioDue > static_cast<double>(audioSent) ? static_cast<size_t>(audioDue - static_cast<double>(audioSent)) : 0;
+        audioMono.assign(frames, 0.0f);
+    }
+    audioSent += frames;
     audioOut.resize(frames * 2);
     for (size_t i = 0; i < frames; ++i) {
         const float v = audioMono[i] * 32767.0f;

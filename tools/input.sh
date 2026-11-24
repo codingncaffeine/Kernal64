@@ -104,6 +104,20 @@ TAPE=(--content "$OUT/blank.tap" --frames 1600 --option kernal64_pad_l=tape_play
 sbs_start core 0 "datasette RECORD through a mapped button" "${TAPE[@]}" --save "$OUT/tape1" --hold 400 402 0 r 1 --check
 sbs_start core 1 "datasette RECORD through a mapped button (control: no input)" "${TAPE[@]}" --save "$OUT/tape2"
 
+# Fast loading (option kernal64_fast_loading, default tape and disk, 4x): a KERNAL tape load (a
+# program the machine records first) is done by frame 600 (about 2000 at normal speed, the pause
+# after FOUND included); a disk program by frame 200 (about 275). Controls: the option off, the tape
+# only for the disk. The tape line replays from a state.
+"$BIN/k64run" "$ROOT/gitignore/bios" --blank-tape --record --cycles 60000000 --type-at 3000000 $'10 ?4242\r' \
+    --type-at 3300000 'SAVE"T"'$'\r' --save-tape "$OUT/fast.tap" >/dev/null 2>&1
+rm -rf "$OUT/fast1" "$OUT/fast2"; mkdir -p "$OUT/fast1" "$OUT/fast2"
+sbs_start core 0 "fast loading: a tape" --content "$OUT/fast.tap" --save "$OUT/fast1" --frames 600 --check --expect-screen ' 4242'
+sbs_start core 1 "fast loading: a tape (control: off)" --content "$OUT/fast.tap" --save "$OUT/fast2" --frames 600 \
+    --option kernal64_fast_loading=off --expect-screen ' 4242'
+sbs_start core 0 "fast loading: a disk" --content "$ROOT/gitignore/external/testprogs/vdrive/test.d64" --frames 200 --expect-screen 'ROM:  254'
+sbs_start core 1 "fast loading: a disk (control: tape only)" --content "$ROOT/gitignore/external/testprogs/vdrive/test.d64" \
+    --frames 200 --option kernal64_fast_loading=tape --expect-screen 'ROM:  254'
+
 # The keyboard (option kernal64_keyboard). Symbolic, the default: keys type what a US keyboard
 # prints (k64host types that way: SHIFT+8 is *, SHIFT+= is +, SHIFT+; is :, SHIFT+' is "); the
 # same typing under the positional map must fail. Positional: the C64's own layout, its * is the

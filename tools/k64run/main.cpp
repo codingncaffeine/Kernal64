@@ -25,6 +25,8 @@
 //   that result (0 = passed), or 124 when --cycles runs out first.
 // --cycles N runs N cycles from power on instead of --frames.
 // --hash prints an FNV-1a hash of the last frame's visible palette indices.
+// --pc-every N (with --cycles) prints the CPU's program counter, and whether the tape moves, every
+//   N cycles: where a program spends its time.
 // --where ADDR (hex; with --cycles) prints the raster line and cycle of the opcode fetch each
 //   time the CPU starts the instruction at ADDR (the first 32 times): where on the screen
 //   a piece of a test program runs.
@@ -79,6 +81,7 @@ int main(int argc, char** argv) {
     int rasterFrames = 0;
     uint64_t autostartDelay = 0;
     int where = -1, whereLeft = 32;
+    uint64_t pcEvery = 0;
     bool whereSeen = false;
     std::vector<std::pair<unsigned, unsigned>> dumps;
     std::vector<uint64_t> freezeAt;
@@ -140,6 +143,7 @@ int main(int argc, char** argv) {
         else if (a == "--record") tapeButton = 2;
         else if (a == "--save-tape" && i + 1 < argc) saveTape = argv[++i];
         else if (a == "--save-disk" && i + 1 < argc) saveDisk = argv[++i];
+        else if (a == "--pc-every" && i + 1 < argc) pcEvery = std::strtoull(argv[++i], nullptr, 10);
         else if (a == "--where" && i + 1 < argc) where = static_cast<int>(std::strtoul(argv[++i], nullptr, 16));
         else if (a == "--dump" && i + 1 < argc) {
             char* end = nullptr;
@@ -225,6 +229,9 @@ int main(int argc, char** argv) {
                 }
                 whereSeen = at;
             }
+            if (pcEvery && machine.cycle() % pcEvery == 0)
+                std::printf("k64run: cycle %llu pc $%04x tape %s\n", static_cast<unsigned long long>(machine.cycle()),
+                            static_cast<unsigned>(machine.cpuRegs().pc), machine.tapeMoving() ? "moving" : "still");
             for (const auto& [at, text] : typeAt) {
                 if (machine.cycle() != at) continue;
                 for (size_t n = 0; n < text.size(); ++n) machine.pokeRam(static_cast<uint16_t>(0x0277 + n), static_cast<uint8_t>(text[n]));
