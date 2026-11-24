@@ -186,7 +186,7 @@ void readPadOptions() {
     {
         retro_variable var{"kernal64_fast_loading", nullptr};
         const bool got = envCb && envCb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value;
-        fastLoading = !got || !std::strcmp(var.value, "tape_disk") ? FastLoading::TapeAndDisk
+        fastLoading = !got || !std::strcmp(var.value, "tape and disk") ? FastLoading::TapeAndDisk
                     : !std::strcmp(var.value, "tape") ? FastLoading::Tape : FastLoading::Off;
     }
     for (int b = 0; b < k64lr::kPadButtonCount; ++b) {
