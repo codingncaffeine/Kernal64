@@ -7,6 +7,8 @@
 //                   [--expect-tone HZ DB_MIN DB_MAX] [--expect-level DB_MIN DB_MAX] [--expect-silence]
 //                   [--expect-load-failure] [--freeze-frames N,N,...]
 //
+// --insert-at FRAME FILE puts a new image in through disk control as a frontend's "insert" does: adds an
+// image, points it at FILE, and (unless the core took FILE as a tape) ejects, picks it and inserts it.
 // --swap-at FRAME INDEX ejects the disk, picks image INDEX (from 0) and inserts it through the
 // core's disk control, as a frontend's disk menu does (not with --check).
 // --freeze-frames holds the RetroPad button the core uses as a cartridge's freeze button
@@ -155,6 +157,7 @@ void coreLog(retro_log_level, const char* fmt, ...) {
 // The core's disk control, as a frontend's disk menu uses it (--swap-at).
 const retro_disk_control_ext_callback* diskControl = nullptr;
 std::vector<std::pair<unsigned, unsigned>> swaps;   // frame, image index
+std::vector<std::pair<unsigned, std::string>> inserts;   // frame, file
 
 void fail(const char* fmt, ...);
 
@@ -426,6 +429,7 @@ int main(int argc, char** argv) {
             typings.push_back({typeAt, text});
         } else if (a == "--type-at") typeAt = static_cast<unsigned>(std::stoul(next()));
         else if (a == "--expect-screen") expectScreen.push_back(next());
+        else if (a == "--insert-at") { const unsigned at = static_cast<unsigned>(std::stoul(next())); inserts.emplace_back(at, next()); }
         else if (a == "--swap-at") { const unsigned at = static_cast<unsigned>(std::stoul(next())); swaps.emplace_back(at, static_cast<unsigned>(std::stoul(next()))); }
         else if (a == "--expect-tone") { expectHz = std::stod(next()); expectDbMin = std::stod(next()); expectDbMax = std::stod(next()); }
         else if (a == "--expect-silence") expectSilence = true;
@@ -577,6 +581,18 @@ int main(int argc, char** argv) {
                             diskControl->set_eject_state(false);
             std::printf("disk control: image %u of %u at frame %u%s\n", index + 1,
                         diskControl ? diskControl->get_num_images() : 0, f, swapped ? "" : " FAILED");
+        }
+        for (const auto& [at, file] : inserts) {
+            if (at != f || !diskControl) continue;
+            const unsigned before = diskControl->get_num_images();
+            retro_game_info info{};
+            info.path = file.c_str();
+            bool done = diskControl->add_image_index() && diskControl->replace_image_index(before, &info);
+            const unsigned after = diskControl->get_num_images();
+            if (done && after > before)   // a disk: into the drive
+                done = diskControl->set_eject_state(true) && diskControl->set_image_index(before) && diskControl->set_eject_state(false);
+            std::printf("disk control: inserted %s at frame %u (%s, %u image(s))%s\n", file.c_str(), f,
+                        after > before ? "a disk" : "taken as a tape", after, done ? "" : " FAILED");
         }
         c.retro_run();
         if (!dumpFrames.empty()) {

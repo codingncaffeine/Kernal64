@@ -50,6 +50,7 @@ std::shared_ptr<k64::GcrDisk> disk;          // the one in the drive (none while
 // The tape in the datasette and its kept copy (what the datasette recorded; PLAN D10).
 std::shared_ptr<k64::Tape> tape;
 std::string tapeSavePath;
+std::string tapePath;      // the tape's own file (a state names it, to put the same tape back)
 
 std::vector<uint32_t> frameOut;
 std::vector<int16_t> audioOut;
@@ -665,11 +666,42 @@ bool RETRO_CALLCONV dcSetIndex(unsigned i) {
     return true;
 }
 unsigned RETRO_CALLCONV dcNumImages() { return static_cast<unsigned>(slots.size()); }
+// A tape handed over through disk control (the frontend's "insert" while playing; libretro has no
+// interface of its own for tapes): it goes into the datasette, the previous tape's recording kept first.
+// Blank, it goes in with RECORD and PLAY down; with something on it, with PLAY down.
+bool insertTapeFile(const char* path, bool quiet = false) {
+    std::vector<uint8_t> bytes;
+    if (!readWhole(path, bytes) || bytes.size() < 12 || std::memcmp(bytes.data(), "C64-TAPE-RAW", 12) != 0) return false;
+    saveTape();
+    auto t = std::make_shared<k64::Tape>();
+    std::string savePath = diskCopyPath(path), error;
+    if (!savePath.empty()) savePath.replace(savePath.size() - 4, 4, ".tap");
+    std::vector<uint8_t> copy;
+    const bool haveCopy = !savePath.empty() && readWhole(savePath, copy) && k64::parseTap(copy.data(), copy.size(), *t, error);
+    if (!haveCopy && !k64::parseTap(bytes.data(), bytes.size(), *t, error)) {
+        log(RETRO_LOG_ERROR, "tape %s: %s", path, error.c_str());
+        return false;
+    }
+    tape = t;
+    tapeSavePath = savePath;
+    tapePath = path;
+    machine->datasette().insert(tape);
+    if (quiet) return true;   // a state's tape: its buttons and position come with the state
+    machine->datasette().press(tape->pulses.empty() ? k64::Datasette::Button::Record : k64::Datasette::Button::Play);
+    log(RETRO_LOG_INFO, "tape %s in the datasette, %s", path, tape->pulses.empty() ? "RECORD and PLAY down" : "PLAY down");
+    notify(tape->pulses.empty() ? "Datasette: blank tape in, RECORD and PLAY down" : "Datasette: tape in, PLAY down");
+    return true;
+}
+
 bool RETRO_CALLCONV dcReplace(unsigned i, const retro_game_info* info) {
     if (i >= slots.size()) return false;
     saveDisk(slots[i]);
     if (!info) { slots.erase(slots.begin() + i); return true; }
     if (!info->path) return false;
+    if (machine && hasExtension(info->path, ".tap") && insertTapeFile(info->path)) {
+        if (slots[i].path.empty()) slots.erase(slots.begin() + i);   // the slot added for it holds no disk
+        return true;
+    }
     slots[i] = DiskSlot{info->path, diskCopyPath(info->path), nullptr};
     return true;
 }
@@ -720,6 +752,7 @@ bool loadContent(const retro_game_info* info) {
         // PLAY down and LOAD + RUN typed, as on the real machine.
         tape = std::make_shared<k64::Tape>();
         tapeSavePath = diskCopyPath(info->path);
+        tapePath = info->path ? info->path : "";
         if (!tapeSavePath.empty()) tapeSavePath.replace(tapeSavePath.size() - 4, 4, ".tap");
         std::vector<uint8_t> copy;
         std::string e2;
@@ -1045,7 +1078,16 @@ RETRO_API void retro_run(void) {
 // whether the joystick ports are swapped (1), the 1351 mice's positions and movement still to
 // pass on (8 x 4), the RetroPad buttons as last seen (2 x 16), the on-screen keyboard's owner
 // (1) and state: what a replay needs to come out the same.
-constexpr size_t kDiskTailSize = 4 + 1 + 8 * 4 + 32 + 1 + k64lr::Osk::kStateSize + 1;
+// ... then fast loading's auto choice (1) and the files of the disk in the drive and of the tape in the
+// datasette (512 bytes each, zero-padded): a state loaded into a core that does not have them (a medium
+// put in while playing, a core started again) puts them back.
+constexpr size_t kPathField = 512;
+constexpr size_t kDiskTailSize = 4 + 1 + 8 * 4 + 32 + 1 + k64lr::Osk::kStateSize + 1 + 2 * kPathField;
+constexpr size_t kPathsAt = kDiskTailSize - 2 * kPathField;
+std::string tailPath(const uint8_t* tail, size_t at) {
+    const char* p = reinterpret_cast<const char*>(tail + at);
+    return std::string(p, strnlen(p, kPathField));
+}
 void putTail(uint8_t* out, uint32_t inDrive) {
     auto put32 = [&out](uint32_t v) { for (int b = 0; b < 4; ++b) *out++ = static_cast<uint8_t>(v >> (8 * b)); };
     put32(inDrive);
@@ -1057,6 +1099,15 @@ void putTail(uint8_t* out, uint32_t inDrive) {
     *out++ = static_cast<uint8_t>(oskOwner);
     osk.saveState(out);
     out[k64lr::Osk::kStateSize] = autoFactor;   // fast loading's auto choice
+}
+void putTailPaths(uint8_t* tail) {
+    const std::string d = disk && slotIndex < slots.size() ? slots[slotIndex].path : "";
+    for (int f = 0; f < 2; ++f) {
+        const std::string& v = f == 0 ? d : (tape ? tapePath : std::string());
+        uint8_t* o = tail + kPathsAt + static_cast<size_t>(f) * kPathField;
+        std::memset(o, 0, kPathField);
+        if (v.size() < kPathField) std::memcpy(o, v.data(), v.size());   // a longer path is not kept
+    }
 }
 void getTailInput(const uint8_t* in) {
     auto get32 = [&in]() { const uint32_t v = static_cast<uint32_t>(in[0] | in[1] << 8 | in[2] << 16 | static_cast<uint32_t>(in[3]) << 24); in += 4; return v; };
@@ -1082,6 +1133,7 @@ RETRO_API bool retro_serialize(void* data, size_t size) {
     machine->saveState(out);
     out += machine->stateSize();
     putTail(out, inDrive);
+    putTailPaths(out);
     return true;
 }
 
@@ -1090,8 +1142,25 @@ RETRO_API bool retro_unserialize(const void* data, size_t size) {
     const auto* in = static_cast<const uint8_t*>(data);
     const uint8_t* tail = in + machine->stateSize();
     const uint32_t inDrive = static_cast<uint32_t>(tail[0] | tail[1] << 8 | tail[2] << 16 | static_cast<uint32_t>(tail[3]) << 24);
-    if (inDrive != kNoDisk && inDrive >= slots.size()) return false;   // a state of other content
+    const std::string diskFile = tailPath(tail, kPathsAt), tapeFile = tailPath(tail, kPathsAt + kPathField);
+    if (inDrive != kNoDisk && inDrive >= slots.size() && diskFile.empty()) return false;   // a state of other content
     if (!machine->stateFits(in, machine->stateSize())) return false;   // refused before anything changes
+    // A disk this core does not list (put in while playing in the session that saved the state): back
+    // in the list at its place, from its file.
+    if (inDrive != kNoDisk && inDrive >= slots.size()) {
+        slots.resize(inDrive + 1);
+        slots[inDrive] = DiskSlot{diskFile, diskCopyPath(diskFile.c_str()), nullptr};
+    }
+    // The tape the state had (or none): the datasette's position and buttons come with the machine state.
+    if (tapeFile != (tape ? tapePath : std::string())) {
+        saveTape();
+        if (tapeFile.empty() || !insertTapeFile(tapeFile.c_str(), /*quiet*/ true)) {
+            machine->datasette().eject();
+            tape.reset();
+            tapeSavePath.clear();
+            tapePath.clear();
+        }
+    }
     // The state's disk goes into the drive first (the machine state then restores its surface
     // and the drive's own view of the swap).
     const bool same = inDrive == kNoDisk ? !disk : (disk && slotIndex == inDrive);

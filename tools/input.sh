@@ -97,6 +97,22 @@ blank_tape() {
 sbs_start blank_tape
 sbs_start core 0 "empty disk: READY, nothing typed" --content "$OUT/blank.d64" --frames 300 --expect-screen 'READY.'
 sbs_start core 1 "empty disk (control: something typed)" --content "$OUT/blank.d64" --frames 300 --expect-screen 'LOAD'
+# A new blank medium put in while the machine runs, through disk control (a frontend's "new floppy /
+# tape" while playing): a disk goes to drive 8, a tape (libretro has no interface for tapes, so the
+# core takes one handed over this way) into the datasette ready to record. A program saved to each
+# loads back and runs. The states name the media, so a restarted core puts them back (--check).
+cp "$OUT/blank.d64" "$OUT/inserted.d64"
+cp "$OUT/blank.tap" "$OUT/inserted.tap"
+rm -rf "$OUT/ins1" "$OUT/ins2"; mkdir -p "$OUT/ins1" "$OUT/ins2"
+sbs_start core 0 "a blank disk put in while running: SAVE, NEW, LOAD, RUN" --save "$OUT/ins1" --frames 1400 --check \
+    --insert-at 150 "$OUT/inserted.d64" --type-at 250 --type '10 ?55\nSAVE"PROG",8\n' \
+    --type-at 700 --type 'NEW\nLOAD"PROG",8\n' --type-at 1200 --type 'RUN\n' --expect-screen ' 55'
+sbs_start core 0 "a blank tape put in while running: SAVE, rewind, PLAY, LOAD, RUN" --save "$OUT/ins2" --frames 2600 --check \
+    --option kernal64_pad_l=tape_rewind --option kernal64_pad_r=tape_play --insert-at 150 "$OUT/inserted.tap" \
+    --type-at 250 --type '10 ?66\nSAVE\n' --hold 1000 1001 0 l 1 --hold 1010 1011 0 r 1 \
+    --type-at 1020 --type 'NEW\nLOAD\n' --type-at 2300 --type 'RUN\n' --expect-screen ' 66'
+sbs_start core 1 "a SAVE to tape with no tape in (control)" --frames 1500 --type-at 250 --type '10 ?66\nSAVE\n' --expect-screen 'SAVING'
+
 # The datasette's buttons as mapped actions: the blank tape starts in RECORD; L (PLAY / STOP)
 # stops it, SAVE asks for RECORD, R presses it and the KERNAL records; a state is taken in the middle.
 TAPE=(--content "$OUT/blank.tap" --frames 1600 --option kernal64_pad_l=tape_play --option kernal64_pad_r=tape_record
