@@ -71,7 +71,10 @@ else
 fi
 CORE="$BUILD/kernal64_libretro.so"
 [ -f "$CORE" ] || { echo "GATE: no core, stopping"; exit 1; }
-extra="$(nm -D --defined-only "$CORE" | awk '{print $3}' | grep -v '^retro_' || true)"
+# Besides the libretro API only the documented extensions for frontends (libretro.cpp, end):
+# the CMD HD maker and its requirements query.
+extra="$(nm -D --defined-only "$CORE" | awk '{print $3}' | grep -v '^retro_' |
+         grep -vx -e kernal64_make_hard_drive -e kernal64_hard_drive_requirements || true)"
 [ -z "$extra" ] || bad "core exports non-libretro symbols: $(echo "$extra" | head -3 | tr '\n' ' ')"
 
 # The machine needs the user's system ROMs (never in the repository): the gitignore folder.
