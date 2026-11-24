@@ -137,6 +137,23 @@ sbs_start fast "a tape at 4x" 0 600 4x --check
 sbs_start fast "a tape at 2x" 0 1000 2x
 sbs_start fast "a tape with auto" 0 1000 auto --check
 sbs_start fast "a tape (control: off)" 1 1000 off
+# Fast loading only while the SID's volume is 0: a program that plays music while it loads runs at
+# its own speed (its music would be cut and its pictures hurried). BOOT sets the volume, then loads
+# BIG (15000 bytes, about 38 s at the KERNAL's speed); "DONE" in 900 frames only when loaded fast.
+python3 - "$OUT" <<'PYEOF'
+import sys
+out = sys.argv[1]
+big = bytes([0x00, 0x20]) + bytes((i * 7 + 3) & 0xFF for i in range(15000))
+open(f"{out}/fastvol-big.prg", "wb").write(big)
+PYEOF
+for v in 0 15; do
+    printf '10 IFA=0THENA=1:POKE54296,%s:LOAD"BIG",8,1\n20 PRINT"DONE"\n' "$v" | python3 "$ROOT/tools/basic2prg.py" - "$OUT/fastvol-boot$v.prg"
+    python3 "$ROOT/tools/mkd64.py" "$OUT/fastvol-$v.d64" "BOOT=$OUT/fastvol-boot$v.prg" "BIG=$OUT/fastvol-big.prg"
+done
+sbs_start core 0 "fast loading: at volume 0 a load is fast" --content "$OUT/fastvol-0.d64" --frames 900 \
+    --option kernal64_fast_loading=4x --expect-screen 'DONE'
+sbs_start core 1 "fast loading: with the volume up a load runs at its own speed (control)" --content "$OUT/fastvol-15.d64" \
+    --frames 900 --option kernal64_fast_loading=4x --expect-screen 'DONE'
 sbs_start core 0 "fast loading: a disk at 4x" --content "$ROOT/gitignore/external/testprogs/vdrive/test.d64" --frames 200 \
     --option kernal64_fast_loading=4x --expect-screen 'ROM:  254'
 sbs_start core 1 "fast loading: a disk (control: off)" --content "$ROOT/gitignore/external/testprogs/vdrive/test.d64" \

@@ -89,6 +89,10 @@ public:
 #pragma pack(pop)
     const State& state() const { return s_; }
     void setState(const State& s) { s_ = s; }
+    // In use for sound: the volume is above 0. Not the voices: a tune's player silences every voice
+    // for a moment before each note (hard restart: waveform and envelope at 0), and between notes
+    // the tune is still playing; the volume stays set while it plays.
+    bool audible() const { return (s_.reg[0x18] & 0x0F) != 0; }
 
     // W10: the 12 output bits of a combination of triangle (1), sawtooth (2) and pulse (4)
     // for the upper 12 accumulator bits, pulse level high; and the smallest distance of any
