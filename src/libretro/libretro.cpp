@@ -1352,7 +1352,7 @@ RETRO_API size_t retro_get_memory_size(unsigned id) {
 // from any thread, with or without content loaded: they use their own private machine.
 
 // What making a hard drive needs from SYSTEM_DIR (or SYSTEM_DIR/kernal64): bit 0 the CMD HD's
-// boot ROM, bit 1 the utilities disk (the D81 the drive came with), bit 2 the C64's system
+// boot ROM, bit 1 the utilities disk (a D64 or D81 image of the floppy the drive came with), bit 2 the C64's system
 // ROMs. All three (7) = kernal64_make_hard_drive can run.
 extern "C" RETRO_API int kernal64_hard_drive_requirements(const char* systemDir) {
     if (!systemDir) return 0;

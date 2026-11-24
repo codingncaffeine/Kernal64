@@ -26,7 +26,7 @@ else echo "FAIL device 30's status: $(echo "$out" | grep -v '^$' | tail -3 | tr 
 # 3. A drive made by the core's own make function (src/drive/hdprep.h: the drive's install program
 #    from the user's utilities disk, then partitions made and formatted): the DOS boots from the disk
 #    as device 12; a program is saved, loaded, listed and run; the directory shows partition 1.
-#    Needs the utilities disk (a D81) in gitignore/bios or gitignore/.
+#    Needs the utilities disk (a D64 or D81 image) in gitignore/bios or gitignore/.
 if ! "$BUILD/k64run" "$ROOT/gitignore/bios" --make-hd "$TMP/made.dhd" 20 > "$TMP/make.log" 2>&1; then
     echo "FAIL make a drive: $(tail -1 "$TMP/make.log")"; fail=1
 elif ! grep -q "make-hd ok: .*, 2 partition(s)" "$TMP/make.log"; then

@@ -8,7 +8,9 @@
 //      further on one disk; beyond it the image stays unused);
 //   3. the drive is reset, its DOS boots from the disk, and each partition is formatted with
 //      the DOS's NEW command.
-// The utilities disk (a D81) is recognized by the content of the programs it needs; they are
+// The utilities disk (a D64 or D81 image, any name) is recognized by the content of the
+// programs it needs: the install program, the DOS writer, the GEOS driver and a system header
+// with the DOS it checks (known: 1.92 and 1.82; the newest found is installed). They are
 // served to the machine through the folder drive under the names the disk gives them.
 // Notes: local-notes/hw/cmdhd.md, PLAN Phase 11b.
 #pragma once
@@ -25,7 +27,8 @@ namespace k64 {
 constexpr uint64_t kHardDriveMinBytes = 20ull << 20;   // the smallest CMD HD sold
 constexpr uint64_t kHardDriveMaxBytes = 1ull << 30;    // the DOS reaches 1 GB of a disk (USER 2026-11-24: 1 GB)
 
-// Finds the utilities disk in DIR or DIR/kernal64: a D81 holding every program step 1 needs.
+// Finds the utilities disk in DIR or DIR/kernal64: a D64 or D81 holding every program step 1
+// needs; with several, the one with the newest DOS.
 bool findUtilitiesDisk(const std::string& dir, std::vector<uint8_t>& d81, std::string& from);
 
 // Progress: 0-100; return false to cancel. The image is removed on failure or cancel.

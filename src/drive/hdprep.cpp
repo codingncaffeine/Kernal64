@@ -19,24 +19,33 @@ namespace {
 // The programs the set-up needs, by the SHA-1 of their file (load address included). The
 // names they are loaded by are the disk's own (the programs load each other by name).
 enum Need { kInstall, kRewrite, kHeader, kDos, kGeos, kNeedCount };
-constexpr const char* kNeedSha1[kNeedCount] = {
-    "ed0a3b1ac48c6dc222274608efc24db7314015b2",   // the install program
-    "39728ec453fe82f69589bc63b4bb9f95dda55654",   // the DOS writer it chains to
-    "3ec54d19ec8134cb4765958d76ed679dbb80b1fc",   // the system header (names DOS 1.82, GEOS driver 2.00)
-    "45ffefc0d668893640194bb3c0ccb9c05bee830e",   // DOS 1.82: the version that header checks
-    "20382b521e1089fa01c910d73ca5baa1b473c185",   // the GEOS driver
+constexpr const char* kInstallSha1 = "ed0a3b1ac48c6dc222274608efc24db7314015b2";   // the install program
+constexpr const char* kRewriteSha1 = "39728ec453fe82f69589bc63b4bb9f95dda55654";   // the DOS writer it chains to
+constexpr const char* kGeosSha1 = "20382b521e1089fa01c910d73ca5baa1b473c185";      // the GEOS driver 2.00
+// A system header and the DOS it checks (the writer refuses any other pair), newest first.
+struct DosPair { const char* header; const char* dos; const char* version; };
+constexpr DosPair kDosPairs[] = {
+    {"8c5674f40f8fe41b1c004eae62eab5006e170007", "7956f48c2b3ce02e2caf1407917c556a018d3418", "1.92"},
+    {"3ec54d19ec8134cb4765958d76ed679dbb80b1fc", "45ffefc0d668893640194bb3c0ccb9c05bee830e", "1.82"},
 };
 
 struct DiskFile { std::string name; std::vector<uint8_t> data; };
 
-// A D81's program files (1581 layout: 80 tracks of 40 sectors, directory chain from 40/3).
-bool readD81(const std::vector<uint8_t>& d, std::vector<DiskFile>& out) {
-    if (d.size() < 819200) return false;
-    auto sec = [&d](unsigned t, unsigned s) -> const uint8_t* {
-        if (t < 1 || t > 80 || s > 39) return nullptr;
-        return d.data() + ((t - 1) * 40 + s) * 256;
+// The program files of a disk image: a D64 (1541: 35 or 40 tracks, with or without error
+// bytes; directory from 18/1) or a D81 (1581: 80 tracks of 40 sectors; directory from 40/3).
+bool readImage(const std::vector<uint8_t>& d, std::vector<DiskFile>& out) {
+    const bool d81 = d.size() == 819200 || d.size() == 822400;
+    const bool d64 = d.size() == 174848 || d.size() == 175531 || d.size() == 196608 || d.size() == 197376;
+    if (!d81 && !d64) return false;
+    const unsigned tracks = d81 ? 80 : (d.size() >= 196608 ? 40 : 35);
+    auto spt = [d81](unsigned t) -> unsigned { return d81 ? 40 : t <= 17 ? 21 : t <= 24 ? 19 : t <= 30 ? 18 : 17; };
+    auto sec = [&](unsigned t, unsigned s) -> const uint8_t* {
+        if (t < 1 || t > tracks || s >= spt(t)) return nullptr;
+        size_t off = 0;
+        for (unsigned x = 1; x < t; ++x) off += spt(x);
+        return d.data() + (off + s) * 256;
     };
-    unsigned t = 40, s = 3, guard = 0;
+    unsigned t = d81 ? 40 : 18, s = d81 ? 3 : 1, guard = 0;
     while (t && ++guard < 400) {
         const uint8_t* b = sec(t, s);
         if (!b) return false;
@@ -62,16 +71,25 @@ bool readD81(const std::vector<uint8_t>& d, std::vector<DiskFile>& out) {
     return true;
 }
 
-bool pickNeeded(const std::vector<uint8_t>& d81, DiskFile (&need)[kNeedCount]) {
+// Finds the five programs on one image; the DOS is the newest whose header is there too.
+bool pickNeeded(const std::vector<uint8_t>& image, DiskFile (&need)[kNeedCount], std::string* version = nullptr) {
     std::vector<DiskFile> files;
-    if (!readD81(d81, files)) return false;
-    int found = 0;
-    for (auto& f : files) {
-        const std::string h = sha1Hex(f.data.data(), f.data.size());
-        for (int n = 0; n < kNeedCount; ++n)
-            if (h == kNeedSha1[n] && need[n].data.empty()) { need[n] = f; ++found; }
+    if (!readImage(image, files)) return false;
+    std::map<std::string, const DiskFile*> byHash;
+    for (const auto& f : files) byHash.emplace(sha1Hex(f.data.data(), f.data.size()), &f);
+    auto has = [&](const char* h) { return byHash.count(h) ? byHash[h] : nullptr; };
+    if (!has(kInstallSha1) || !has(kRewriteSha1) || !has(kGeosSha1)) return false;
+    for (const DosPair& p : kDosPairs) {
+        if (!has(p.header) || !has(p.dos)) continue;
+        need[kInstall] = *has(kInstallSha1);
+        need[kRewrite] = *has(kRewriteSha1);
+        need[kGeos] = *has(kGeosSha1);
+        need[kHeader] = *has(p.header);
+        need[kDos] = *has(p.dos);
+        if (version) *version = p.version;
+        return true;
     }
-    return found == kNeedCount;
+    return false;
 }
 
 // The folder drive's disk: the programs, in memory.
@@ -162,22 +180,29 @@ private:
 
 } // namespace
 
-bool findUtilitiesDisk(const std::string& dir, std::vector<uint8_t>& d81, std::string& from) {
+bool findUtilitiesDisk(const std::string& dir, std::vector<uint8_t>& image, std::string& from) {
     namespace fs = std::filesystem;
+    int best = -1;   // index into kDosPairs of the best image so far (lower = newer DOS)
     for (const fs::path& d : {fs::path(dir), fs::path(dir) / "kernal64"}) {
         std::error_code ec;
         for (const auto& e : fs::directory_iterator(d, ec)) {
-            if (!e.is_regular_file(ec) || e.file_size(ec) < 819200 || e.file_size(ec) > 829440) continue;
+            if (!e.is_regular_file(ec)) continue;
+            const auto size = e.file_size(ec);
+            if (size < 174848 || size > 822400) continue;
             std::ifstream f(e.path(), std::ios::binary);
             std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), {});
             DiskFile need[kNeedCount];
-            if (!pickNeeded(bytes, need)) continue;
-            d81 = std::move(bytes);
+            std::string version;
+            if (!pickNeeded(bytes, need, &version)) continue;
+            int rank = 0;
+            while (kDosPairs[rank].version != version) ++rank;
+            if (best >= 0 && rank >= best) continue;
+            best = rank;
+            image = std::move(bytes);
             from = e.path().string();
-            return true;
         }
     }
-    return false;
+    return best >= 0;
 }
 
 bool makeHardDrive(const std::string& path, uint64_t bytes, const RomSet& roms, const std::vector<uint8_t>& bootRom,
