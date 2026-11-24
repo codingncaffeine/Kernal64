@@ -8,7 +8,7 @@ corename = "Kernal64"
 categories = "Emulator"
 license = "GPLv3"
 permissions = ""
-display_version = "0.0.3"
+display_version = "0.0.4"
 
 # Hardware Information
 manufacturer = "Commodore"
