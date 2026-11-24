@@ -426,6 +426,7 @@ int main(int argc, char** argv) {
         } else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
 
+    if (frames == 0) { std::fprintf(stderr, "--frames must be at least 1\n"); return 2; }
     Core c;
     c.handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!c.handle) { std::fprintf(stderr, "dlopen: %s\n", dlerror()); return 3; }
